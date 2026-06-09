@@ -87,12 +87,17 @@ function getLaunchOptions(appId: number): Promise<string> {
   });
 }
 
-export default function SteamGameCombinedSection() {
+export default function SteamGameCombinedSection({
+  fsr4Variant,
+  setFsr4Variant,
+}: {
+  fsr4Variant: string;
+  setFsr4Variant: (v: string) => void;
+}) {
   const [games, setGames] = useState<{ appid: string; name: string }[]>([]);
   const [appid, setAppid] = useState<string>("");
   const [engines, setEngines] = useState<Engines | null>(null);
   const [status, setStatus] = useState<GameStatus | null>(null);
-  const [variant, setVariant] = useState<string>("rdna23-int8");
   const [addon, setAddon] = useState<boolean>(true);
   const [busy, setBusy] = useState<boolean>(false);
   const [result, setResult] = useState<string>("");
@@ -134,7 +139,7 @@ export default function SteamGameCombinedSection() {
       setBusy(true);
       setResult("Patching… installing OptiScaler/ReShade if needed — this can take a while.");
       const current = await getLaunchOptions(parseInt(appid, 10));
-      const r = await patchAllGame(appid, variant, addon, current);
+      const r = await patchAllGame(appid, fsr4Variant, addon, current);
       if (r.status === "success") {
         if (r.launch_options) {
           try {
@@ -233,8 +238,8 @@ export default function SteamGameCombinedSection() {
             <DropdownItem
               label="FSR4 runtime"
               rgOptions={FSR4_OPTIONS}
-              selectedOption={variant}
-              onChange={(o) => setVariant(o.data as string)}
+              selectedOption={fsr4Variant}
+              onChange={(o) => setFsr4Variant(o.data as string)}
               strDefaultLabel="FSR4 runtime"
             />
           </PanelSectionRow>
@@ -277,7 +282,7 @@ export default function SteamGameCombinedSection() {
       )}
 
       <PanelSectionRow>
-        <div style={{ fontSize: "0.8em", opacity: 0.6 }}>In-game: press HOME for the ReShade overlay.</div>
+        <div style={{ fontSize: "0.8em", opacity: 0.6 }}>In-game: press HOME for the ReShade overlay or INSERT for OptiScaler.</div>
       </PanelSectionRow>
     </PanelSection>
   );

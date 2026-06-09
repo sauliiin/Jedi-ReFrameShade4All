@@ -676,8 +676,13 @@ class _OptiScalerMixin:
             "release_url": release.get("release_url"),
         }
 
-    async def extract_static_optiscaler(self, selected_default_variant: str = DEFAULT_FSR4_VARIANT) -> dict:
-        """Prepare the shared ~/fgmod bundle with both FSR4 runtime variants."""
+    async def extract_static_optiscaler(self, selected_default_variant: str = DEFAULT_FSR4_VARIANT, force_download: bool = False) -> dict:
+        """Prepare the shared ~/fgmod bundle with both FSR4 runtime variants.
+
+        force_download=True fetches the newest OptiScaler archive from GitHub (used by the
+        "Update" action); otherwise the install uses the complete bundled archive unless
+        DECKY_OPTISCALER_AUTO_UPDATE is set.
+        """
         try:
             decky.logger.info("Starting extract_static_optiscaler method")
 
@@ -723,7 +728,7 @@ class _OptiScalerMixin:
                 "DECKY_OPTISCALER_AUTO_UPDATE", "false"
             ).lower() in ("1", "true", "yes")
 
-            if auto_update:
+            if force_download or auto_update:
                 try:
                     temp_download_dir = tempfile.TemporaryDirectory()
                     release_metadata = self._download_latest_optiscaler_archive(
@@ -5295,30 +5300,63 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin):
 
     # ── OptiScaler version/update status (mirrors get_reshade_update_status) ──
     async def get_optiscaler_update_status(self) -> dict:
+        """Precise update check: compare the INSTALLED archive asset name against the
+        newest release asset on GitHub. The bundled archive (`_Reup`) is byte‑identical to
+        the upstream "latest" asset, so this reports "up to date" until a genuinely newer
+        release ships a different asset name (no false "update available")."""
         fgmod_path = Path(decky.HOME) / "fgmod"
-        installed = self._fgmod_version(fgmod_path) if fgmod_path.exists() else None
+        installed_version = self._fgmod_version(fgmod_path) if fgmod_path.exists() else None
+
+        # asset name actually installed (from the install manifest), with the bundled
+        # asset as the fallback so a fresh/legacy install still compares sensibly.
+        installed_asset = None
+        if fgmod_path.exists():
+            manifest = self._load_install_manifest(fgmod_path)
+            opti = manifest.get("optiscaler") if isinstance(manifest, dict) else None
+            if isinstance(opti, dict):
+                installed_asset = opti.get("asset_name")
+        if not installed_asset:
+            installed_asset = OPTISCALER_ARCHIVE_ASSET["name"]
+
         try:
             latest_meta = self._get_latest_optiscaler_release()
-            latest = latest_meta.get("version") if isinstance(latest_meta, dict) else None
         except Exception as exc:
             return {
                 "status": "success",
-                "installed_version": installed,
+                "installed_version": installed_version,
                 "latest_version": None,
                 "update_available": False,
                 "message": f"Could not reach GitHub: {exc}",
             }
+
+        latest_asset = latest_meta.get("asset_name") if isinstance(latest_meta, dict) else None
+        latest_version = latest_meta.get("version") if isinstance(latest_meta, dict) else None
         update_available = bool(
-            installed and latest
-            and str(latest) not in str(installed)
-            and str(installed) not in str(latest)
+            fgmod_path.exists() and installed_asset and latest_asset and installed_asset != latest_asset
         )
         return {
             "status": "success",
-            "installed_version": installed,
-            "latest_version": latest,
+            "installed_version": installed_version,
+            "latest_version": latest_version,
             "update_available": update_available,
         }
+
+    async def update_optiscaler(self, selected_default_variant: str = DEFAULT_FSR4_VARIANT) -> dict:
+        """Download the newest OptiScaler archive from GitHub and reinstall ~/fgmod."""
+        try:
+            selected_default_variant = self._normalize_fsr4_variant(selected_default_variant)
+            result = await self.extract_static_optiscaler(selected_default_variant, force_download=True)
+            if result.get("status") != "success":
+                return {"status": "error", "message": f"OptiScaler update failed: {result.get('message')}"}
+            return {
+                "status": "success",
+                "output": f"Updated OptiScaler to {result.get('version', '')}.",
+                "version": result.get("version"),
+                "selected_default_variant": result.get("selected_default_variant", selected_default_variant),
+            }
+        except Exception as exc:
+            decky.logger.error(f"[JediReFrameShade] update_optiscaler failed: {exc}")
+            return {"status": "error", "message": str(exc)}
 
     # ── One-button "Patch All": install engines if needed + patch both mods ───
     async def get_engines_status(self) -> dict:

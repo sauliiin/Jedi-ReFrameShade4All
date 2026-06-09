@@ -1,5 +1,21 @@
 import { callable } from "@decky/api";
 
+export const getOptiScalerUpdateStatus = callable<
+  [],
+  {
+    status: string;
+    installed_version?: string | null;
+    latest_version?: string | null;
+    update_available?: boolean;
+    message?: string;
+  }
+>("get_optiscaler_update_status");
+
+export const updateOptiScaler = callable<
+  [selected_default_variant?: string],
+  { status: string; message?: string; output?: string; version?: string }
+>("update_optiscaler");
+
 export const runInstallFGMod = callable<
   [selected_default_variant?: string],
   {

@@ -5,10 +5,9 @@ import { PanelSection, PanelSectionRow, ToggleField } from "@decky/ui";
 import { OptiScalerControls } from "./components";
 import { checkFGModPath } from "./api";
 import { safeAsyncOperation } from "./utils";
-import { TIMEOUTS } from "./utils/constants";
+import { TIMEOUTS, DEFAULT_FSR4_VARIANT } from "./utils/constants";
 import SteamGameCombinedSection from "./SteamGameCombinedSection";
 import ReShadeInstallerSection from "./ReShadeInstallerSection";
-import SteamGamesSection from "./SteamGamesSection";
 import ChooseExePathSection from "./ChooseExePathSection";
 import ConflictSlotSection from "./ConflictSlotSection";
 
@@ -24,6 +23,8 @@ function MainContent() {
   const [pathExists, setPathExists] = useState<boolean | null>(null);
   const [fgmodInfo, setFgmodInfo] = useState<FgmodInfo | null>(null);
   const [advanced, setAdvanced] = useState<boolean>(false);
+  // FSR4 runtime is chosen once in the top section and shared with the advanced OptiScaler controls.
+  const [fsr4Variant, setFsr4Variant] = useState<string>(DEFAULT_FSR4_VARIANT);
 
   useEffect(() => {
     const checkPath = async () => {
@@ -45,13 +46,13 @@ function MainContent() {
   return (
     <>
       {/* Primary one-button flow: pick a game, apply both mods at once */}
-      <SteamGameCombinedSection />
+      <SteamGameCombinedSection fsr4Variant={fsr4Variant} setFsr4Variant={setFsr4Variant} />
 
       <PanelSection>
         <PanelSectionRow>
           <ToggleField
             label="Advanced controls"
-            description="Per-engine install, FSR4/shader options, ReShade per-game, manual .exe and DLL-slot tweaks."
+            description="Per-engine install, proxy DLL, ReShade shaders/AutoHDR, manual .exe and DLL-slot tweaks."
             checked={advanced}
             onChange={setAdvanced}
           />
@@ -64,9 +65,9 @@ function MainContent() {
             pathExists={pathExists}
             setPathExists={setPathExists}
             fgmodInfo={fgmodInfo}
+            fsr4Variant={fsr4Variant}
           />
           <ReShadeInstallerSection />
-          <SteamGamesSection />
           <ChooseExePathSection />
           <ConflictSlotSection />
         </>

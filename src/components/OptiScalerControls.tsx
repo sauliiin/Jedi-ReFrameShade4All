@@ -1,17 +1,12 @@
 import { useState, useEffect } from "react";
-import { DropdownItem, Field, PanelSection, PanelSectionRow, ToggleField } from "@decky/ui";
-import { runInstallFGMod, runUninstallFGMod, setDefaultFsr4Variant } from "../api";
-import { OperationResult } from "./ResultDisplay";
+import { ButtonItem, DropdownItem, PanelSection, PanelSectionRow, ToggleField } from "@decky/ui";
+import { runInstallFGMod, runUninstallFGMod, updateOptiScaler, getOptiScalerUpdateStatus } from "../api";
 import { createAutoCleanupTimer } from "../utils";
-import { TIMEOUTS, PROXY_DLL_OPTIONS, DEFAULT_PROXY_DLL, FSR4_VARIANT_OPTIONS, DEFAULT_FSR4_VARIANT } from "../utils/constants";
-import { InstallationStatus } from "./InstallationStatus";
-import { OptiScalerHeader } from "./OptiScalerHeader";
+import { TIMEOUTS, PROXY_DLL_OPTIONS, DEFAULT_PROXY_DLL, DEFAULT_FSR4_VARIANT } from "../utils/constants";
 import { ClipboardCommands } from "./ClipboardCommands";
 import { InstructionCard } from "./InstructionCard";
-import { OptiScalerWiki } from "./OptiScalerWiki";
 import { UninstallButton } from "./UninstallButton";
 import { ManualPatchControls } from "./CustomPathOverride";
-import { SteamGamePatcher } from "./SteamGamePatcher";
 
 interface FgmodInfo {
   exists: boolean;
@@ -21,53 +16,63 @@ interface FgmodInfo {
   install_manifest_present?: boolean;
 }
 
+interface UpdateStatus {
+  status: string;
+  installed_version?: string | null;
+  latest_version?: string | null;
+  update_available?: boolean;
+  message?: string;
+}
+
 interface OptiScalerControlsProps {
   pathExists: boolean | null;
   setPathExists?: (exists: boolean | null) => void;
   fgmodInfo?: FgmodInfo | null;
+  // FSR4 runtime is chosen in the top "Steam Game — Patch All" section and shared here.
+  fsr4Variant?: string;
 }
 
-export function OptiScalerControls({ pathExists, setPathExists, fgmodInfo }: OptiScalerControlsProps) {
+export function OptiScalerControls({ pathExists, setPathExists, fgmodInfo, fsr4Variant = DEFAULT_FSR4_VARIANT }: OptiScalerControlsProps) {
   const [installing, setInstalling] = useState(false);
   const [uninstalling, setUninstalling] = useState(false);
-  const [installResult, setInstallResult] = useState<OperationResult | null>(null);
-  const [uninstallResult, setUninstallResult] = useState<OperationResult | null>(null);
+  const [result, setResult] = useState<string>("");
   const [advancedModeEnabled, setAdvancedModeEnabled] = useState(false);
   const [manualClipboardModeEnabled, setManualClipboardModeEnabled] = useState(false);
   const [dllName, setDllName] = useState<string>(DEFAULT_PROXY_DLL);
-  const [fsr4Variant, setFsr4Variant] = useState<string>(DEFAULT_FSR4_VARIANT);
-  const [fsr4VariantTouched, setFsr4VariantTouched] = useState(false);
-  const [switchingVariant, setSwitchingVariant] = useState(false);
-  useEffect(() => {
-    if (installResult) {
-      return createAutoCleanupTimer(() => setInstallResult(null), TIMEOUTS.resultDisplay);
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
+
+  const refreshUpdateStatus = async () => {
+    try {
+      setUpdateStatus(await getOptiScalerUpdateStatus());
+    } catch (e) {
+      console.error(e);
     }
-    return () => {}; // Ensure a cleanup function is always returned
-  }, [installResult]);
+  };
 
   useEffect(() => {
-    if (uninstallResult) {
-      return createAutoCleanupTimer(() => setUninstallResult(null), TIMEOUTS.resultDisplay);
-    }
-    return () => {}; // Ensure a cleanup function is always returned
-  }, [uninstallResult]);
+    void refreshUpdateStatus();
+  }, [pathExists]);
 
   useEffect(() => {
-    const installedVariant = fgmodInfo?.selected_fsr4_variant;
-    if (!fsr4VariantTouched && installedVariant && FSR4_VARIANT_OPTIONS.some((option) => option.value === installedVariant)) {
-      setFsr4Variant(installedVariant);
+    if (result) {
+      return createAutoCleanupTimer(() => setResult(""), TIMEOUTS.resultDisplay);
     }
-  }, [fgmodInfo?.selected_fsr4_variant, fsr4VariantTouched]);
+    return () => {};
+  }, [result]);
 
-  const handleInstallClick = async () => {
+  const handleInstallOrUpdate = async () => {
     try {
       setInstalling(true);
-      const result = await runInstallFGMod(fsr4Variant);
-      setInstallResult(result);
-      if (result.status === "success") {
+      const doUpdate = pathExists === true && Boolean(updateStatus?.update_available);
+      setResult(doUpdate ? "Updating OptiScaler…" : "Installing OptiScaler…");
+      const r = doUpdate ? await updateOptiScaler(fsr4Variant) : await runInstallFGMod(fsr4Variant);
+      setResult(r.status === "success" ? `✅ ${r.output || r.message || "Done"}` : `❌ ${r.message || "Failed"}`);
+      if (r.status === "success") {
         setPathExists?.(true);
+        await refreshUpdateStatus();
       }
     } catch (e) {
+      setResult(`❌ ${String(e)}`);
       console.error(e);
     } finally {
       setInstalling(false);
@@ -77,10 +82,11 @@ export function OptiScalerControls({ pathExists, setPathExists, fgmodInfo }: Opt
   const handleUninstallClick = async () => {
     try {
       setUninstalling(true);
-      const result = await runUninstallFGMod();
-      setUninstallResult(result);
-      if (result.status === "success") {
+      const r = await runUninstallFGMod();
+      setResult(r.status === "success" ? "✅ OptiScaler removed." : `❌ ${r.message || "Failed"}`);
+      if (r.status === "success") {
         setPathExists?.(false);
+        setUpdateStatus(null);
       }
     } catch (e) {
       console.error(e);
@@ -89,63 +95,46 @@ export function OptiScalerControls({ pathExists, setPathExists, fgmodInfo }: Opt
     }
   };
 
-  const handleFsr4VariantChange = async (nextVariant: string) => {
-    const previousVariant = fsr4Variant;
-    setFsr4Variant(nextVariant);
-    setFsr4VariantTouched(true);
-
-    if (pathExists !== true) return;
-
-    try {
-      setSwitchingVariant(true);
-      const result = await setDefaultFsr4Variant(nextVariant);
-      if (result.status !== "success") {
-        throw new Error(result.message || result.output || "Failed to switch default FSR4 runtime.");
-      }
-      setFsr4Variant(result.selected_default_variant || nextVariant);
-      setFsr4VariantTouched(false);
-    } catch (error) {
-      console.error(error);
-      setFsr4Variant(previousVariant);
-    } finally {
-      setSwitchingVariant(false);
-    }
-  };
-
-  const installedVariantLabel = fgmodInfo?.selected_fsr4_variant_label || FSR4_VARIANT_OPTIONS.find((option) => option.value === fsr4Variant)?.label;
+  const installButtonText = installing
+    ? "Working…"
+    : pathExists === true
+      ? updateStatus?.update_available
+        ? "🔧 Update OptiScaler"
+        : "🔧 Reinstall OptiScaler"
+      : "🔧 Install OptiScaler";
 
   return (
-    <PanelSection>
-      <InstallationStatus 
-        pathExists={pathExists}
-        installing={installing}
-        onInstallClick={handleInstallClick}
-      />
-      
-      <OptiScalerHeader pathExists={pathExists} />
-
-      <PanelSectionRow>
-        <DropdownItem
-          layout="below"
-          label="Default FSR4 runtime"
-          description={FSR4_VARIANT_OPTIONS.find((option) => option.value === fsr4Variant)?.hint}
-          menuLabel="Default FSR4 runtime"
-          selectedOption={fsr4Variant}
-          rgOptions={FSR4_VARIANT_OPTIONS.map((option) => ({ data: option.value, label: option.label }))}
-          disabled={installing || uninstalling || switchingVariant}
-          onChange={(option) => {
-            void handleFsr4VariantChange(String(option.data));
-          }}
-        />
-      </PanelSectionRow>
-
-      {pathExists === true && fgmodInfo?.version && installedVariantLabel && (
+    <PanelSection title="Framegen Management">
+      {pathExists !== null && (
         <PanelSectionRow>
-          <Field label="Installed bundle" description={`OptiScaler ${fgmodInfo.version}`}>
-            {installedVariantLabel}
-          </Field>
+          <div style={{ color: pathExists ? "green" : "red" }}>
+            {pathExists ? (
+              <>
+                🟢 OptiScaler Is Installed
+                {fgmodInfo?.version && (
+                  <div style={{ fontSize: "0.9em", opacity: 0.8, marginTop: "4px" }}>
+                    Installed version: {fgmodInfo.version}
+                  </div>
+                )}
+                {updateStatus?.status === "success" && updateStatus.latest_version && (
+                  <div style={{ fontSize: "0.85em", opacity: 0.7, marginTop: "2px" }}>
+                    Latest upstream: {updateStatus.latest_version}
+                    {updateStatus.update_available ? " (update available)" : " (up to date)"}
+                  </div>
+                )}
+              </>
+            ) : (
+              "🔴 OptiScaler Not Installed"
+            )}
+          </div>
         </PanelSectionRow>
       )}
+
+      <PanelSectionRow>
+        <ButtonItem layout="below" onClick={handleInstallOrUpdate} disabled={installing}>
+          {installButtonText}
+        </ButtonItem>
+      </PanelSectionRow>
 
       {pathExists === true && (
         <PanelSectionRow>
@@ -159,10 +148,6 @@ export function OptiScalerControls({ pathExists, setPathExists, fgmodInfo }: Opt
             onChange={(option) => setDllName(String(option.data))}
           />
         </PanelSectionRow>
-      )}
-
-      {pathExists === true && (
-        <SteamGamePatcher dllName={dllName} fsr4Variant={fsr4Variant} />
       )}
 
       <ClipboardCommands pathExists={pathExists} dllName={dllName} />
@@ -194,12 +179,25 @@ export function OptiScalerControls({ pathExists, setPathExists, fgmodInfo }: Opt
         fsr4Variant={fsr4Variant}
       />
 
-      {!advancedModeEnabled && (
-        <InstructionCard pathExists={pathExists} />
+      {!advancedModeEnabled && <InstructionCard pathExists={pathExists} />}
+
+      {result && (
+        <PanelSectionRow>
+          <div
+            style={{
+              padding: "12px",
+              marginTop: "8px",
+              backgroundColor: "var(--decky-selected-ui-bg)",
+              borderRadius: "4px",
+              whiteSpace: "pre-wrap",
+            }}
+          >
+            {result}
+          </div>
+        </PanelSectionRow>
       )}
-      <OptiScalerWiki pathExists={pathExists} />
-      
-      <UninstallButton 
+
+      <UninstallButton
         pathExists={pathExists}
         uninstalling={uninstalling}
         onUninstallClick={handleUninstallClick}
