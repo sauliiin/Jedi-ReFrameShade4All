@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output (rebuild with `pnpm build`)
+dist/
+
+# Bundled binaries (fetched at build time via the "remote_binary" list in package.json)
+bin/
+
+# Python
+__pycache__/
+*.pyc
+
+# OS / editor
+.DS_Store
+*.log
+.vscode/
+.idea/

@@ -1,0 +1,121 @@
+{
+  "name": "jedi-reframeshade4all-decky",
+  "version": "1.0.0",
+  "description": "All-in-one OptiScaler frame generation/upscaling + ReShade (with addons) for Decky.",
+  "type": "module",
+  "scripts": {
+    "build": "rollup -c",
+    "watch": "rollup -c -w",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xXJSONDeruloXx/Decky-Framegen.git"
+  },
+  "keywords": [
+    "decky",
+    "plugin",
+    "DLSS",
+    "Framegen",
+    "Upscaling",
+    "FSR",
+    "DLSS-Swapper"
+  ],
+  "author": "no@thankyou.com",
+  "license": "BSD-3-Clause",
+  "bugs": {
+    "url": "https://github.com/xXJSONDeruloXx/Decky-Framegen.git/issues"
+  },
+  "homepage": "https://github.com/xXJSONDeruloXx/Decky-Framegen.git",
+  "devDependencies": {
+    "@decky/rollup": "^1.0.1",
+    "@decky/ui": "^4.7.2",
+    "@rollup/rollup-linux-x64-musl": "^4.22.5",
+    "@types/react": "18.3.3",
+    "@types/react-dom": "18.3.0",
+    "@types/webpack": "^5.28.5",
+    "rollup": "^4.22.5",
+    "typescript": "^5.6.2"
+  },
+  "dependencies": {
+    "@decky/api": "^1.1.2",
+    "react-icons": "^5.3.0",
+    "tslib": "^2.7.0"
+  },
+  "pnpm": {
+    "peerDependencyRules": {
+      "ignoreMissing": [
+        "react",
+        "react-dom"
+      ]
+    }
+  },
+  "remote_binary_bundling": true,
+  "remote_binary": [
+    {
+      "sha256hash": "6426a16085f6128c810e0de58947029664439afd0567b6a286c0e3ef784a92a1",
+      "url": "https://github.com/xXJSONDeruloXx/OptiScaler-Bleeding-Edge/releases/download/opti-9-2-a/Optiscaler_0.9.2a-final.20260517._Reup.7z",
+      "name": "Optiscaler_0.9.2a-final.20260517._Reup.7z"
+    },
+    {
+      "sha256hash": "c7720bc16bede334f59a1a32cd22edbcbbb159685ed5240e61350a5fb0bc8a94",
+      "url": "https://github.com/xXJSONDeruloXx/OptiScaler-Bleeding-Edge/releases/download/opti-9-2-a/amd_fidelityfx_upscaler_dx12.dll",
+      "name": "amd_fidelityfx_upscaler_dx12.dll"
+    },
+    {
+      "sha256hash": "88b9e1be3559737cd205fdf5f2c8550cf1923fb1def4c603e5bf03c3e84131b1",
+      "url": "https://github.com/xXJSONDeruloXx/OptiScaler-Bleeding-Edge/releases/download/bins-for-optipatcher-rolling/OptiPatcher_rolling.asi",
+      "name": "OptiPatcher_rolling.asi"
+    },
+    {
+      "name": "d3dcompiler_47.dll",
+      "url": "https://github.com/itsOwen/LetMeReShade/releases/download/LetMeReShade_Binaries/d3dcompiler_47.dll",
+      "sha256hash": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3"
+    },
+    {
+      "name": "reshade_ini_template.ini",
+      "url": "https://github.com/itsOwen/LetMeReShade/releases/download/LetMeReShade_Binaries/reshade_ini_template.ini",
+      "sha256hash": "cf19618185645ffdd4f70e2f4f0b4c6bcd060a6eeb867e18da7758f6d6efc412"
+    },
+    {
+      "name": "astrayfx_shaders.tar.gz",
+      "url": "https://github.com/itsOwen/LetMeReShade/releases/download/LetMeReShade_Binaries/astrayfx_shaders.tar.gz",
+      "sha256hash": "f873957ee6a48fdf2e62e94d3f875f4565b40c6c0dc5ae8d6a336b4b554d96cc"
+    },
+    {
+      "name": "martymc_shaders.tar.gz",
+      "url": "https://github.com/itsOwen/LetMeReShade/releases/download/LetMeReShade_Binaries/martymc_shaders.tar.gz",
+      "sha256hash": "667f1e617bcb5a679e50afd8820867e03a10229f4084bf3b06e2d68fdc9a0716"
+    },
+    {
+      "name": "prod80_shaders.tar.gz",
+      "url": "https://github.com/itsOwen/LetMeReShade/releases/download/LetMeReShade_Binaries/prod80_shaders.tar.gz",
+      "sha256hash": "469b32e5cd8d51bec95d8c1a561d23a85caf8604a722de560c4fb3c34bef3291"
+    },
+    {
+      "name": "reshade_shaders.tar.gz",
+      "url": "https://github.com/itsOwen/LetMeReShade/releases/download/LetMeReShade_Binaries/reshade_shaders.tar.gz",
+      "sha256hash": "03546f110c60ccae995aa06eaeadc6ab06d79d139b2f4487017188e7d289fa98"
+    },
+    {
+      "name": "sweetfx_shaders.tar.gz",
+      "url": "https://github.com/itsOwen/LetMeReShade/releases/download/LetMeReShade_Binaries/sweetfx_shaders.tar.gz",
+      "sha256hash": "f8f370bb95f5501be40adcf8ab5aefdbb5475d0d73062b374f8e02c20ce8cb02"
+    },
+    {
+      "name": "retroarch_shaders.tar.gz",
+      "url": "https://github.com/itsOwen/LetMeReShade/releases/download/LetMeReShade_Binaries/retroarch_shaders.tar.gz",
+      "sha256hash": "25d8c03326f7ff7a0baf0e081c3a2ac8b1e8f12fb14914a2e1225d8df024bbb5"
+    },
+    {
+      "name": "autohdr_addon.tar.gz",
+      "url": "https://github.com/itsOwen/LetMeReShade/releases/download/LetMeReShade_Binaries/autohdr_addon.tar.gz",
+      "sha256hash": "6389cf9be76e6c0358adea593c3391e7cfac0e0ce229cd1ed6683b3689c9f690"
+    },
+    {
+      "name": "advanced_autohdr_effect.tar.gz",
+      "url": "https://github.com/itsOwen/LetMeReShade/releases/download/LetMeReShade_Binaries/advanced_autohdr_effect.tar.gz",
+      "sha256hash": "97a0594baaa0ac780a15f0cbeb5535fe0bea269015084132a2510966fc25fc5c"
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+# Changelog
+
+## 1.0.0
+
+First release — fusion of **OptiScaler Frame Generation** (Decky‑Framegen 0.15.6) and **ReShade with add‑ons** (LetMeReShade) into a single Decky plugin.
+
+### Added
+- Single back‑end (`main.py`) combining both projects via `_OptiScalerMixin` + `_ReShadeMixin` under one Decky `Plugin` class.
+- **One‑button "Patch All"** primary flow (`patch_all_game` / `unpatch_all_game`): pick one Steam game → installs OptiScaler + ReShade engines if missing, patches both into the same folder (ReShade `dxgi` + Frame Generation `winmm`), and sets the merged launch options automatically. `get_engines_status` powers the status line. Detailed per‑engine controls now live under an **Advanced controls** toggle.
+- **Coexistence layer** so both run on the same game: ReShade keeps the graphics slot (`dxgi`, auto‑detected); Frame Generation is forced onto `winmm`; launch options merge into a single `WINEDLLOVERRIDES`.
+  - `get_combined_game_status`, `set_slots_manual`, and a **Coexistence / DLL slots** UI section with a manual slot picker.
+- Unified front‑end (`src/index.tsx`); plugin renamed to **Jedi ReFrameShade4All**.
+
+### Fixed
+- **"Asks to install again" loop**: OptiScaler auto‑update used to download the official `optiscaler/OptiScaler` archive, which omits `fakenvapi`/`dlssg_to_fsr3`/etc., leaving `~/fgmod` incomplete so `check_fgmod_path` always reported *not installed*. Auto‑update is now **opt‑in** (`DECKY_OPTISCALER_AUTO_UPDATE=1`); the default install uses the complete bundled `0.9.2a` archive.
+- **Duplicate install button**: removed the redundant "Install OptiScaler" widget that did the same thing as "Setup OptiScaler Mod".
+
+### Inherited
+- OptiScaler: FSR4 variants (incl. Steam Deck / RDNA2‑3 INT8), idempotent patch/unpatch, install manifest, Steam‑OS‑beta UI.
+- ReShade: add‑on support, AutoHDR, shader pack selection, Steam + Heroic + manual `.exe` patching.
+
+### Notes
+- Not yet validated end‑to‑end on Steam Deck hardware.
+- ReShade add‑on toggle ships **off** (anti‑cheat warning).
