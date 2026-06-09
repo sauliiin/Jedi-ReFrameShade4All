@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import {
   ButtonItem,
   ConfirmModal,
+  DropdownItem,
   PanelSection,
   PanelSectionRow,
   ToggleField,
@@ -53,15 +54,62 @@ const hasShaderPreferences = callable<[], any>("has_shader_preferences");
 const saveAutoHdrPreference = callable<[boolean], InstallResult>("save_autohdr_preference");
 const loadAutoHdrPreference = callable<[], any>("load_autohdr_preference");
 const loadInstalledConfiguration = callable<[], any>("load_installed_configuration");
+const manageGameReShade = callable<[string, string, string, string, string], InstallResult>("manage_game_reshade");
+const getCombinedGameStatus = callable<
+  [string],
+  {
+    status: string;
+    optiscaler_patched?: boolean;
+    optiscaler_slot?: string | null;
+    reshade_slot?: string | null;
+  }
+>("get_combined_game_status");
 
-function ReShadeInstallerSection() {
+const RESHADE_DLL_OPTIONS = [
+  { data: "auto", label: "Automatic (Detect API)" },
+  { data: "dxgi", label: "DXGI (DirectX 10/11/12)" },
+  { data: "d3d9", label: "D3D9 (DirectX 9)" },
+  { data: "d3d8", label: "D3D8 (DirectX 8)" },
+  { data: "d3d11", label: "D3D11 (DirectX 11)" },
+  { data: "ddraw", label: "DDraw (DirectDraw)" },
+  { data: "dinput8", label: "DInput8 (DirectInput)" },
+  { data: "opengl32", label: "OpenGL32 (OpenGL)" }
+];
+
+const getDllBase = (slot: string) => slot.replace(/\.dll$/i, "");
+
+const getResolvedReShadeApi = (output: string | undefined, selectedApi: string) => {
+  const match = (output || "").match(/Selected API:\s*([a-z0-9_]+)/i);
+  if (match?.[1]) return match[1].toLowerCase();
+  return selectedApi === "auto" ? "dxgi" : selectedApi;
+};
+
+const buildSteamLaunchOptions = (reshadeApi: string, optiscalerSlot?: string | null) => {
+  const parts = ["d3dcompiler_47=n"];
+  const seen = new Set<string>();
+
+  [reshadeApi, optiscalerSlot || ""].forEach((slot) => {
+    const base = getDllBase(slot);
+    if (base && !seen.has(base)) {
+      parts.push(`${base}=n,b`);
+      seen.add(base);
+    }
+  });
+
+  return `WINEDLLOVERRIDES="${parts.join(";")}" SteamDeck=0 %command%`;
+};
+
+function ReShadeInstallerSection({ appid }: { appid: string }) {
   const [installing, setInstalling] = useState<boolean>(false);
   const [uninstalling, setUninstalling] = useState<boolean>(false);
+  const [applyingToSteamGame, setApplyingToSteamGame] = useState<boolean>(false);
   const [installResult, setInstallResult] = useState<InstallResult | null>(null);
   const [uninstallResult, setUninstallResult] = useState<InstallResult | null>(null);
+  const [steamGameResult, setSteamGameResult] = useState<InstallResult | null>(null);
   const [pathExists, setPathExists] = useState<boolean | null>(null);
   const [addonEnabled, setAddonEnabled] = useState<boolean>(false);
   const [autoHdrEnabled, setAutoHdrEnabled] = useState<boolean>(false);
+  const [selectedSteamGameApi, setSelectedSteamGameApi] = useState<string>("auto");
   const [currentVersionInfo, setCurrentVersionInfo] = useState<{ version: string; addon: boolean } | null>(null);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatusResponse | null>(null);
   const [initialLoad, setInitialLoad] = useState<boolean>(true);
@@ -268,6 +316,12 @@ function ReShadeInstallerSection() {
     return () => clearTimeout(timer);
   }, [uninstallResult]);
 
+  useEffect(() => {
+    if (!steamGameResult) return undefined;
+    const timer = setTimeout(() => setSteamGameResult(null), 8000);
+    return () => clearTimeout(timer);
+  }, [steamGameResult]);
+
   const executeInstall = async (selectedShaders: string[]) => {
     try {
       setInstalling(true);
@@ -336,6 +390,72 @@ function ReShadeInstallerSection() {
       await logError(`Uninstall error: ${String(e)}`);
     } finally {
       setUninstalling(false);
+    }
+  };
+
+  const handleApplyReShadeToSteamGame = async () => {
+    if (!appid) {
+      setSteamGameResult({
+        status: "error",
+        message: 'Pick a game in "Steam Game - Patch All" above first.'
+      });
+      return;
+    }
+
+    if (!pathExists) {
+      setSteamGameResult({
+        status: "error",
+        message: "Install ReShade first before applying it to a Steam game."
+      });
+      return;
+    }
+
+    try {
+      setApplyingToSteamGame(true);
+      setSteamGameResult({
+        status: "success",
+        message: "Applying ReShade to selected Steam game..."
+      });
+
+      const result = await manageGameReShade(appid, "install", selectedSteamGameApi, "", "");
+      if (result.status !== "success") {
+        setSteamGameResult({
+          status: "error",
+          message: result.message || result.output || "Failed to apply ReShade."
+        });
+        return;
+      }
+
+      const resolvedApi = getResolvedReShadeApi(result.output, selectedSteamGameApi);
+      let optiscalerSlot: string | null = null;
+
+      try {
+        const combinedStatus = await getCombinedGameStatus(appid);
+        if (combinedStatus.status === "success" && combinedStatus.optiscaler_patched) {
+          optiscalerSlot = combinedStatus.optiscaler_slot || null;
+        }
+      } catch (e) {
+        await logError(`ReShadeInstallerSection -> getCombinedGameStatus: ${String(e)}`);
+      }
+
+      const launchOptions = buildSteamLaunchOptions(resolvedApi, optiscalerSlot);
+      try {
+        SteamClient.Apps.SetAppLaunchOptions(parseInt(appid, 10), launchOptions);
+      } catch (e) {
+        await logError(`ReShadeInstallerSection -> SetAppLaunchOptions: ${String(e)}`);
+      }
+
+      setSteamGameResult({
+        status: "success",
+        output:
+          `ReShade applied with ${resolvedApi.toUpperCase()}.\n` +
+          `Launch options set automatically:\n${launchOptions}`
+      });
+    } catch (e) {
+      setSteamGameResult({ status: "error", message: String(e) });
+      await logError(`ReShadeInstallerSection -> applyToSteamGame: ${String(e)}`);
+    } finally {
+      setApplyingToSteamGame(false);
     }
   };
 
@@ -634,20 +754,36 @@ function ReShadeInstallerSection() {
         </PanelSectionRow>
       )}
 
-      {pathExists === true && configChanged && (
-        <PanelSectionRow>
-          <div
-            style={{
-              padding: "12px",
-              marginBottom: "12px",
-              backgroundColor: "#ffa726",
-              borderRadius: "4px",
-              color: "white"
-            }}
-          >
-            ⚠️ Configuration changed - Reinstallation required to apply changes
-          </div>
-        </PanelSectionRow>
+      {pathExists === true && (
+        <>
+          <PanelSectionRow>
+            <DropdownItem
+              rgOptions={RESHADE_DLL_OPTIONS}
+              selectedOption={selectedSteamGameApi}
+              onChange={(option) => {
+                setSelectedSteamGameApi(option.data as string);
+                setSteamGameResult(null);
+              }}
+              strDefaultLabel="Steam game ReShade API"
+            />
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <ButtonItem
+              layout="below"
+              onClick={handleApplyReShadeToSteamGame}
+              disabled={applyingToSteamGame || !appid}
+            >
+              {applyingToSteamGame ? "Applying ReShade..." : "Apply ReShade to selected Steam game"}
+            </ButtonItem>
+          </PanelSectionRow>
+          {!appid && (
+            <PanelSectionRow>
+              <div style={{ fontSize: "0.85em", opacity: 0.7 }}>
+                Pick a game in "Steam Game - Patch All" above first.
+              </div>
+            </PanelSectionRow>
+          )}
+        </>
       )}
 
       {shouldShowInstallButton && (
@@ -711,6 +847,25 @@ function ReShadeInstallerSection() {
             {uninstallResult.status === "success"
               ? "✅ ReShade uninstalled successfully!"
               : `❌ Error: ${uninstallResult.message || "Uninstallation failed"}`}
+          </div>
+        </PanelSectionRow>
+      )}
+
+      {steamGameResult && (
+        <PanelSectionRow>
+          <div
+            style={{
+              padding: "12px",
+              marginTop: "16px",
+              backgroundColor: "var(--decky-selected-ui-bg)",
+              borderRadius: "4px",
+              color: steamGameResult.status === "success" ? "green" : "red",
+              whiteSpace: "pre-wrap"
+            }}
+          >
+            {steamGameResult.status === "success"
+              ? `✅ ${steamGameResult.output || steamGameResult.message || "Operation completed successfully!"}`
+              : `❌ Error: ${steamGameResult.message || "Operation failed"}`}
           </div>
         </PanelSectionRow>
       )}

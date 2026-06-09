@@ -2,11 +2,6 @@ import { useEffect, useState } from "react";
 import { ButtonItem, DropdownItem, PanelSection, PanelSectionRow } from "@decky/ui";
 import { callable } from "@decky/api";
 
-const listInstalledGames = callable<
-  [],
-  { status: string; games: { appid: string; name: string }[] }
->("list_installed_games");
-
 const getCombinedGameStatus = callable<
   [appid: string],
   {
@@ -45,24 +40,17 @@ const OPTISCALER_SLOTS = [
   { data: "dxgi.dll", label: "dxgi (⚠️ conflicts with ReShade)" },
 ];
 
-export default function ConflictSlotSection() {
-  const [games, setGames] = useState<{ appid: string; name: string }[]>([]);
-  const [appid, setAppid] = useState<string>("");
+export default function ConflictSlotSection({
+  appid,
+  fsr4Variant,
+}: {
+  appid: string;
+  fsr4Variant: string;
+}) {
   const [status, setStatus] = useState<CombinedStatus | null>(null);
   const [slot, setSlot] = useState<string>("winmm.dll");
   const [busy, setBusy] = useState<boolean>(false);
   const [result, setResult] = useState<string>("");
-
-  useEffect(() => {
-    (async () => {
-      try {
-        const r = await listInstalledGames();
-        if (r.status === "success") setGames(r.games || []);
-      } catch (e) {
-        await logError(`ConflictSlotSection -> list: ${String(e)}`);
-      }
-    })();
-  }, []);
 
   const loadStatus = async (id: string) => {
     try {
@@ -74,15 +62,24 @@ export default function ConflictSlotSection() {
     }
   };
 
+  // The game is chosen once in "Steam Game — Patch All"; this section just reuses it.
+  useEffect(() => {
+    if (appid) {
+      void loadStatus(appid);
+    } else {
+      setStatus(null);
+    }
+  }, [appid]);
+
   const handleApply = async () => {
     if (!appid) {
-      setResult("Select a game first.");
+      setResult('Pick a game in "Steam Game — Patch All" above first.');
       return;
     }
     try {
       setBusy(true);
       setResult("Applying Frame Generation slot...");
-      const r = await setSlotsManual(appid, slot, "rdna23-int8", "");
+      const r = await setSlotsManual(appid, slot, fsr4Variant, "");
       setResult(
         r.status === "success"
           ? `✅ ${r.output || r.message || "Applied"}${r.launch_options ? `\nLaunch options: ${r.launch_options}` : ""}`
@@ -102,23 +99,20 @@ export default function ConflictSlotSection() {
       <PanelSectionRow>
         <div style={{ fontSize: "0.9em", opacity: 0.8 }}>
           By default ReShade uses the graphics DLL (dxgi) and Frame Generation uses winmm, so both run
-          together automatically. Use this only to pick the Frame Generation slot manually.
+          together automatically. Use this only to change the Frame Generation slot for the game selected
+          above in "Steam Game — Patch All".
         </div>
       </PanelSectionRow>
 
-      <PanelSectionRow>
-        <DropdownItem
-          rgOptions={games.map((g) => ({ data: g.appid, label: g.name }))}
-          selectedOption={appid}
-          onChange={(o) => {
-            setAppid(o.data as string);
-            void loadStatus(o.data as string);
-          }}
-          strDefaultLabel="Select a game..."
-        />
-      </PanelSectionRow>
+      {!appid && (
+        <PanelSectionRow>
+          <div style={{ fontSize: "0.85em", opacity: 0.7 }}>
+            Pick a game in "Steam Game — Patch All" above first.
+          </div>
+        </PanelSectionRow>
+      )}
 
-      {status && (
+      {appid && status && (
         <PanelSectionRow>
           <div
             style={{

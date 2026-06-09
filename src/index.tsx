@@ -25,6 +25,8 @@ function MainContent() {
   const [advanced, setAdvanced] = useState<boolean>(false);
   // FSR4 runtime is chosen once in the top section and shared with the advanced OptiScaler controls.
   const [fsr4Variant, setFsr4Variant] = useState<string>(DEFAULT_FSR4_VARIANT);
+  // The Steam game is also picked once at the top and reused by the coexistence/slot section.
+  const [selectedAppid, setSelectedAppid] = useState<string>("");
 
   useEffect(() => {
     const checkPath = async () => {
@@ -46,7 +48,12 @@ function MainContent() {
   return (
     <>
       {/* Primary one-button flow: pick a game, apply both mods at once */}
-      <SteamGameCombinedSection fsr4Variant={fsr4Variant} setFsr4Variant={setFsr4Variant} />
+      <SteamGameCombinedSection
+        fsr4Variant={fsr4Variant}
+        setFsr4Variant={setFsr4Variant}
+        appid={selectedAppid}
+        setAppid={setSelectedAppid}
+      />
 
       <PanelSection>
         <PanelSectionRow>
@@ -67,9 +74,9 @@ function MainContent() {
             fgmodInfo={fgmodInfo}
             fsr4Variant={fsr4Variant}
           />
-          <ReShadeInstallerSection />
+          <ReShadeInstallerSection appid={selectedAppid} />
           <ChooseExePathSection />
-          <ConflictSlotSection />
+          <ConflictSlotSection appid={selectedAppid} fsr4Variant={fsr4Variant} />
         </>
       )}
     </>

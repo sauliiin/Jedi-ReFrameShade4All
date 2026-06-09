@@ -90,12 +90,15 @@ function getLaunchOptions(appId: number): Promise<string> {
 export default function SteamGameCombinedSection({
   fsr4Variant,
   setFsr4Variant,
+  appid,
+  setAppid,
 }: {
   fsr4Variant: string;
   setFsr4Variant: (v: string) => void;
+  appid: string;
+  setAppid: (v: string) => void;
 }) {
   const [games, setGames] = useState<{ appid: string; name: string }[]>([]);
-  const [appid, setAppid] = useState<string>("");
   const [engines, setEngines] = useState<Engines | null>(null);
   const [status, setStatus] = useState<GameStatus | null>(null);
   const [addon, setAddon] = useState<boolean>(true);
