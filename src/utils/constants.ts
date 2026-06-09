@@ -92,5 +92,5 @@ export const MESSAGES = {
   installSuccess: "OptiScaler mod setup successfully!",
   uninstallSuccess: "OptiScaler mod removed successfully.",
   instructionTitle: "How to Use:",
-  instructionText: "Use 'Copy launch options' for the standard direct launch-options method. If you want the wrapper commands instead, enable Manual Mode to reveal 'Copy Patch Command' and 'Copy Unpatch Command'.\n\nIn-game: Enable DLSS in graphics settings to unlock FSR 3.1/XeSS 2.0 in DirectX12 Games.\n\nFor extended OptiScaler options, assign a back button to a keyboard's 'Insert' key."
+  instructionText: "For extended OptiScaler options, assign a back button to a keyboard's 'Insert' key."
 };

@@ -11,9 +11,6 @@ export function InstructionCard({ pathExists }: InstructionCardProps) {
   return (
     <PanelSectionRow>
       <div style={STYLES.instructionCard}>
-        <div style={{ fontWeight: 'bold', marginBottom: '8px', color: 'var(--decky-accent-text)' }}>
-          {MESSAGES.instructionTitle}
-        </div>
         <div style={{ whiteSpace: 'pre-line' }}>
           {MESSAGES.instructionText}
         </div>

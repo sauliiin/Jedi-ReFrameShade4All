@@ -9,6 +9,7 @@ import {
 } from "@decky/ui";
 import { callable } from "@decky/api";
 import ShaderSelectionModal from "./ShaderSelectionModal";
+import { STYLES } from "./utils/constants";
 
 interface InstallResult {
   status: string;
@@ -665,6 +666,19 @@ function ReShadeInstallerSection() {
         </PanelSectionRow>
       )}
 
+      {pathExists === true && (
+        <PanelSectionRow>
+          <div style={STYLES.instructionCard}>
+            Press HOME key in-game to access the ReShade overlay.
+            {addonEnabled && autoHdrEnabled && (
+              <div style={{ fontSize: "0.9em", marginTop: "4px", opacity: 0.8 }}>
+                AutoHDR works with DirectX 10/11/12 games only.
+              </div>
+            )}
+          </div>
+        </PanelSectionRow>
+      )}
+
       {installResult && (
         <PanelSectionRow>
           <div
@@ -701,16 +715,6 @@ function ReShadeInstallerSection() {
         </PanelSectionRow>
       )}
 
-      <PanelSectionRow>
-        <div>
-          Press HOME key in-game to access the ReShade overlay.
-          {addonEnabled && autoHdrEnabled && (
-            <div style={{ fontSize: "0.9em", marginTop: "4px", opacity: 0.8 }}>
-              AutoHDR works with DirectX 10/11/12 games only.
-            </div>
-          )}
-        </div>
-      </PanelSectionRow>
     </PanelSection>
   );
 }
