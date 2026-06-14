@@ -11,6 +11,7 @@ import {
 import { callable } from "@decky/api";
 import ShaderSelectionModal from "./ShaderSelectionModal";
 import { STYLES } from "./utils/constants";
+import { buildLaunchCommand, copyTextToClipboard } from "./utils/steam";
 
 interface InstallResult {
   status: string;
@@ -55,6 +56,8 @@ const saveAutoHdrPreference = callable<[boolean], InstallResult>("save_autohdr_p
 const loadAutoHdrPreference = callable<[], any>("load_autohdr_preference");
 const loadInstalledConfiguration = callable<[], any>("load_installed_configuration");
 const manageGameReShade = callable<[string, string, string, string, string], InstallResult>("manage_game_reshade");
+const installReShadeForManualExe = callable<[string, string, string], InstallResult>("install_reshade_for_heroic_game");
+const detectGameApi = callable<[string], InstallResult & { api?: string }>("detect_heroic_game_api");
 const getCombinedGameStatus = callable<
   [string],
   {
@@ -99,7 +102,12 @@ const buildSteamLaunchOptions = (reshadeApi: string, optiscalerSlot?: string | n
   return `WINEDLLOVERRIDES="${parts.join(";")}" SteamDeck=0 %command%`;
 };
 
-function ReShadeInstallerSection({ appid }: { appid: string }) {
+const folderForExe = (exePath: string) => {
+  const idx = exePath.lastIndexOf("/");
+  return idx > 0 ? exePath.slice(0, idx) : exePath;
+};
+
+function ReShadeInstallerSection({ appid, targetExePath = "" }: { appid: string; targetExePath?: string }) {
   const [installing, setInstalling] = useState<boolean>(false);
   const [uninstalling, setUninstalling] = useState<boolean>(false);
   const [applyingToSteamGame, setApplyingToSteamGame] = useState<boolean>(false);
@@ -459,6 +467,60 @@ function ReShadeInstallerSection({ appid }: { appid: string }) {
     }
   };
 
+  const handleApplyOnlyReShadeNonSteam = async () => {
+    if (!targetExePath) {
+      setSteamGameResult({
+        status: "error",
+        message: 'Choose a game .exe in "Choose exe/folder path" above first.'
+      });
+      return;
+    }
+
+    if (!pathExists) {
+      setSteamGameResult({
+        status: "error",
+        message: "Install ReShade first before applying it to a game."
+      });
+      return;
+    }
+
+    try {
+      setApplyingToSteamGame(true);
+      const folder = folderForExe(targetExePath);
+      let resolvedApi = selectedSteamGameApi;
+
+      if (resolvedApi === "auto") {
+        setSteamGameResult({ status: "success", message: "Detecting best ReShade API…" });
+        const detection = await detectGameApi(folder);
+        resolvedApi = detection.status === "success" && detection.api ? detection.api : "dxgi";
+      }
+
+      setSteamGameResult({ status: "success", message: `Applying ReShade (${resolvedApi.toUpperCase()})…` });
+      const result = await installReShadeForManualExe(folder, resolvedApi, targetExePath);
+      if (result.status !== "success") {
+        setSteamGameResult({
+          status: "error",
+          message: result.message || result.output || "Failed to apply ReShade."
+        });
+        return;
+      }
+
+      const launchCommand = buildLaunchCommand([resolvedApi], true);
+      const copied = await copyTextToClipboard(launchCommand);
+      setSteamGameResult({
+        status: "success",
+        output:
+          `ReShade applied with ${resolvedApi.toUpperCase()}.\n` +
+          `Launch command ${copied ? "copied to clipboard" : "(copy it manually)"}:\n${launchCommand}`
+      });
+    } catch (e) {
+      setSteamGameResult({ status: "error", message: String(e) });
+      await logError(`ReShadeInstallerSection -> applyOnlyReShadeNonSteam: ${String(e)}`);
+    } finally {
+      setApplyingToSteamGame(false);
+    }
+  };
+
   const handleManageShaders = async () => {
     let currentPreferences: string[] = [];
 
@@ -688,6 +750,10 @@ function ReShadeInstallerSection({ appid }: { appid: string }) {
     );
   };
 
+  // A Steam game chosen at the top targets that game; otherwise we patch the
+  // manually chosen non-Steam .exe.
+  const steamMode = Boolean(appid);
+
   const shouldShowInstallButton =
     pathExists === false ||
     configChanged ||
@@ -754,7 +820,7 @@ function ReShadeInstallerSection({ appid }: { appid: string }) {
         </PanelSectionRow>
       )}
 
-      {pathExists === true && (
+      {pathExists === true && steamMode && (
         <>
           <PanelSectionRow>
             <DropdownItem
@@ -773,17 +839,57 @@ function ReShadeInstallerSection({ appid }: { appid: string }) {
               onClick={handleApplyReShadeToSteamGame}
               disabled={applyingToSteamGame || !appid}
             >
-              {applyingToSteamGame ? "Applying ReShade..." : "Apply ReShade to selected Steam game"}
+              {applyingToSteamGame ? "Applying ReShade..." : "Apply only ReShade"}
             </ButtonItem>
           </PanelSectionRow>
-          {!appid && (
+        </>
+      )}
+
+      {pathExists === true && !steamMode && (
+        <>
+          <PanelSectionRow>
+            <DropdownItem
+              label="Proxy DLL name"
+              menuLabel="Proxy DLL name"
+              rgOptions={RESHADE_DLL_OPTIONS}
+              selectedOption={selectedSteamGameApi}
+              onChange={(option) => {
+                setSelectedSteamGameApi(option.data as string);
+                setSteamGameResult(null);
+              }}
+              strDefaultLabel="Proxy DLL name"
+            />
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <ButtonItem
+              layout="below"
+              onClick={handleApplyOnlyReShadeNonSteam}
+              disabled={applyingToSteamGame || !targetExePath}
+            >
+              {applyingToSteamGame ? "Applying ReShade..." : "Apply only ReShade"}
+            </ButtonItem>
+          </PanelSectionRow>
+          {!targetExePath && (
             <PanelSectionRow>
               <div style={{ fontSize: "0.85em", opacity: 0.7 }}>
-                Pick a game in "Steam Game - Patch All" above first.
+                Choose a game .exe in "Choose exe/folder path" above first.
               </div>
             </PanelSectionRow>
           )}
         </>
+      )}
+
+      {pathExists === true && (
+        <PanelSectionRow>
+          <div style={STYLES.instructionCard}>
+            Press HOME key in-game to access the ReShade overlay.
+            {addonEnabled && autoHdrEnabled && (
+              <div style={{ fontSize: "0.9em", marginTop: "4px", opacity: 0.8 }}>
+                AutoHDR works with DirectX 10/11/12 games only.
+              </div>
+            )}
+          </div>
+        </PanelSectionRow>
       )}
 
       {shouldShowInstallButton && (
@@ -797,21 +903,10 @@ function ReShadeInstallerSection({ appid }: { appid: string }) {
       {pathExists === true && (
         <PanelSectionRow>
           <ButtonItem layout="below" onClick={handleUninstallClick} disabled={uninstalling}>
-            {uninstalling ? "Uninstalling..." : "🗑️ Uninstall ReShade"}
+            <div style={{ color: "#ef4444", fontWeight: "bold" }}>
+              {uninstalling ? "Uninstalling..." : "🗑️ Uninstall ReShade"}
+            </div>
           </ButtonItem>
-        </PanelSectionRow>
-      )}
-
-      {pathExists === true && (
-        <PanelSectionRow>
-          <div style={STYLES.instructionCard}>
-            Press HOME key in-game to access the ReShade overlay.
-            {addonEnabled && autoHdrEnabled && (
-              <div style={{ fontSize: "0.9em", marginTop: "4px", opacity: 0.8 }}>
-                AutoHDR works with DirectX 10/11/12 games only.
-              </div>
-            )}
-          </div>
         </PanelSectionRow>
       )}
 

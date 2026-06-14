@@ -9,7 +9,6 @@ import { TIMEOUTS, DEFAULT_FSR4_VARIANT } from "./utils/constants";
 import SteamGameCombinedSection from "./SteamGameCombinedSection";
 import ReShadeInstallerSection from "./ReShadeInstallerSection";
 import ChooseExePathSection from "./ChooseExePathSection";
-import ConflictSlotSection from "./ConflictSlotSection";
 
 type FgmodInfo = {
   exists: boolean;
@@ -25,8 +24,10 @@ function MainContent() {
   const [advanced, setAdvanced] = useState<boolean>(false);
   // FSR4 runtime is chosen once in the top section and shared with the advanced OptiScaler controls.
   const [fsr4Variant, setFsr4Variant] = useState<string>(DEFAULT_FSR4_VARIANT);
-  // The Steam game is also picked once at the top and reused by the coexistence/slot section.
+  // The Steam game is also picked once at the top and reused by the advanced sections.
   const [selectedAppid, setSelectedAppid] = useState<string>("");
+  // Non-Steam target executable picked in the advanced "Choose exe/folder path" section.
+  const [exePath, setExePath] = useState<string>("");
 
   useEffect(() => {
     const checkPath = async () => {
@@ -45,6 +46,10 @@ function MainContent() {
     return () => clearInterval(intervalId);
   }, []);
 
+  // A Steam game chosen at the top switches the advanced area into "Steam" mode;
+  // otherwise the advanced area targets a manually chosen .exe (non-Steam games).
+  const steamMode = Boolean(selectedAppid);
+
   return (
     <>
       {/* Primary one-button flow: pick a game, apply both mods at once */}
@@ -58,8 +63,8 @@ function MainContent() {
       <PanelSection>
         <PanelSectionRow>
           <ToggleField
-            label="Advanced controls"
-            description="Per-engine install, proxy DLL, ReShade shaders/AutoHDR, manual .exe and DLL-slot tweaks."
+            label={steamMode ? "Steam Controls" : "Advanced controls"}
+            description="Per-engine install, proxy DLL, ReShade shaders/AutoHDR, and manual patching."
             checked={advanced}
             onChange={setAdvanced}
           />
@@ -68,15 +73,22 @@ function MainContent() {
 
       {advanced && (
         <>
+          {!steamMode && (
+            <ChooseExePathSection
+              exePath={exePath}
+              setExePath={setExePath}
+              fsr4Variant={fsr4Variant}
+            />
+          )}
           <OptiScalerControls
             pathExists={pathExists}
             setPathExists={setPathExists}
             fgmodInfo={fgmodInfo}
             fsr4Variant={fsr4Variant}
+            appid={selectedAppid}
+            targetExePath={exePath}
           />
-          <ReShadeInstallerSection appid={selectedAppid} />
-          <ChooseExePathSection />
-          <ConflictSlotSection appid={selectedAppid} fsr4Variant={fsr4Variant} />
+          <ReShadeInstallerSection appid={selectedAppid} targetExePath={exePath} />
         </>
       )}
     </>

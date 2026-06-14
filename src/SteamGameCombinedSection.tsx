@@ -213,6 +213,10 @@ export default function SteamGameCombinedSection({
       )}
 
       <PanelSectionRow>
+        <div style={{ fontSize: "0.82em", opacity: 0.7 }}>Pick a Steam Game</div>
+      </PanelSectionRow>
+
+      <PanelSectionRow>
         <DropdownItem
           rgOptions={games.map((g) => ({ data: g.appid, label: g.name }))}
           selectedOption={appid}
