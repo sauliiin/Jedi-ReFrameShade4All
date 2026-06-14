@@ -7,7 +7,8 @@ import {
 } from "@decky/ui";
 import { callable } from "@decky/api";
 import ExecutablePathBrowserModal from "./ExecutablePathBrowserModal";
-import { buildLaunchCommand, copyTextToClipboard } from "./utils/steam";
+import { autoCopyLaunchCommand, buildLaunchCommand } from "./utils/steam";
+import { CopyLaunchButton } from "./components";
 
 interface InstallResponse {
   status: string;
@@ -53,6 +54,8 @@ interface ChooseExePathSectionProps {
 const ChooseExePathSection = ({ exePath, setExePath, fsr4Variant }: ChooseExePathSectionProps) => {
   const [applyingBoth, setApplyingBoth] = useState<boolean>(false);
   const [removingBoth, setRemovingBoth] = useState<boolean>(false);
+  const [launchCmd, setLaunchCmd] = useState<string>("");
+  const [copyFailed, setCopyFailed] = useState<boolean>(false);
   const [result, setResult] = useState<string>("");
 
   const handleChooseExecutablePath = async () => {
@@ -86,6 +89,8 @@ const ChooseExePathSection = ({ exePath, setExePath, fsr4Variant }: ChooseExePat
 
     try {
       setApplyingBoth(true);
+      setLaunchCmd("");
+      setCopyFailed(false);
       const executableDirectory = getDirectoryForPath(exePath);
       const selectedFilename = getFilenameForPath(exePath);
 
@@ -131,12 +136,17 @@ const ChooseExePathSection = ({ exePath, setExePath, fsr4Variant }: ChooseExePat
         return;
       }
 
-      // 4. Copy the combined launch command for non-Steam launchers.
+      // 4. Build the combined launch command for non-Steam launchers and copy it.
       const cmd = buildLaunchCommand([reshadeApi, "winmm.dll"], true);
-      const copied = await copyTextToClipboard(cmd);
+      setLaunchCmd(cmd);
+      const copied = await autoCopyLaunchCommand(cmd);
+      setCopyFailed(!copied);
       setResult(
-        `✅ Frame Generation (winmm) + ReShade (${reshadeApi.toUpperCase()}) applied to ${selectedFilename}.\n\n` +
-          `Launch command ${copied ? "copied to clipboard" : "(copy it manually)"}:\n${cmd}\n\n` +
+        `✅ FrameGen (winmm) + ReShade (${reshadeApi.toUpperCase()}) applied to ${selectedFilename}.\n\n` +
+          `Launch command:\n${cmd}\n\n` +
+          (copied
+            ? "Launch options copied automatically — paste them into your launcher.\n"
+            : '⚠️ Could not copy automatically. Press "Copy launch options" below.\n') +
           "Press HOME in-game for the ReShade overlay or INSERT for OptiScaler."
       );
     } catch (error) {
@@ -155,10 +165,12 @@ const ChooseExePathSection = ({ exePath, setExePath, fsr4Variant }: ChooseExePat
 
     try {
       setRemovingBoth(true);
+      setLaunchCmd("");
+      setCopyFailed(false);
       const executableDirectory = getDirectoryForPath(exePath);
       const selectedFilename = getFilenameForPath(exePath);
 
-      setResult(`Removing Frame Generation + ReShade from ${selectedFilename}…`);
+      setResult(`Removing FrameGen + ReShade from ${selectedFilename}…`);
       const unpatch = await runManualUnpatch(executableDirectory);
       const reshadeRemove = await uninstallReShadeForManualExe(executableDirectory);
 
@@ -223,7 +235,7 @@ const ChooseExePathSection = ({ exePath, setExePath, fsr4Variant }: ChooseExePat
 
           <PanelSectionRow>
             <ButtonItem layout="below" onClick={handleApplyBoth} disabled={applyingBoth || removingBoth}>
-              {applyingBoth ? "Applying…" : "Apply both (Frame Gen + ReShade)"}
+              {applyingBoth ? "Applying…" : "Apply both (FrameGen + ReShade)"}
             </ButtonItem>
           </PanelSectionRow>
 
@@ -250,6 +262,8 @@ const ChooseExePathSection = ({ exePath, setExePath, fsr4Variant }: ChooseExePat
           </div>
         </PanelSectionRow>
       )}
+
+      {copyFailed && <CopyLaunchButton command={launchCmd} />}
     </PanelSection>
   );
 };

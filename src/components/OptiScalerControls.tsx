@@ -9,10 +9,11 @@ import {
   runManualPatch,
 } from "../api";
 import { createAutoCleanupTimer } from "../utils";
-import { buildLaunchCommand, copyTextToClipboard, getLaunchOptions, setLaunchOptions } from "../utils/steam";
+import { autoCopyLaunchCommand, buildLaunchCommand, getLaunchOptions, setLaunchOptions } from "../utils/steam";
 import { TIMEOUTS, PROXY_DLL_OPTIONS, DEFAULT_PROXY_DLL, DEFAULT_FSR4_VARIANT } from "../utils/constants";
 import { InstructionCard } from "./InstructionCard";
 import { UninstallButton } from "./UninstallButton";
+import { CopyLaunchButton } from "./CopyLaunchButton";
 
 interface FgmodInfo {
   exists: boolean;
@@ -59,6 +60,8 @@ export function OptiScalerControls({
   const [uninstalling, setUninstalling] = useState(false);
   const [applying, setApplying] = useState(false);
   const [result, setResult] = useState<string>("");
+  const [launchCmd, setLaunchCmd] = useState<string>("");
+  const [copyFailed, setCopyFailed] = useState<boolean>(false);
   const [dllName, setDllName] = useState<string>(DEFAULT_PROXY_DLL);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
 
@@ -106,6 +109,8 @@ export function OptiScalerControls({
   const handleApplyOnlyOpti = async () => {
     try {
       setApplying(true);
+      setLaunchCmd("");
+      setCopyFailed(false);
       if (steamMode) {
         setResult("Applying OptiScaler to the selected Steam game…");
         const current = await getLaunchOptions(parseInt(appid, 10));
@@ -134,10 +139,15 @@ export function OptiScalerControls({
         const r = await runManualPatch(targetFolder, dllName, fsr4Variant);
         if (r.status === "success") {
           const cmd = buildLaunchCommand([dllName]);
-          const copied = await copyTextToClipboard(cmd);
+          setLaunchCmd(cmd);
+          const copied = await autoCopyLaunchCommand(cmd);
+          setCopyFailed(!copied);
           setResult(
             `✅ ${r.message || r.output || "OptiScaler applied."}\n\n` +
-              `Launch command ${copied ? "copied to clipboard" : "(copy it manually)"}:\n${cmd}`
+              `Launch command:\n${cmd}\n\n` +
+              (copied
+                ? "Launch options copied automatically — paste them into your launcher."
+                : '⚠️ Could not copy automatically. Press "Copy launch options" below.')
           );
         } else {
           setResult(`❌ ${r.message || "Failed"}`);
@@ -259,6 +269,8 @@ export function OptiScalerControls({
           </div>
         </PanelSectionRow>
       )}
+
+      {copyFailed && <CopyLaunchButton command={launchCmd} />}
 
       <UninstallButton
         pathExists={pathExists}

@@ -260,7 +260,7 @@ export default function SteamGameCombinedSection({
           </PanelSectionRow>
           <PanelSectionRow>
             <ButtonItem layout="below" onClick={handlePatchAll} disabled={busy}>
-              {busy ? "Working…" : "🚀 Patch All (Frame Gen + ReShade)"}
+              {busy ? "Working…" : "🚀 Patch All (FrameGen + ReShade)"}
             </ButtonItem>
           </PanelSectionRow>
           <PanelSectionRow>

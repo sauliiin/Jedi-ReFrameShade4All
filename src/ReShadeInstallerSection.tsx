@@ -11,7 +11,8 @@ import {
 import { callable } from "@decky/api";
 import ShaderSelectionModal from "./ShaderSelectionModal";
 import { STYLES } from "./utils/constants";
-import { buildLaunchCommand, copyTextToClipboard } from "./utils/steam";
+import { autoCopyLaunchCommand, buildLaunchCommand } from "./utils/steam";
+import { CopyLaunchButton } from "./components";
 
 interface InstallResult {
   status: string;
@@ -114,6 +115,8 @@ function ReShadeInstallerSection({ appid, targetExePath = "" }: { appid: string;
   const [installResult, setInstallResult] = useState<InstallResult | null>(null);
   const [uninstallResult, setUninstallResult] = useState<InstallResult | null>(null);
   const [steamGameResult, setSteamGameResult] = useState<InstallResult | null>(null);
+  const [launchCmd, setLaunchCmd] = useState<string>("");
+  const [copyFailed, setCopyFailed] = useState<boolean>(false);
   const [pathExists, setPathExists] = useState<boolean | null>(null);
   const [addonEnabled, setAddonEnabled] = useState<boolean>(false);
   const [autoHdrEnabled, setAutoHdrEnabled] = useState<boolean>(false);
@@ -486,6 +489,8 @@ function ReShadeInstallerSection({ appid, targetExePath = "" }: { appid: string;
 
     try {
       setApplyingToSteamGame(true);
+      setLaunchCmd("");
+      setCopyFailed(false);
       const folder = folderForExe(targetExePath);
       let resolvedApi = selectedSteamGameApi;
 
@@ -506,12 +511,17 @@ function ReShadeInstallerSection({ appid, targetExePath = "" }: { appid: string;
       }
 
       const launchCommand = buildLaunchCommand([resolvedApi], true);
-      const copied = await copyTextToClipboard(launchCommand);
+      setLaunchCmd(launchCommand);
+      const copied = await autoCopyLaunchCommand(launchCommand);
+      setCopyFailed(!copied);
       setSteamGameResult({
         status: "success",
         output:
           `ReShade applied with ${resolvedApi.toUpperCase()}.\n` +
-          `Launch command ${copied ? "copied to clipboard" : "(copy it manually)"}:\n${launchCommand}`
+          `Launch command:\n${launchCommand}\n\n` +
+          (copied
+            ? "Launch options copied automatically — paste them into your launcher."
+            : '⚠️ Could not copy automatically. Press "Copy launch options" below.')
       });
     } catch (e) {
       setSteamGameResult({ status: "error", message: String(e) });
@@ -964,6 +974,8 @@ function ReShadeInstallerSection({ appid, targetExePath = "" }: { appid: string;
           </div>
         </PanelSectionRow>
       )}
+
+      {!steamMode && copyFailed && <CopyLaunchButton command={launchCmd} />}
 
     </PanelSection>
   );

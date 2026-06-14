@@ -22,6 +22,7 @@ if (api._version != API_VERSION) {
     console.warn(`[@decky/api] Requested API version ${API_VERSION} but the running loader only supports version ${api._version}. Some features may not work.`);
 }
 const callable = api.callable;
+const toaster = api.toaster;
 const definePlugin = (fn) => {
     return (...args) => {
         // TODO: Maybe wrap this
@@ -186,6 +187,36 @@ function buildLaunchCommand(slots, includeD3dcompiler = false) {
     return `${overrides}SteamDeck=0 %command%`;
 }
 /**
+ * Try the clipboard copy several times before giving up. Some failures are
+ * transient (clipboard momentarily busy / focus not settled), so a couple of
+ * quick retries meaningfully improves the automatic-copy success rate.
+ */
+async function copyWithRetry(text, attempts = 4, delayMs = 150) {
+    for (let i = 0; i < attempts; i += 1) {
+        if (await copyTextToClipboard(text))
+            return true;
+        if (i < attempts - 1) {
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+        }
+    }
+    return false;
+}
+/**
+ * Attempt the automatic copy (with retry). On final failure raise a toast so the
+ * user knows to use the manual "Copy launch options" fallback button. Returns
+ * whether the automatic copy ultimately succeeded.
+ */
+async function autoCopyLaunchCommand(text) {
+    const ok = await copyWithRetry(text);
+    if (!ok) {
+        toaster.toast({
+            title: "Couldn't copy launch options",
+            body: 'Press "Copy launch options" to copy it and paste into your launcher.',
+        });
+    }
+    return ok;
+}
+/**
  * Copy text to the clipboard using the input-simulation trick that works in
  * Steam gaming mode, falling back to the async clipboard API.
  */
@@ -278,6 +309,40 @@ function UninstallButton({ pathExists, uninstalling, onUninstallClick }) {
                 } }, uninstalling ? MESSAGES.uninstalling : MESSAGES.uninstallButton))));
 }
 
+// THIS FILE IS AUTO GENERATED
+function FaCheck (props) {
+  return GenIcon({"tag":"svg","attr":{"viewBox":"0 0 512 512"},"child":[{"tag":"path","attr":{"d":"M173.898 439.404l-166.4-166.4c-9.997-9.997-9.997-26.206 0-36.204l36.203-36.204c9.997-9.998 26.207-9.998 36.204 0L192 312.69 432.095 72.596c9.997-9.997 26.207-9.997 36.204 0l36.203 36.204c9.997 9.997 9.997 26.206 0 36.204l-294.4 294.401c-9.998 9.997-26.207 9.997-36.204-.001z"},"child":[]}]})(props);
+}function FaClipboard (props) {
+  return GenIcon({"tag":"svg","attr":{"viewBox":"0 0 384 512"},"child":[{"tag":"path","attr":{"d":"M384 112v352c0 26.51-21.49 48-48 48H48c-26.51 0-48-21.49-48-48V112c0-26.51 21.49-48 48-48h80c0-35.29 28.71-64 64-64s64 28.71 64 64h80c26.51 0 48 21.49 48 48zM192 40c-13.255 0-24 10.745-24 24s10.745 24 24 24 24-10.745 24-24-10.745-24-24-24m96 114v-20a6 6 0 0 0-6-6H102a6 6 0 0 0-6 6v20a6 6 0 0 0 6 6h180a6 6 0 0 0 6-6z"},"child":[]}]})(props);
+}
+
+/**
+ * Reliable "copy launch command" button. The copy runs synchronously inside the
+ * click handler (a genuine user gesture) before any await, which is the only way
+ * clipboard writes succeed in Steam's gaming-mode CEF — auto-copying after an
+ * await silently fails because the transient user-activation is already gone.
+ */
+function CopyLaunchButton({ command, label = "Copy launch options" }) {
+    const [copied, setCopied] = SP_REACT.useState(false);
+    SP_REACT.useEffect(() => {
+        if (!copied)
+            return undefined;
+        const timer = setTimeout(() => setCopied(false), 3000);
+        return () => clearTimeout(timer);
+    }, [copied]);
+    if (!command)
+        return null;
+    const handleCopy = () => {
+        // Fire the copy first, within the user gesture; update feedback after.
+        void copyTextToClipboard(command).then((ok) => setCopied(ok));
+    };
+    return (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+        window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleCopy },
+            window.SP_REACT.createElement("div", { style: { display: "flex", alignItems: "center", gap: "8px" } },
+                copied ? window.SP_REACT.createElement(FaCheck, { style: { color: "#4CAF50" } }) : window.SP_REACT.createElement(FaClipboard, null),
+                window.SP_REACT.createElement("div", { style: { color: copied ? "#4CAF50" : "inherit", fontWeight: copied ? "bold" : "normal" } }, copied ? "Copied to clipboard" : label)))));
+}
+
 const folderForExe$1 = (exePath) => {
     const idx = exePath.lastIndexOf("/");
     return idx > 0 ? exePath.slice(0, idx) : exePath;
@@ -287,6 +352,8 @@ function OptiScalerControls({ pathExists, setPathExists, fgmodInfo, fsr4Variant 
     const [uninstalling, setUninstalling] = SP_REACT.useState(false);
     const [applying, setApplying] = SP_REACT.useState(false);
     const [result, setResult] = SP_REACT.useState("");
+    const [launchCmd, setLaunchCmd] = SP_REACT.useState("");
+    const [copyFailed, setCopyFailed] = SP_REACT.useState(false);
     const [dllName, setDllName] = SP_REACT.useState(DEFAULT_PROXY_DLL);
     const [updateStatus, setUpdateStatus] = SP_REACT.useState(null);
     const steamMode = Boolean(appid);
@@ -331,6 +398,8 @@ function OptiScalerControls({ pathExists, setPathExists, fgmodInfo, fsr4Variant 
     const handleApplyOnlyOpti = async () => {
         try {
             setApplying(true);
+            setLaunchCmd("");
+            setCopyFailed(false);
             if (steamMode) {
                 setResult("Applying OptiScaler to the selected Steam game…");
                 const current = await getLaunchOptions$1(parseInt(appid, 10));
@@ -360,9 +429,14 @@ function OptiScalerControls({ pathExists, setPathExists, fgmodInfo, fsr4Variant 
                 const r = await runManualPatch$1(targetFolder, dllName, fsr4Variant);
                 if (r.status === "success") {
                     const cmd = buildLaunchCommand([dllName]);
-                    const copied = await copyTextToClipboard(cmd);
+                    setLaunchCmd(cmd);
+                    const copied = await autoCopyLaunchCommand(cmd);
+                    setCopyFailed(!copied);
                     setResult(`✅ ${r.message || r.output || "OptiScaler applied."}\n\n` +
-                        `Launch command ${copied ? "copied to clipboard" : "(copy it manually)"}:\n${cmd}`);
+                        `Launch command:\n${cmd}\n\n` +
+                        (copied
+                            ? "Launch options copied automatically — paste them into your launcher."
+                            : '⚠️ Could not copy automatically. Press "Copy launch options" below.'));
                 }
                 else {
                     setResult(`❌ ${r.message || "Failed"}`);
@@ -430,6 +504,7 @@ function OptiScalerControls({ pathExists, setPathExists, fgmodInfo, fsr4Variant 
                     borderRadius: "4px",
                     whiteSpace: "pre-wrap",
                 } }, result))),
+        copyFailed && window.SP_REACT.createElement(CopyLaunchButton, { command: launchCmd }),
         window.SP_REACT.createElement(UninstallButton, { pathExists: pathExists, uninstalling: uninstalling, onUninstallClick: handleUninstallClick })));
 }
 
@@ -606,7 +681,7 @@ function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.ToggleField, { label: "ReShade add-ons", description: "Enables add-on support (avoid in anti-cheat online games).", checked: addon, onChange: setAddon })),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handlePatchAll, disabled: busy }, busy ? "Working…" : "🚀 Patch All (Frame Gen + ReShade)")),
+                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handlePatchAll, disabled: busy }, busy ? "Working…" : "🚀 Patch All (FrameGen + ReShade)")),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleRemoveAll, disabled: busy }, "\uD83D\uDDD1\uFE0F Remove All")))),
         result && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
@@ -934,6 +1009,8 @@ function ReShadeInstallerSection({ appid, targetExePath = "" }) {
     const [installResult, setInstallResult] = SP_REACT.useState(null);
     const [uninstallResult, setUninstallResult] = SP_REACT.useState(null);
     const [steamGameResult, setSteamGameResult] = SP_REACT.useState(null);
+    const [launchCmd, setLaunchCmd] = SP_REACT.useState("");
+    const [copyFailed, setCopyFailed] = SP_REACT.useState(false);
     const [pathExists, setPathExists] = SP_REACT.useState(null);
     const [addonEnabled, setAddonEnabled] = SP_REACT.useState(false);
     const [autoHdrEnabled, setAutoHdrEnabled] = SP_REACT.useState(false);
@@ -1265,6 +1342,8 @@ function ReShadeInstallerSection({ appid, targetExePath = "" }) {
         }
         try {
             setApplyingToSteamGame(true);
+            setLaunchCmd("");
+            setCopyFailed(false);
             const folder = folderForExe(targetExePath);
             let resolvedApi = selectedSteamGameApi;
             if (resolvedApi === "auto") {
@@ -1282,11 +1361,16 @@ function ReShadeInstallerSection({ appid, targetExePath = "" }) {
                 return;
             }
             const launchCommand = buildLaunchCommand([resolvedApi], true);
-            const copied = await copyTextToClipboard(launchCommand);
+            setLaunchCmd(launchCommand);
+            const copied = await autoCopyLaunchCommand(launchCommand);
+            setCopyFailed(!copied);
             setSteamGameResult({
                 status: "success",
                 output: `ReShade applied with ${resolvedApi.toUpperCase()}.\n` +
-                    `Launch command ${copied ? "copied to clipboard" : "(copy it manually)"}:\n${launchCommand}`
+                    `Launch command:\n${launchCommand}\n\n` +
+                    (copied
+                        ? "Launch options copied automatically — paste them into your launcher."
+                        : '⚠️ Could not copy automatically. Press "Copy launch options" below.')
             });
         }
         catch (e) {
@@ -1549,7 +1633,8 @@ function ReShadeInstallerSection({ appid, targetExePath = "" }) {
                     whiteSpace: "pre-wrap"
                 } }, steamGameResult.status === "success"
                 ? `✅ ${steamGameResult.output || steamGameResult.message || "Operation completed successfully!"}`
-                : `❌ Error: ${steamGameResult.message || "Operation failed"}`)))));
+                : `❌ Error: ${steamGameResult.message || "Operation failed"}`))),
+        !steamMode && copyFailed && window.SP_REACT.createElement(CopyLaunchButton, { command: launchCmd })));
 }
 
 const browseFilesystemForExecutable = callable("browse_filesystem_for_executable");
@@ -1821,6 +1906,8 @@ const getFilenameForPath = (path) => path.split("/").pop() || "Unknown.exe";
 const ChooseExePathSection = ({ exePath, setExePath, fsr4Variant }) => {
     const [applyingBoth, setApplyingBoth] = SP_REACT.useState(false);
     const [removingBoth, setRemovingBoth] = SP_REACT.useState(false);
+    const [launchCmd, setLaunchCmd] = SP_REACT.useState("");
+    const [copyFailed, setCopyFailed] = SP_REACT.useState(false);
     const [result, setResult] = SP_REACT.useState("");
     const handleChooseExecutablePath = async () => {
         try {
@@ -1845,6 +1932,8 @@ const ChooseExePathSection = ({ exePath, setExePath, fsr4Variant }) => {
         }
         try {
             setApplyingBoth(true);
+            setLaunchCmd("");
+            setCopyFailed(false);
             const executableDirectory = getDirectoryForPath(exePath);
             const selectedFilename = getFilenameForPath(exePath);
             // 1. Make sure both engines are installed.
@@ -1884,11 +1973,16 @@ const ChooseExePathSection = ({ exePath, setExePath, fsr4Variant }) => {
                 setResult(`❌ Failed to apply ReShade: ${reshade.message || "Unknown error"}`);
                 return;
             }
-            // 4. Copy the combined launch command for non-Steam launchers.
+            // 4. Build the combined launch command for non-Steam launchers and copy it.
             const cmd = buildLaunchCommand([reshadeApi, "winmm.dll"], true);
-            const copied = await copyTextToClipboard(cmd);
-            setResult(`✅ Frame Generation (winmm) + ReShade (${reshadeApi.toUpperCase()}) applied to ${selectedFilename}.\n\n` +
-                `Launch command ${copied ? "copied to clipboard" : "(copy it manually)"}:\n${cmd}\n\n` +
+            setLaunchCmd(cmd);
+            const copied = await autoCopyLaunchCommand(cmd);
+            setCopyFailed(!copied);
+            setResult(`✅ FrameGen (winmm) + ReShade (${reshadeApi.toUpperCase()}) applied to ${selectedFilename}.\n\n` +
+                `Launch command:\n${cmd}\n\n` +
+                (copied
+                    ? "Launch options copied automatically — paste them into your launcher.\n"
+                    : '⚠️ Could not copy automatically. Press "Copy launch options" below.\n') +
                 "Press HOME in-game for the ReShade overlay or INSERT for OptiScaler.");
         }
         catch (error) {
@@ -1906,9 +2000,11 @@ const ChooseExePathSection = ({ exePath, setExePath, fsr4Variant }) => {
         }
         try {
             setRemovingBoth(true);
+            setLaunchCmd("");
+            setCopyFailed(false);
             const executableDirectory = getDirectoryForPath(exePath);
             const selectedFilename = getFilenameForPath(exePath);
-            setResult(`Removing Frame Generation + ReShade from ${selectedFilename}…`);
+            setResult(`Removing FrameGen + ReShade from ${selectedFilename}…`);
             const unpatch = await runManualUnpatch(executableDirectory);
             const reshadeRemove = await uninstallReShadeForManualExe(executableDirectory);
             const okOpti = unpatch.status === "success";
@@ -1955,7 +2051,7 @@ const ChooseExePathSection = ({ exePath, setExePath, fsr4Variant }) => {
                         "Path: ",
                         exePath))),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleApplyBoth, disabled: applyingBoth || removingBoth }, applyingBoth ? "Applying…" : "Apply both (Frame Gen + ReShade)")),
+                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleApplyBoth, disabled: applyingBoth || removingBoth }, applyingBoth ? "Applying…" : "Apply both (FrameGen + ReShade)")),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleRemoveBoth, disabled: applyingBoth || removingBoth }, removingBoth ? "Removing…" : "🗑️ Remove All")))),
         result && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
@@ -1965,7 +2061,8 @@ const ChooseExePathSection = ({ exePath, setExePath, fsr4Variant }) => {
                     backgroundColor: "var(--decky-selected-ui-bg)",
                     borderRadius: "4px",
                     whiteSpace: "pre-wrap"
-                } }, result)))));
+                } }, result))),
+        copyFailed && window.SP_REACT.createElement(CopyLaunchButton, { command: launchCmd })));
 };
 
 function MainContent() {

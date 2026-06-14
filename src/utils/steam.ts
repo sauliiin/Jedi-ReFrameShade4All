@@ -1,5 +1,6 @@
 // Helpers shared by the OptiScaler/ReShade sections for reading and writing Steam
 // launch options and for copying launch commands to the clipboard (non-Steam games).
+import { toaster } from "@decky/api";
 
 /** Read the current launch options for a Steam app id. */
 export function getLaunchOptions(appId: number): Promise<string> {
@@ -55,6 +56,37 @@ export function buildLaunchCommand(slots: string[], includeD3dcompiler = false):
   }
   const overrides = parts.length ? `WINEDLLOVERRIDES="${parts.join(";")}" ` : "";
   return `${overrides}SteamDeck=0 %command%`;
+}
+
+/**
+ * Try the clipboard copy several times before giving up. Some failures are
+ * transient (clipboard momentarily busy / focus not settled), so a couple of
+ * quick retries meaningfully improves the automatic-copy success rate.
+ */
+export async function copyWithRetry(text: string, attempts = 4, delayMs = 150): Promise<boolean> {
+  for (let i = 0; i < attempts; i += 1) {
+    if (await copyTextToClipboard(text)) return true;
+    if (i < attempts - 1) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+  return false;
+}
+
+/**
+ * Attempt the automatic copy (with retry). On final failure raise a toast so the
+ * user knows to use the manual "Copy launch options" fallback button. Returns
+ * whether the automatic copy ultimately succeeded.
+ */
+export async function autoCopyLaunchCommand(text: string): Promise<boolean> {
+  const ok = await copyWithRetry(text);
+  if (!ok) {
+    toaster.toast({
+      title: "Couldn't copy launch options",
+      body: 'Press "Copy launch options" to copy it and paste into your launcher.',
+    });
+  }
+  return ok;
 }
 
 /**
