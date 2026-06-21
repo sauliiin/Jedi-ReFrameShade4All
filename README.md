@@ -4,7 +4,7 @@
 
 It fuses two mature Decky plugins into a single panel:
 
-- **Frame Generation / upscaling** — based on [Decky‑Framegen](https://github.com/xXJSONDeruloXx/Decky-Framegen) (OptiScaler `0.15.6`). Ships the complete bundled, hash‑verified build; GitHub auto‑update is **opt‑in**.
+- **Frame Generation / upscaling** — based on [Decky‑Framegen](https://github.com/xXJSONDeruloXx/Decky-Framegen). Ships the complete bundled, hash‑verified OptiScaler `0.9.3` build; GitHub auto‑update is **opt‑in**.
 - **ReShade with add‑ons** — based on [LetMeReShade(All)](https://github.com/itsOwen/LetMeReShade) (downloads ReShade from reshade.me, shader packs, AutoHDR, Steam + Heroic support, manual `.exe` patching).
 
 > ⚠️ **Community fan‑merge.** This is an unofficial combination of two separate projects. It builds cleanly and the UI/back‑end are wired together, but the two injectors were never designed to coexist — **test it per game** and read the *Coexistence* and *Safety* sections below.
@@ -73,7 +73,7 @@ At runtime both mods hook the DXGI swap‑chain — ReShade for post‑processin
 - Install/uninstall with an **installed vs. latest** version widget (same style as ReShade); precise *up to date / update available* and a one‑click **Update**.
 - FSR4 runtime variants, incl. the **Steam Deck / RDNA2‑3 INT8** optimized path (chosen once, shared).
 - Per‑game patch/unpatch (Steam) and manual **folder** patching.
-- Default install uses the complete bundled `0.9.2a`; Update force‑downloads the newest upstream archive.
+- Default install uses the complete bundled `0.9.3`; Update force‑downloads and verifies the newest upstream archive.
 
 **ReShade**
 - ReShade **with add‑on support** (toggle) and optional **AutoHDR** (OLED‑oriented).
@@ -112,7 +112,7 @@ See [Building](#building) below, then zip the folder (with `bin/` + `dist/`) and
 
 > **Patch All puts ReShade on `dxgi`**, which covers DX11/DX12 (most games). For DX9/Vulkan/OpenGL titles, use **Advanced → ReShade**, which auto‑detects the API.
 
-> Auto‑update for OptiScaler is **opt‑in** — set `DECKY_OPTISCALER_AUTO_UPDATE=1`. By default the complete bundled `0.9.2a` build is used (the official upstream archive omits the Frame Generation components).
+> Auto‑update for OptiScaler is **opt‑in** — set `DECKY_OPTISCALER_AUTO_UPDATE=1`. By default the complete bundled `0.9.3` build is used. An explicit update is downloaded and verified before it replaces the installed bundle.
 
 ---
 
@@ -157,7 +157,7 @@ The panel is two parallel sections under an **Advanced controls** toggle — **F
 
 **Back‑end architecture:** the two original `main.py` files are combined into one Decky‑safe `Plugin` class using mixins (`_OptiScalerMixin`, `_ReShadeMixin`). Method‑name collisions (`_main`, `_unload`, `list_installed_games`, `log_error`) are resolved in the final `Plugin`, which also adds the one‑button flow (`patch_all_game` / `unpatch_all_game`) and the coexistence layer (`patch_game` slot override, `get_combined_game_status`, `set_slots_manual`). `patch_all_game` applies Frame Generation (winmm) **before** ReShade (dxgi) so OptiScaler's proxy cleanup can't displace ReShade's DLL.
 
-**OptiScaler updates** are *precise*: `get_optiscaler_update_status` compares the **installed archive asset name** (from the install manifest) against the newest GitHub release asset — the bundled `_Reup` archive is byte‑identical to upstream's "latest", so it reports *up to date* until a genuinely newer release ships. The **Update** button (`update_optiscaler`) then force‑downloads that newer complete archive; plain install/reinstall uses the bundled one (instant, offline).
+**OptiScaler updates** are *precise*: `get_optiscaler_update_status` compares the **installed archive asset name** (from the install manifest) against the newest GitHub release asset. The **Update** button (`update_optiscaler`) downloads and verifies that archive in a staging directory, then replaces the installed bundle only after validation; plain install/reinstall uses the hash-pinned bundled build.
 
 ---
 

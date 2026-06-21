@@ -36,7 +36,7 @@ export const FSR4_VARIANT_OPTIONS = [
   {
     value: "rdna4-native",
     label: "Native bundle / RDNA4",
-    hint: "Uses the amd_fidelityfx_upscaler_dx12.dll that ships inside the OptiScaler 0.9.2a bundle.",
+    hint: "Uses the amd_fidelityfx_upscaler_dx12.dll that ships inside the OptiScaler 0.9.3 bundle.",
   },
 ] as const;
 

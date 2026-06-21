@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.7
+
+### Updated
+- Bundled OptiScaler from `0.9.2a` to the official `0.9.3-final.20260618` archive.
+- Project and release references now point to Jedi‑ReFrameShade4All and the official OptiScaler release.
+
+### Fixed
+- OptiScaler install now resolves helper scripts from `defaults/assets` in sideload/store packages and fails clearly if any helper is missing.
+- Missing runtime binaries are downloaded from the hash-pinned `remote_binary` manifest when necessary.
+- Updates are prepared and validated in a staging directory before atomically replacing `~/fgmod`, preserving the previous install on failure.
+- Explicit updates no longer fall back to the old bundled build while reporting success; downloaded release size and SHA-256 are verified.
+- Legacy installs without an install manifest are correctly offered the current update.
+
 ## 1.0.0
 
 First release — fusion of **OptiScaler Frame Generation** (Decky‑Framegen 0.15.6) and **ReShade with add‑ons** (LetMeReShade) into a single Decky plugin.
@@ -14,7 +27,7 @@ First release — fusion of **OptiScaler Frame Generation** (Decky‑Framegen 0.
 - Unified front‑end (`src/index.tsx`); plugin renamed to **Jedi ReFrameShade4All**.
 
 ### Fixed
-- **"Asks to install again" loop**: caused by two concurrent install buttons writing to `~/fgmod`. Fixed by collapsing to a single install/update entry. (The bundled archive is byte‑identical to upstream's "latest", so the download path was never the cause.)
+- **"Asks to install again" loop**: caused by two concurrent install buttons writing to `~/fgmod`. Fixed by collapsing to a single install/update entry.
 - **Duplicate install button**: removed the redundant "Install OptiScaler" widget that did the same thing as "Setup OptiScaler Mod".
 
 ### Removed

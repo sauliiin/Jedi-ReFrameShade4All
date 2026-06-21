@@ -6,6 +6,6 @@
   "publish": {
     "tags": ["DLSS", "Framegen", "upscaling", "FSR", "reshade", "shaders"],
     "description": "All-in-one: OptiScaler frame generation/upscaling + ReShade (with addons) in a single plugin, with automatic DLL-slot coexistence so both run together.",
-    "image": "https://raw.githubusercontent.com/xXJSONDeruloXx/Decky-Framegen/refs/heads/main/assets/optiscaler_final.png"
+    "image": "https://raw.githubusercontent.com/sauliiin/Jedi-ReFrameShade4All/refs/heads/master/assets/optiscaler_final.png"
   }
 }

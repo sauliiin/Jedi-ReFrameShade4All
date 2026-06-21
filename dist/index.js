@@ -2,7 +2,7 @@
 // @ts-ignore
 
 // Prevents it from being duplicated in output.
-const manifest = {"name":"Jedi-ReFrameShade4All","author":"Jedi (OptiScaler by xXJSONDeruloXx, ReShade by itsOwen)","flags":[],"api_version":1,"publish":{"tags":["DLSS","Framegen","upscaling","FSR","reshade","shaders"],"description":"All-in-one: OptiScaler frame generation/upscaling + ReShade (with addons) in a single plugin, with automatic DLL-slot coexistence so both run together.","image":"https://raw.githubusercontent.com/xXJSONDeruloXx/Decky-Framegen/refs/heads/main/assets/optiscaler_final.png"}};
+const manifest = {"name":"Jedi-ReFrameShade4All","author":"Jedi (OptiScaler by xXJSONDeruloXx, ReShade by itsOwen)","flags":[],"api_version":1,"publish":{"tags":["DLSS","Framegen","upscaling","FSR","reshade","shaders"],"description":"All-in-one: OptiScaler frame generation/upscaling + ReShade (with addons) in a single plugin, with automatic DLL-slot coexistence so both run together.","image":"https://raw.githubusercontent.com/sauliiin/Jedi-ReFrameShade4All/refs/heads/master/assets/optiscaler_final.png"}};
 const API_VERSION = 2;
 const internalAPIConnection = window.__DECKY_SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED_deckyLoaderAPIInit;
 // Initialize

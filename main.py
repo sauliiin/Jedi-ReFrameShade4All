@@ -12,9 +12,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 OPTISCALER_ARCHIVE_ASSET = {
-    "name": "Optiscaler_0.9.2a-final.20260517._Reup.7z",
-    "sha256": "6426a16085f6128c810e0de58947029664439afd0567b6a286c0e3ef784a92a1",
-    "version": "0.9.2a-final.20260517._Reup",
+    "name": "Optiscaler_0.9.3-final.20260618.7z",
+    "sha256": "e3ac655d60ec11b471ac8cc5f4d3758e4bce9151c86caa339d8f0700c00282e3",
+    "version": "0.9.3-final.20260618",
 }
 
 FSR4_INT8_ASSET = {
@@ -217,30 +217,24 @@ class _OptiScalerMixin:
     def _copy_launcher_scripts(self, assets_dir, extract_path):
         """Copy launcher scripts from assets directory"""
         try:
-            # Copy fgmod script
-            fgmod_script_src = assets_dir / "fgmod.sh"
-            fgmod_script_dest = extract_path / "fgmod"
-            if fgmod_script_src.exists():
-                shutil.copy2(fgmod_script_src, fgmod_script_dest)
-                fgmod_script_dest.chmod(0o755)
-                decky.logger.info(f"Copied fgmod script to {fgmod_script_dest}")
-            
-            # Copy uninstaller script
-            uninstaller_src = assets_dir / "fgmod-uninstaller.sh"
-            uninstaller_dest = extract_path / "fgmod-uninstaller.sh"
-            if uninstaller_src.exists():
-                shutil.copy2(uninstaller_src, uninstaller_dest)
-                uninstaller_dest.chmod(0o755)
-                decky.logger.info(f"Copied uninstaller script to {uninstaller_dest}")
+            scripts = {
+                "fgmod.sh": "fgmod",
+                "fgmod-uninstaller.sh": "fgmod-uninstaller.sh",
+                "update-optiscaler-config.py": "update-optiscaler-config.py",
+            }
+            missing = [name for name in scripts if not (assets_dir / name).is_file()]
+            if missing:
+                decky.logger.error(
+                    f"Required OptiScaler helper scripts missing from {assets_dir}: {', '.join(missing)}"
+                )
+                return False
 
-            # Copy optiscaler config updater script
-            optiscaler_config_updater_src = assets_dir / "update-optiscaler-config.py"
-            optiscaler_config_updater_dest = extract_path / "update-optiscaler-config.py"
-            if optiscaler_config_updater_src.exists():
-                shutil.copy2(optiscaler_config_updater_src, optiscaler_config_updater_dest)
-                optiscaler_config_updater_dest.chmod(0o755)
-                decky.logger.info(f"Copied update-optiscaler-config.py script to {optiscaler_config_updater_dest}")
-                
+            for source_name, destination_name in scripts.items():
+                destination = extract_path / destination_name
+                shutil.copy2(assets_dir / source_name, destination)
+                destination.chmod(0o755)
+                decky.logger.info(f"Copied helper script to {destination}")
+
             return True
         except Exception as e:
             decky.logger.error(f"Failed to copy launcher scripts: {e}")
@@ -315,6 +309,58 @@ class _OptiScalerMixin:
         )
         if result.returncode != 0:
             raise RuntimeError(result.stderr or result.stdout or f"Failed to extract {archive_path.name}")
+
+    def _replace_directory_atomically(self, prepared_path: Path, destination: Path) -> None:
+        """Commit a prepared bundle without destroying a working install on failure."""
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        backup_path = Path(
+            tempfile.mkdtemp(prefix=f".{destination.name}-backup-", dir=str(destination.parent))
+        )
+        backup_path.rmdir()
+        had_previous_install = destination.exists()
+
+        if had_previous_install:
+            destination.rename(backup_path)
+
+        try:
+            prepared_path.rename(destination)
+        except Exception:
+            if had_previous_install and backup_path.exists() and not destination.exists():
+                backup_path.rename(destination)
+            raise
+
+        if backup_path.exists():
+            try:
+                shutil.rmtree(backup_path)
+            except Exception as cleanup_error:
+                decky.logger.warning(f"Could not remove old OptiScaler bundle: {cleanup_error}")
+
+    def _missing_fgmod_files(self, path: Path) -> list[str]:
+        required_files = [
+            "OptiScaler.dll",
+            "OptiScaler.ini",
+            "dlssg_to_fsr3_amd_is_better.dll",
+            "fakenvapi.dll",
+            "fakenvapi.ini",
+            "amd_fidelityfx_dx12.dll",
+            "amd_fidelityfx_framegeneration_dx12.dll",
+            FSR4_UPSCALER_FILENAME,
+            "amd_fidelityfx_vk.dll",
+            "libxess.dll",
+            "libxess_dx11.dll",
+            "libxess_fg.dll",
+            "libxell.dll",
+            "fgmod",
+            "fgmod-uninstaller.sh",
+            "update-optiscaler-config.py",
+            INSTALL_MANIFEST_FILENAME,
+            "plugins/OptiPatcher.asi",
+        ]
+        required_files.extend(
+            str(Path(variant["dir_name"]) / FSR4_UPSCALER_FILENAME)
+            for variant in FSR4_VARIANTS.values()
+        )
+        return [relative_path for relative_path in required_files if not (path / relative_path).exists()]
 
     def _verify_bundled_asset(self, path: Path, expected_sha256: str, description: str) -> str:
         actual_sha256 = self._file_sha256(path)
@@ -603,11 +649,15 @@ class _OptiScalerMixin:
         asset = self._select_optiscaler_release_asset(release)
         if not asset:
             return None
+        digest = str(asset.get("digest") or "")
+        sha256 = digest.split(":", 1)[1] if digest.lower().startswith("sha256:") else None
         return {
             "version": release.get("tag_name") or asset["name"].replace(".7z", ""),
             "release_url": release.get("html_url"),
             "asset_name": asset["name"],
             "download_url": asset["browser_download_url"],
+            "size": asset.get("size"),
+            "sha256": sha256,
         }
 
     def _get_latest_optiscaler_release(self, use_cache=True):
@@ -670,10 +720,23 @@ class _OptiScalerMixin:
             f"Downloading OptiScaler {release['version']} from {release['download_url']}"
         )
         self._download_file(release["download_url"], archive_path)
+        expected_size = release.get("size")
+        if expected_size and archive_path.stat().st_size != int(expected_size):
+            raise RuntimeError(
+                f"Downloaded OptiScaler size mismatch: expected {expected_size}, "
+                f"got {archive_path.stat().st_size}"
+            )
+        archive_sha256 = self._file_sha256(archive_path)
+        expected_sha256 = release.get("sha256")
+        if expected_sha256 and archive_sha256.lower() != expected_sha256.lower():
+            raise RuntimeError(
+                f"Downloaded OptiScaler hash mismatch: expected {expected_sha256}, got {archive_sha256}"
+            )
         return {
             "path": archive_path,
             "version": release["version"],
             "release_url": release.get("release_url"),
+            "sha256": archive_sha256,
         }
 
     async def extract_static_optiscaler(self, selected_default_variant: str = DEFAULT_FSR4_VARIANT, force_download: bool = False) -> dict:
@@ -683,13 +746,25 @@ class _OptiScalerMixin:
         "Update" action); otherwise the install uses the complete bundled archive unless
         DECKY_OPTISCALER_AUTO_UPDATE is set.
         """
+        staging_path = None
+        temp_download_dir = None
         try:
             decky.logger.info("Starting extract_static_optiscaler method")
 
             bin_path = Path(decky.DECKY_PLUGIN_DIR) / "bin"
-            extract_path = Path(decky.HOME) / "fgmod"
-            assets_dir = Path(decky.DECKY_PLUGIN_DIR) / "assets"
+            final_extract_path = Path(decky.HOME) / "fgmod"
+            assets_dir = self._get_assets_dir()
             selected_default_variant = self._normalize_fsr4_variant(selected_default_variant)
+
+            required_binary_names = [
+                OPTISCALER_ARCHIVE_ASSET["name"],
+                FSR4_INT8_ASSET["name"],
+                OPTIPATCHER_ASSET["name"],
+            ]
+            try:
+                self._ensure_runtime_binaries(required_binary_names)
+            except Exception as binary_error:
+                decky.logger.warning(f"Could not prepare runtime binaries: {binary_error}")
 
             if not bin_path.exists():
                 return {"status": "error", "message": f"Bin directory not found: {bin_path}"}
@@ -711,19 +786,16 @@ class _OptiScalerMixin:
 
             # ── Stage A: obtain the base OptiScaler archive ───────────────────────
             # Prefer the newest release published on GitHub (auto-update). Fall back to
-            # the bundled, pinned 0.9.2a-final archive when the download is unavailable
+            # the bundled, pinned 0.9.3-final archive when the download is unavailable
             # or offline. Stage B below always layers the plugin optimizations on top.
             bundled_archive = bin_path / OPTISCALER_ARCHIVE_ASSET["name"]
             optiscaler_version = OPTISCALER_ARCHIVE_ASSET["version"]
+            optiscaler_archive_sha256 = OPTISCALER_ARCHIVE_ASSET["sha256"]
             archive_is_pinned = True
             optiscaler_archive = None
-            temp_download_dir = None
 
-            # Auto-update is OPT-IN. The bundled "_Reup" archive is curated to include the
-            # full Frame Generation stack (fakenvapi, dlssg_to_fsr3, libxess, FSR/XeSS DLLs).
-            # The official optiscaler/OptiScaler release archive does NOT ship those extra
-            # components, so downloading it leaves ~/fgmod incomplete and check_fgmod_path
-            # reports "not installed". Default to the complete bundled archive.
+            # Auto-update is OPT-IN. Default installs use the complete, hash-pinned archive
+            # bundled with the plugin; the Update action explicitly requests GitHub latest.
             auto_update = os.environ.get(
                 "DECKY_OPTISCALER_AUTO_UPDATE", "false"
             ).lower() in ("1", "true", "yes")
@@ -736,18 +808,20 @@ class _OptiScalerMixin:
                     )
                     optiscaler_archive = release_metadata["path"]
                     optiscaler_version = release_metadata["version"]
+                    optiscaler_archive_sha256 = release_metadata["sha256"]
                     archive_is_pinned = False
                     decky.logger.info(
                         f"Using latest OptiScaler archive from GitHub: {optiscaler_archive.name} "
                         f"({optiscaler_version})"
                     )
                 except Exception as download_error:
-                    decky.logger.warning(
-                        f"OptiScaler auto-update failed, falling back to bundled archive: {download_error}"
-                    )
+                    fallback_note = "" if force_download else "; falling back to bundled archive"
+                    decky.logger.warning(f"OptiScaler download failed{fallback_note}: {download_error}")
                     if temp_download_dir is not None:
                         temp_download_dir.cleanup()
                         temp_download_dir = None
+                    if force_download:
+                        raise RuntimeError(f"Could not download the latest OptiScaler release: {download_error}")
 
             if optiscaler_archive is None:
                 if not bundled_archive.exists():
@@ -765,13 +839,17 @@ class _OptiScalerMixin:
                 )
                 optiscaler_archive = bundled_archive
                 optiscaler_version = OPTISCALER_ARCHIVE_ASSET["version"]
+                optiscaler_archive_sha256 = OPTISCALER_ARCHIVE_ASSET["sha256"]
                 archive_is_pinned = True
 
-            try:
-                if extract_path.exists():
-                    shutil.rmtree(extract_path)
-                extract_path.mkdir(parents=True, exist_ok=True)
+            final_extract_path.parent.mkdir(parents=True, exist_ok=True)
+            staging_path = Path(
+                tempfile.mkdtemp(prefix=".fgmod-staging-", dir=str(final_extract_path.parent))
+            )
+            staging_path.chmod(0o755)
+            extract_path = staging_path
 
+            try:
                 self._extract_archive(optiscaler_archive, extract_path)
             finally:
                 # The archive is only needed during extraction; release the download now.
@@ -856,7 +934,7 @@ class _OptiScalerMixin:
                 "optiscaler": {
                     "asset_name": optiscaler_archive.name,
                     "version": optiscaler_version,
-                    "sha256": OPTISCALER_ARCHIVE_ASSET["sha256"] if archive_is_pinned else None,
+                    "sha256": optiscaler_archive_sha256,
                     "source": "bundled" if archive_is_pinned else "github-latest",
                     "native_upscaler_sha256": native_upscaler_sha256,
                 },
@@ -887,6 +965,15 @@ class _OptiScalerMixin:
             }
             self._write_json_file(self._install_manifest_path(extract_path), install_manifest)
 
+            missing_files = self._missing_fgmod_files(extract_path)
+            if missing_files:
+                raise RuntimeError(
+                    "Prepared OptiScaler bundle is incomplete; missing: " + ", ".join(missing_files)
+                )
+
+            self._replace_directory_atomically(extract_path, final_extract_path)
+            staging_path = None
+
             return {
                 "status": "success",
                 "message": f"Successfully extracted OptiScaler {optiscaler_version} to ~/fgmod",
@@ -899,6 +986,11 @@ class _OptiScalerMixin:
             import traceback
             decky.logger.error(f"Traceback: {traceback.format_exc()}")
             return {"status": "error", "message": f"Extract failed: {str(e)}"}
+        finally:
+            if temp_download_dir is not None:
+                temp_download_dir.cleanup()
+            if staging_path is not None and staging_path.exists():
+                shutil.rmtree(staging_path, ignore_errors=True)
 
     async def run_uninstall_fgmod(self) -> dict:
         try:
@@ -994,41 +1086,12 @@ class _OptiScalerMixin:
 
     async def check_fgmod_path(self) -> dict:
         path = Path(decky.HOME) / "fgmod"
-        required_files = [
-            "OptiScaler.dll",
-            "OptiScaler.ini",
-            "dlssg_to_fsr3_amd_is_better.dll",
-            "fakenvapi.dll",
-            "fakenvapi.ini",
-            "amd_fidelityfx_dx12.dll",
-            "amd_fidelityfx_framegeneration_dx12.dll",
-            FSR4_UPSCALER_FILENAME,
-            "amd_fidelityfx_vk.dll",
-            "libxess.dll",
-            "libxess_dx11.dll",
-            "libxess_fg.dll",
-            "libxell.dll",
-            "fgmod",
-            "fgmod-uninstaller.sh",
-            "update-optiscaler-config.py",
-            INSTALL_MANIFEST_FILENAME,
-        ]
-
         if not path.exists():
             return {"exists": False}
 
-        for file_name in required_files:
-            if not path.joinpath(file_name).exists():
-                return {"exists": False}
-
-        plugins_dir = path / "plugins"
-        if not plugins_dir.exists() or not (plugins_dir / "OptiPatcher.asi").exists():
-            return {"exists": False}
-
-        for variant in FSR4_VARIANTS.values():
-            variant_path = path / variant["dir_name"] / FSR4_UPSCALER_FILENAME
-            if not variant_path.exists():
-                return {"exists": False}
+        missing_files = self._missing_fgmod_files(path)
+        if missing_files:
+            return {"exists": False, "missing_files": missing_files}
 
         manifest = self._load_install_manifest(path)
         selected_variant = self._selected_fsr4_variant(path)
@@ -5301,9 +5364,8 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin):
     # ── OptiScaler version/update status (mirrors get_reshade_update_status) ──
     async def get_optiscaler_update_status(self) -> dict:
         """Precise update check: compare the INSTALLED archive asset name against the
-        newest release asset on GitHub. The bundled archive (`_Reup`) is byte‑identical to
-        the upstream "latest" asset, so this reports "up to date" until a genuinely newer
-        release ships a different asset name (no false "update available")."""
+        newest release asset on GitHub, avoiding false updates caused by tag/display-name
+        differences."""
         fgmod_path = Path(decky.HOME) / "fgmod"
         installed_version = self._fgmod_version(fgmod_path) if fgmod_path.exists() else None
 
@@ -5315,7 +5377,11 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin):
             opti = manifest.get("optiscaler") if isinstance(manifest, dict) else None
             if isinstance(opti, dict):
                 installed_asset = opti.get("asset_name")
-        if not installed_asset:
+        if not installed_asset and fgmod_path.exists():
+            # A legacy install without a manifest must never inherit the current bundled
+            # asset name, otherwise an old bundle looks current after the pin is updated.
+            installed_asset = f"legacy:{installed_version or 'unknown'}"
+        elif not installed_asset:
             installed_asset = OPTISCALER_ARCHIVE_ASSET["name"]
 
         try:
@@ -5474,4 +5540,3 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin):
         except Exception as exc:
             decky.logger.error(f"[JediReFrameShade] unpatch_all_game failed for {appid}: {exc}")
             return {"status": "error", "message": str(exc)}
-
