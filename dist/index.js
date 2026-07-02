@@ -403,7 +403,7 @@ function OptiScalerControls({ pathExists, setPathExists, fgmodInfo, fsr4Variant 
             if (steamMode) {
                 setResult("Applying OptiScaler to the selected Steam game…");
                 const current = await getLaunchOptions$1(parseInt(appid, 10));
-                const r = await patchGame(appid, dllName, current, fsr4Variant);
+                const r = await patchGame(appid, dllName, current, fsr4Variant, targetExePath || "");
                 if (r.status === "success") {
                     if (r.launch_options) {
                         try {
@@ -491,6 +491,8 @@ function OptiScalerControls({ pathExists, setPathExists, fgmodInfo, fsr4Variant 
         pathExists === true && (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.DropdownItem, { layout: "below", label: "Proxy DLL name", description: PROXY_DLL_OPTIONS.find((o) => o.value === dllName)?.hint, menuLabel: "Proxy DLL name", selectedOption: dllName, rgOptions: PROXY_DLL_OPTIONS.map((o) => ({ data: o.value, label: o.label })), onChange: (option) => setDllName(String(option.data)) })),
+            steamMode && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+                window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", opacity: 0.7, wordBreak: "break-all" } }, targetExePath ? `Target: ${targetExePath}` : "Target: automatic detection"))),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleApplyOnlyOpti, disabled: applying || (!steamMode && !targetFolder) }, applying ? "Applying…" : "Apply only OptiScaler")),
             !steamMode && !targetFolder && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
@@ -511,6 +513,7 @@ function OptiScalerControls({ pathExists, setPathExists, fgmodInfo, fsr4Variant 
 const listInstalledGames = callable("list_installed_games");
 const getEnginesStatus = callable("get_engines_status");
 const getCombinedGameStatus$1 = callable("get_combined_game_status");
+const resolveSteamReShadeTargetForPatchAll = callable("resolve_steam_reshade_target");
 const patchAllGame = callable("patch_all_game");
 const unpatchAllGame = callable("unpatch_all_game");
 const logError$4 = callable("log_error");
@@ -545,12 +548,45 @@ function getLaunchOptions(appId) {
         }
     });
 }
-function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid, }) {
+function getDirectoryForExePath(exePath) {
+    const idx = String(exePath || "").lastIndexOf("/");
+    return idx > 0 ? exePath.slice(0, idx) : exePath;
+}
+function getSteamTargetCandidates(target) {
+    return Array.isArray(target?.candidates) ? target.candidates : [];
+}
+function formatSteamTargetCandidate(candidate, index) {
+    const rel = candidate.relative_path || candidate.filename || candidate.path || "Unknown executable";
+    const tag = index === 0 || candidate.selected ? "Recommended" : `Candidate ${index + 1}`;
+    const reason = candidate.reason ? ` - ${candidate.reason}` : "";
+    return `${tag}: ${rel}${reason}`;
+}
+function steamTargetOptions(target) {
+    return getSteamTargetCandidates(target).map((candidate, index) => ({
+        data: candidate.path,
+        label: formatSteamTargetCandidate(candidate, index),
+    }));
+}
+function selectSteamTargetCandidate(target, executablePath) {
+    const candidates = getSteamTargetCandidates(target);
+    const candidate = candidates.find((item) => item.path === executablePath);
+    return {
+        ...target,
+        target_executable: executablePath,
+        target_dir: candidate?.directory_path || getDirectoryForExePath(executablePath),
+        candidates: candidates.map((item) => ({
+            ...item,
+            selected: item.path === executablePath,
+        })),
+    };
+}
+function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid, detectedTarget, setDetectedTarget, }) {
     const [games, setGames] = SP_REACT.useState([]);
     const [engines, setEngines] = SP_REACT.useState(null);
     const [status, setStatus] = SP_REACT.useState(null);
     const [addon, setAddon] = SP_REACT.useState(true);
     const [busy, setBusy] = SP_REACT.useState(false);
+    const [detectingTarget, setDetectingTarget] = SP_REACT.useState(false);
     const [result, setResult] = SP_REACT.useState("");
     const refreshEngines = async () => {
         try {
@@ -581,6 +617,34 @@ function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid
         })();
         void refreshEngines();
     }, []);
+    const handleDetectTarget = async () => {
+        if (!appid) {
+            setResult("Select a game first.");
+            return;
+        }
+        try {
+            setDetectingTarget(true);
+            setResult("Detecting executable candidates...");
+            const r = await resolveSteamReShadeTargetForPatchAll(appid);
+            if (r.status !== "success") {
+                setDetectedTarget(null);
+                setResult(`❌ ${r.message || r.output || "Failed to detect target."}`);
+                return;
+            }
+            setDetectedTarget(r);
+            const candidates = getSteamTargetCandidates(r);
+            const target = r.target_executable || r.target_dir || "Unknown target";
+            setResult(`Detected ${candidates.length || 1} target candidate${candidates.length === 1 ? "" : "s"}.\nSelected: ${target}`);
+        }
+        catch (e) {
+            setDetectedTarget(null);
+            setResult(`❌ ${String(e)}`);
+            await logError$4(`SteamGameCombinedSection -> detectTarget: ${String(e)}`);
+        }
+        finally {
+            setDetectingTarget(false);
+        }
+    };
     const handlePatchAll = async () => {
         if (!appid) {
             setResult("Select a game first.");
@@ -590,7 +654,7 @@ function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid
             setBusy(true);
             setResult("Patching… installing OptiScaler/ReShade if needed — this can take a while.");
             const current = await getLaunchOptions(parseInt(appid, 10));
-            const r = await patchAllGame(appid, fsr4Variant, addon, current);
+            const r = await patchAllGame(appid, fsr4Variant, addon, current, detectedTarget?.target_executable || "");
             if (r.status === "success") {
                 if (r.launch_options) {
                     try {
@@ -663,6 +727,7 @@ function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid
         window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement(DFL.DropdownItem, { rgOptions: games.map((g) => ({ data: g.appid, label: g.name })), selectedOption: appid, onChange: (o) => {
                     setAppid(o.data);
+                    setDetectedTarget(null);
                     setResult("");
                     void loadStatus(o.data);
                 }, strDefaultLabel: "Select a game..." })),
@@ -680,6 +745,13 @@ function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid
                 window.SP_REACT.createElement(DFL.DropdownItem, { label: "FSR4 runtime", rgOptions: FSR4_OPTIONS, selectedOption: fsr4Variant, onChange: (o) => setFsr4Variant(o.data), strDefaultLabel: "FSR4 runtime" })),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.ToggleField, { label: "ReShade add-ons", description: "Enables add-on support (avoid in anti-cheat online games).", checked: addon, onChange: setAddon })),
+            window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleDetectTarget, disabled: busy || detectingTarget }, detectingTarget ? "Detecting target..." : "Detect target .exe")),
+            getSteamTargetCandidates(detectedTarget).length > 0 && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+                window.SP_REACT.createElement(DFL.DropdownItem, { label: "Target executable", menuLabel: "Target executable", rgOptions: steamTargetOptions(detectedTarget), selectedOption: detectedTarget?.target_executable || "", onChange: (option) => {
+                        setDetectedTarget(selectSteamTargetCandidate(detectedTarget, option.data));
+                        setResult("");
+                    }, strDefaultLabel: "Target executable" }))),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handlePatchAll, disabled: busy }, busy ? "Working…" : "🚀 Patch All (FrameGen + ReShade)")),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
@@ -1207,6 +1279,9 @@ function ReShadeInstallerSection({ appid, targetExePath = "" }) {
         const timer = setTimeout(() => setSteamGameResult(null), 8000);
         return () => clearTimeout(timer);
     }, [steamGameResult]);
+    SP_REACT.useEffect(() => {
+        setSteamGameResult(null);
+    }, [appid]);
     const executeInstall = async (selectedShaders) => {
         try {
             setInstalling(true);
@@ -1285,7 +1360,7 @@ function ReShadeInstallerSection({ appid, targetExePath = "" }) {
                 status: "success",
                 message: "Applying ReShade to selected Steam game..."
             });
-            const result = await manageGameReShade(appid, "install", selectedSteamGameApi, "", "");
+            const result = await manageGameReShade(appid, "install", selectedSteamGameApi, "", targetExePath || "");
             if (result.status !== "success") {
                 setSteamGameResult({
                     status: "error",
@@ -1294,6 +1369,7 @@ function ReShadeInstallerSection({ appid, targetExePath = "" }) {
                 return;
             }
             const resolvedApi = getResolvedReShadeApi(result.output, selectedSteamGameApi);
+            const appliedTarget = result.target_executable || result.target_dir;
             let optiscalerSlot = null;
             try {
                 const combinedStatus = await getCombinedGameStatus(appid);
@@ -1314,6 +1390,7 @@ function ReShadeInstallerSection({ appid, targetExePath = "" }) {
             setSteamGameResult({
                 status: "success",
                 output: `ReShade applied with ${resolvedApi.toUpperCase()}.\n` +
+                    (appliedTarget ? `Target: ${appliedTarget}\n` : "") +
                     `Launch options set automatically:\n${launchOptions}`
             });
         }
@@ -1582,6 +1659,8 @@ function ReShadeInstallerSection({ appid, targetExePath = "" }) {
                         setSelectedSteamGameApi(option.data);
                         setSteamGameResult(null);
                     }, strDefaultLabel: "Steam game ReShade API" })),
+            window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+                window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", opacity: 0.7, wordBreak: "break-all" } }, targetExePath ? `Target: ${targetExePath}` : "Target: automatic detection")),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleApplyReShadeToSteamGame, disabled: applyingToSteamGame || !appid }, applyingToSteamGame ? "Applying ReShade..." : "Apply only ReShade")))),
         pathExists === true && !steamMode && (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
@@ -2073,6 +2152,7 @@ function MainContent() {
     const [fsr4Variant, setFsr4Variant] = SP_REACT.useState(DEFAULT_FSR4_VARIANT);
     // The Steam game is also picked once at the top and reused by the advanced sections.
     const [selectedAppid, setSelectedAppid] = SP_REACT.useState("");
+    const [detectedSteamTarget, setDetectedSteamTarget] = SP_REACT.useState(null);
     // Non-Steam target executable picked in the advanced "Choose exe/folder path" section.
     const [exePath, setExePath] = SP_REACT.useState("");
     SP_REACT.useEffect(() => {
@@ -2090,15 +2170,16 @@ function MainContent() {
     // A Steam game chosen at the top switches the advanced area into "Steam" mode;
     // otherwise the advanced area targets a manually chosen .exe (non-Steam games).
     const steamMode = Boolean(selectedAppid);
+    const sharedTargetExePath = steamMode ? (detectedSteamTarget?.target_executable || "") : exePath;
     return (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
-        window.SP_REACT.createElement(SteamGameCombinedSection, { fsr4Variant: fsr4Variant, setFsr4Variant: setFsr4Variant, appid: selectedAppid, setAppid: setSelectedAppid }),
+        window.SP_REACT.createElement(SteamGameCombinedSection, { fsr4Variant: fsr4Variant, setFsr4Variant: setFsr4Variant, appid: selectedAppid, setAppid: setSelectedAppid, detectedTarget: detectedSteamTarget, setDetectedTarget: setDetectedSteamTarget }),
         window.SP_REACT.createElement(DFL.PanelSection, null,
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.ToggleField, { label: steamMode ? "Steam Controls" : "Advanced controls", description: "Per-engine install, proxy DLL, ReShade shaders/AutoHDR, and manual patching.", checked: advanced, onChange: setAdvanced }))),
         advanced && (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
             !steamMode && (window.SP_REACT.createElement(ChooseExePathSection, { exePath: exePath, setExePath: setExePath, fsr4Variant: fsr4Variant })),
-            window.SP_REACT.createElement(OptiScalerControls, { pathExists: pathExists, setPathExists: setPathExists, fgmodInfo: fgmodInfo, fsr4Variant: fsr4Variant, appid: selectedAppid, targetExePath: exePath }),
-            window.SP_REACT.createElement(ReShadeInstallerSection, { appid: selectedAppid, targetExePath: exePath })))));
+            window.SP_REACT.createElement(OptiScalerControls, { pathExists: pathExists, setPathExists: setPathExists, fgmodInfo: fgmodInfo, fsr4Variant: fsr4Variant, appid: selectedAppid, targetExePath: sharedTargetExePath }),
+            window.SP_REACT.createElement(ReShadeInstallerSection, { appid: selectedAppid, targetExePath: sharedTargetExePath })))));
 }
 var index = definePlugin(() => ({
     name: "Jedi ReFrameShade4All",

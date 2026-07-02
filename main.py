@@ -1515,6 +1515,58 @@ class _OptiScalerMixin:
         best = max(candidates, key=lambda exe: self._exe_score(exe, install_root, game_info["name"]))
         return best.parent, best
 
+    def _ranked_patch_targets(self, game_info: dict, limit: int = 20) -> list[dict]:
+        install_root = Path(game_info["install_path"])
+        candidates = self._candidate_executables(install_root)
+        if not candidates:
+            return []
+
+        running_exe = self._best_running_executable(candidates)
+        ranked = []
+        for exe in candidates:
+            score = self._exe_score(exe, install_root, game_info["name"])
+            normalized = self._normalized_path_string(str(exe))
+            reasons = []
+
+            if running_exe and exe == running_exe:
+                score += 10000
+                reasons.append("currently running")
+            if normalized.endswith("-win64-shipping.exe") or "shipping.exe" in exe.name.lower():
+                reasons.append("shipping build")
+            if "/binaries/win64/" in normalized:
+                reasons.append("Binaries/Win64")
+            elif "/win64/" in normalized:
+                reasons.append("Win64 path")
+            if exe.parent == install_root:
+                reasons.append("game root")
+
+            sanitized_game = re.sub(r"[^a-z0-9]", "", str(game_info.get("name", "")).lower())
+            sanitized_name = re.sub(r"[^a-z0-9]", "", exe.stem.lower())
+            if sanitized_game and sanitized_game in sanitized_name:
+                reasons.append("name match")
+            if any(bad in normalized for bad in BAD_EXE_SUBSTRINGS):
+                reasons.append("utility/launcher penalty")
+
+            try:
+                relative_path = str(exe.relative_to(install_root))
+            except ValueError:
+                relative_path = str(exe)
+
+            ranked.append({
+                "path": str(exe),
+                "directory_path": str(exe.parent),
+                "filename": exe.name,
+                "relative_path": relative_path,
+                "score": score,
+                "reason": ", ".join(reasons) if reasons else "ranked by path/name",
+                "selected": False,
+            })
+
+        ranked.sort(key=lambda item: item["score"], reverse=True)
+        if ranked:
+            ranked[0]["selected"] = True
+        return ranked[:limit]
+
     def _is_game_running(self, game_info: dict) -> bool:
         install_root = Path(game_info["install_path"])
         candidates = self._candidate_executables(install_root)
@@ -1748,6 +1800,7 @@ class _OptiScalerMixin:
         dll_name: str = "dxgi.dll",
         current_launch_options: str = "",
         fsr4_variant: str = DEFAULT_FSR4_VARIANT,
+        selected_executable_path: str = "",
     ) -> dict:
         try:
             if dll_name not in VALID_DLL_NAMES:
@@ -1778,8 +1831,19 @@ class _OptiScalerMixin:
             if self._is_managed_launch_options(original_launch_options):
                 original_launch_options = ""
 
-            # Auto-detect the right directory to patch
-            target_dir, target_exe = self._guess_patch_target(game_info)
+            # Auto-detect the right directory to patch, unless the user selected
+            # a specific executable from the ranked target list.
+            if selected_executable_path:
+                target_exe = Path(os.path.abspath(os.path.expanduser(selected_executable_path)))
+                if not target_exe.is_file() or target_exe.suffix.lower() != ".exe":
+                    return {"status": "error", "message": f"Invalid selected executable: {selected_executable_path}"}
+                try:
+                    target_exe.resolve().relative_to(install_root.resolve())
+                except ValueError:
+                    return {"status": "error", "message": "Selected executable is outside the Steam game install directory."}
+                target_dir = target_exe.parent
+            else:
+                target_dir, target_exe = self._guess_patch_target(game_info)
             decky.logger.info(f"[Framegen] patch_game: appid={appid} dll={dll_name} target={target_dir} exe={target_exe}")
 
             allow_managed_support_cleanup = bool(
@@ -3809,6 +3873,44 @@ class _ReShadeMixin:
             decky.logger.error(str(e))
             return {"status": "error", "message": str(e)}
 
+    def _resolve_steam_reshade_target(self, appid: str) -> tuple[str, str]:
+        game_info = self._game_record(str(appid))
+        if not game_info:
+            raise ValueError("Game not found in Steam library.")
+
+        install_root = Path(game_info["install_path"])
+        if not install_root.exists():
+            raise ValueError("Game install directory does not exist.")
+
+        target_dir, target_exe = self._guess_patch_target(game_info)
+        if target_exe and target_exe.exists():
+            decky.logger.info(
+                f"Resolved Steam ReShade target via backend detection: dir={target_dir} exe={target_exe}"
+            )
+            return str(target_dir), str(target_exe)
+
+        fallback_dir = self._find_game_path(appid)
+        decky.logger.info(f"Resolved Steam ReShade target directory without exact executable: {fallback_dir}")
+        return fallback_dir, ""
+
+    async def resolve_steam_reshade_target(self, appid: str) -> dict:
+        try:
+            game_info = self._game_record(str(appid))
+            candidates = self._ranked_patch_targets(game_info) if game_info else []
+            target_dir, target_executable = self._resolve_steam_reshade_target(appid)
+            target = target_executable or target_dir
+            return {
+                "status": "success",
+                "target_dir": target_dir,
+                "target_executable": target_executable,
+                "candidates": candidates,
+                "candidate_count": len(candidates),
+                "output": f"Detected ReShade target:\n{target}",
+            }
+        except Exception as e:
+            decky.logger.error(f"resolve_steam_reshade_target failed for {appid}: {str(e)}")
+            return {"status": "error", "message": str(e)}
+
     async def manage_game_reshade(self, appid: str, action: str, dll_override: str = "dxgi", vulkan_mode: str = "", selected_executable_path: str = "") -> dict:
         try:
             assets_dir = self._get_assets_dir()
@@ -3823,6 +3925,8 @@ class _ReShadeMixin:
 
             # Track if user selected a specific executable path
             using_user_selected_path = bool(validated_executable_path)
+            using_backend_detected_path = False
+            backend_detected_executable_path = ""
             
             try:
                 # Use selected executable path if provided, otherwise use detection
@@ -3831,9 +3935,15 @@ class _ReShadeMixin:
                     decky.logger.info(f"Using user-selected executable path: {validated_executable_path}")
                     decky.logger.info(f"Installing ReShade to directory: {game_path}")
                 elif action == "install":
-                    # Get the base game installation path (not executable-specific directory)
-                    game_path = self._find_game_path(appid)
-                    decky.logger.info(f"Using base game path for Bash detection: {game_path}")
+                    # For "Apply only ReShade" on Steam games, resolve the same executable
+                    # target used by the Python backend instead of letting the bash script
+                    # override it with Steam log heuristics.
+                    game_path, backend_detected_executable_path = self._resolve_steam_reshade_target(appid)
+                    using_backend_detected_path = bool(backend_detected_executable_path)
+                    if using_backend_detected_path:
+                        decky.logger.info(f"Using backend-detected executable path: {backend_detected_executable_path}")
+                    else:
+                        decky.logger.info(f"Using backend-detected game directory: {game_path}")
                 else:
                     # For uninstall, we still need to find where ReShade was installed
                     # Try to use our detection first, then fall back to base path
@@ -3858,16 +3968,18 @@ class _ReShadeMixin:
             except ValueError as e:
                 return {"status": "error", "message": str(e)}
 
-            # Build command - if user selected a specific path, don't pass appid to prevent bash script from overriding
+            # Build command. Explicit targets do not pass appid, so the bash
+            # script cannot replace the backend-selected directory via logs.
             cmd = ["/bin/bash", str(script_path), action, game_path, dll_override]
             if vulkan_mode:
                 cmd.extend([vulkan_mode, os.path.expanduser(f"~/.local/share/Steam/steamapps/compatdata/{appid}"), appid])
             else:
                 # For non-Vulkan mode, add empty placeholders for vulkan_mode and wineprefix
-                if using_user_selected_path:
-                    # Don't pass appid when using user-selected path to prevent bash script from overriding
+                if using_user_selected_path or using_backend_detected_path:
+                    # Don't pass appid when using an explicit target to prevent the bash
+                    # script from overriding it with Steam log parsing.
                     cmd.extend(["", "", ""])
-                    decky.logger.info("Not passing App ID to bash script to prevent path override")
+                    decky.logger.info("Not passing App ID to bash script to prevent target override")
                 else:
                     # Pass appid for automatic detection
                     cmd.extend(["", "", appid])
@@ -3893,7 +4005,12 @@ class _ReShadeMixin:
             if process.returncode != 0:
                 return {"status": "error", "message": process.stderr}
                 
-            return {"status": "success", "output": process.stdout}
+            return {
+                "status": "success",
+                "output": process.stdout,
+                "target_dir": game_path,
+                "target_executable": validated_executable_path or backend_detected_executable_path,
+            }
         except Exception as e:
             decky.logger.error(str(e))
             return {"status": "error", "message": str(e)}
@@ -5294,15 +5411,31 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin):
         return f'WINEDLLOVERRIDES="{";".join(parts)}" SteamDeck=0 %command%'
 
     # ── Framegen patch override: avoid ReShade's slot + merge launch options ──
-    async def patch_game(self, appid, dll_name="winmm.dll", current_launch_options="", fsr4_variant=DEFAULT_FSR4_VARIANT):
+    async def patch_game(
+        self,
+        appid,
+        dll_name="winmm.dll",
+        current_launch_options="",
+        fsr4_variant=DEFAULT_FSR4_VARIANT,
+        selected_executable_path="",
+    ):
         game = self._game_record(str(appid))
         if game:
             try:
-                target_dir, _ = self._guess_patch_target(game)
+                if selected_executable_path:
+                    target_dir = Path(os.path.abspath(os.path.expanduser(selected_executable_path))).parent
+                else:
+                    target_dir, _ = self._guess_patch_target(game)
                 dll_name = self._coexist_optiscaler_slot(target_dir, dll_name)
             except Exception as exc:
                 decky.logger.warning(f"[JediReFrameShade] slot resolution failed: {exc}")
-        result = await super().patch_game(str(appid), dll_name, current_launch_options, fsr4_variant)
+        result = await super().patch_game(
+            str(appid),
+            dll_name,
+            current_launch_options,
+            fsr4_variant,
+            selected_executable_path,
+        )
         try:
             if result.get("status") == "success" and result.get("target_dir"):
                 td = Path(result["target_dir"])
@@ -5445,6 +5578,7 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin):
         fsr4_variant=DEFAULT_FSR4_VARIANT,
         with_reshade_addon=True,
         current_launch_options="",
+        selected_executable_path="",
     ) -> dict:
         """Install OptiScaler + ReShade engines if missing, then patch the chosen Steam
         game with BOTH (ReShade on dxgi, Frame Generation on winmm) in one shot."""
@@ -5477,13 +5611,25 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin):
                 steps.append("installed ReShade")
 
             # 3) resolve a single target directory/exe so both mods land together
-            target_dir, target_exe = self._guess_patch_target(game)
+            if selected_executable_path:
+                target_exe = Path(os.path.abspath(os.path.expanduser(selected_executable_path)))
+                if not target_exe.is_file() or target_exe.suffix.lower() != ".exe":
+                    return {"status": "error", "message": f"Invalid selected executable: {selected_executable_path}"}
+                target_dir = target_exe.parent
+            else:
+                target_dir, target_exe = self._guess_patch_target(game)
 
             # 4) patch Frame Generation FIRST (winmm). This MUST run before ReShade:
             #    OptiScaler's proxy-DLL cleanup backs up every proxy slot (incl. dxgi), so
             #    if ReShade's dxgi.dll were already there it would be moved to dxgi.dll.b
             #    and ReShade would never load. winmm is not touched by ReShade afterwards.
-            pr = await self.patch_game(str(appid), "winmm.dll", current_launch_options, fsr4_variant)
+            pr = await self.patch_game(
+                str(appid),
+                "winmm.dll",
+                current_launch_options,
+                fsr4_variant,
+                str(target_exe) if target_exe else "",
+            )
             if pr.get("status") != "success":
                 return {"status": "error", "message": f"Frame Generation patch failed: {pr.get('message')}"}
             steps.append("patched Frame Generation (winmm)")
