@@ -71,7 +71,7 @@ At runtime both mods hook the DXGI swap‑chain — ReShade for post‑processin
 
 **Frame Generation / OptiScaler** (FRAMEGEN MANAGEMENT)
 - Install/uninstall with an **installed vs. latest** version widget (same style as ReShade); precise *up to date / update available* and a one‑click **Update**.
-- FSR4 runtime variants, incl. the **Steam Deck / RDNA2‑3 INT8** optimized path (chosen once, shared).
+- FSR4 runtime variants, incl. **Steam Deck / RDNA2‑3 INT8**, **RDNA3/4 official 4.1.1**, and the experimental **RDNA2 Valve 4.1.1 pre10** path (chosen once, shared).
 - Per‑game patch/unpatch (Steam) and manual **folder** patching.
 - Default install uses the complete bundled `0.9.3`; Update force‑downloads and verifies the newest upstream archive.
 
@@ -125,7 +125,7 @@ pnpm install
 pnpm build      # outputs dist/index.js
 ```
 
-The OptiScaler binaries (`bin/`) and ReShade assets are **not committed** — they are listed under `remote_binary` in `package.json` and fetched by Decky's build tooling, or you can drop the three OptiScaler files into `bin/` manually for a self‑contained sideload zip.
+The OptiScaler binaries (`bin/`) and ReShade assets are **not committed** — they are listed under `remote_binary` in `package.json` and fetched by Decky's build tooling, or you can drop the OptiScaler runtime files into `bin/` manually for a self‑contained sideload zip.
 
 > **Filesystem note:** pnpm uses symlinks. If your working copy lives on NTFS/exFAT (no symlink support), build in an ext4/`/tmp` location and copy `dist/` back.
 

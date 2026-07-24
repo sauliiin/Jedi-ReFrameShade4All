@@ -518,8 +518,10 @@ const patchAllGame = callable("patch_all_game");
 const unpatchAllGame = callable("unpatch_all_game");
 const logError$4 = callable("log_error");
 const FSR4_OPTIONS = [
-    { data: "rdna23-int8", label: "Steam Deck / RDNA2-3 (recommended)" },
-    { data: "rdna4-native", label: "RDNA4 native" },
+    { data: "rdna23-int8", label: "4.0.2c | RDNA2/3 Mod (recommended)" },
+    { data: "rdna4-native", label: "4.1.0 | RDNA4 Official" },
+    { data: "rdna34-official-411", label: "4.1.1 | RDNA3/4 Official" },
+    { data: "rdna2-valve-411-pre10", label: "4.1.1 | RDNA2 Mod" },
 ];
 function getLaunchOptions(appId) {
     return new Promise((resolve) => {

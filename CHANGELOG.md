@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.8
+
+### Added
+- Ported Decky-Framegen `v0.16.3-pre` FSR4 runtime matrix: RDNA3/4 official 4.1.1 and experimental RDNA2 Valve 4.1.1 pre10 with its dedicated injector.
+- Variant-aware patching now copies runtime extra DLLs, applies OptiScaler.ini overrides, detects variants by extra files, and exposes the new runtimes in the panel.
+
+### Fixed
+- Framegen unpatch/wrapper cleanup now handles `amdxcffx64.dll` and `amdxc64.dll` backups correctly.
+
 ## 1.0.7
 
 ### Updated
