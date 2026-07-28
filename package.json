@@ -1,6 +1,6 @@
 {
   "name": "jedi-reframeshade4all-decky",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "description": "All-in-one OptiScaler frame generation/upscaling + ReShade (with addons) for Decky.",
   "type": "module",
   "scripts": {

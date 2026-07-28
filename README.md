@@ -106,9 +106,11 @@ See [Building](#building) below, then zip the folder (with `bin/` + `dist/`) and
 2. In‑game: press **HOME** for the ReShade overlay.
 
 **Advanced controls** (toggle near the top) expose the original per‑engine UIs when you need them:
-- OptiScaler: install/uninstall, FSR4 variant, proxy DLL, manual folder patch.
-- ReShade: add‑on/AutoHDR toggles, shader pack selection, per‑game and manual `.exe` patching.
+- OptiScaler: install/uninstall, FSR4 variant, proxy DLL, manual folder patch, **Apply only OptiScaler** / **🗑️ Remove only OptiScaler**.
+- ReShade: add‑on/AutoHDR toggles, shader pack selection, per‑game and manual `.exe` patching, **Apply only ReShade** / **🗑️ Remove only ReShade**.
 - Coexistence / DLL slots: inspect what's active and override the Frame Generation slot per game.
+
+> **Removing one mod keeps the other one working.** OptiScaler's cleanup wipes *every* proxy slot, so **Remove only OptiScaler** re‑links ReShade afterwards; both partial removals then rewrite the launch options for whatever stays behind (and clear them when nothing does).
 
 > **Patch All puts ReShade on `dxgi`**, which covers DX11/DX12 (most games). For DX9/Vulkan/OpenGL titles, use **Advanced → ReShade**, which auto‑detects the API.
 

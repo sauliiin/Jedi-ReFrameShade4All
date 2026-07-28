@@ -6054,3 +6054,224 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin):
         except Exception as exc:
             decky.logger.error(f"[JediReFrameShade] unpatch_all_game failed for {appid}: {exc}")
             return {"status": "error", "message": str(exc)}
+
+    # ── Partial removal: drop one mod and keep the other one working ─────────
+    def _resolve_partial_removal_target(self, game: dict, selected_executable_path: str = ""):
+        """Directory (and exe, when known) that holds the mods for a Steam game."""
+        if selected_executable_path:
+            exe = Path(os.path.abspath(os.path.expanduser(selected_executable_path)))
+            return exe.parent, exe
+        install_root = Path(game["install_path"])
+        marker = self._find_marker(install_root) if install_root.exists() else None
+        if marker:
+            target_dir = Path(self._read_marker(marker).get("target_dir", str(marker.parent)))
+            try:
+                _, guessed_exe = self._guess_patch_target(game)
+            except Exception:
+                guessed_exe = None
+            exe = guessed_exe if guessed_exe and Path(guessed_exe).parent == target_dir else None
+            return target_dir, exe
+        try:
+            return self._guess_patch_target(game)
+        except Exception:
+            return (install_root if install_root.exists() else None), None
+
+    async def remove_optiscaler_only(self, appid, selected_executable_path: str = "") -> dict:
+        """Remove Frame Generation from a Steam game and keep ReShade running.
+
+        The OptiScaler cleanup wipes every proxy slot (ReShade's graphics DLL included),
+        so ReShade is re-linked afterwards and the launch options are rebuilt for it alone.
+        """
+        try:
+            game = self._game_record(str(appid))
+            if not game:
+                return {"status": "error", "message": "Game not found in Steam library."}
+            if self._is_game_running(game):
+                return {"status": "error", "message": "Close the game before removing."}
+
+            target_dir, target_exe = self._resolve_partial_removal_target(game, selected_executable_path)
+            reshade_present = self._dir_has_reshade(target_dir)
+            reshade_slot = self._detect_reshade_slot(target_dir) if reshade_present else None
+            was_patched = bool((await self.get_game_status(str(appid))).get("patched"))
+
+            res = await self.unpatch_game(str(appid))
+            if res.get("status") != "success":
+                return res
+
+            # Nothing was actually removed → ReShade's links were never touched.
+            reshade_kept = reshade_present and not was_patched
+            reshade_error = ""
+            if reshade_present and was_patched:
+                rr = await self.manage_game_reshade(
+                    str(appid),
+                    "install",
+                    reshade_slot.replace(".dll", ""),
+                    "",
+                    str(target_exe) if target_exe else "",
+                )
+                reshade_kept = rr.get("status") == "success"
+                if not reshade_kept:
+                    reshade_error = str(rr.get("message") or rr.get("output") or "unknown error")
+
+            removed_label = (
+                f"Removed Frame Generation from {game['name']}."
+                if was_patched
+                else f"No Frame Generation patch found for {game['name']}."
+            )
+            if reshade_kept:
+                launch_options = self._merge_launch_options([reshade_slot], include_d3dcompiler=True)
+                message = f"{removed_label} ReShade kept on {reshade_slot}."
+            else:
+                launch_options = res.get("launch_options", "")
+                message = removed_label
+                if reshade_present:
+                    message += f" ReShade could not be restored ({reshade_error}) — re-apply it."
+
+            decky.logger.info(
+                f"[JediReFrameShade] remove_optiscaler_only: appid={appid} dir={target_dir} reshade_kept={reshade_kept}"
+            )
+            return {
+                "status": "success",
+                "appid": str(appid),
+                "name": game["name"],
+                "target_dir": str(target_dir) if target_dir else None,
+                "reshade_kept": reshade_kept,
+                "reshade_slot": reshade_slot if reshade_kept else None,
+                "launch_options": launch_options,
+                "message": message,
+            }
+        except Exception as exc:
+            decky.logger.error(f"[JediReFrameShade] remove_optiscaler_only failed for {appid}: {exc}")
+            return {"status": "error", "message": str(exc)}
+
+    async def remove_reshade_only(self, appid, selected_executable_path: str = "") -> dict:
+        """Remove ReShade from a Steam game and keep Frame Generation patched, rebuilding
+        the launch options for the OptiScaler slot alone."""
+        try:
+            game = self._game_record(str(appid))
+            if not game:
+                return {"status": "error", "message": "Game not found in Steam library."}
+            if self._is_game_running(game):
+                return {"status": "error", "message": "Close the game before removing."}
+
+            target_dir, target_exe = self._resolve_partial_removal_target(game, selected_executable_path)
+            reshade_slot = self._detect_reshade_slot(target_dir) if self._dir_has_reshade(target_dir) else None
+
+            rr = await self.manage_game_reshade(
+                str(appid),
+                "uninstall",
+                (reshade_slot or "dxgi.dll").replace(".dll", ""),
+                "",
+                str(target_exe) if target_exe else "",
+            )
+            if rr.get("status") != "success":
+                return {"status": "error", "message": rr.get("message") or rr.get("output") or "ReShade removal failed."}
+
+            opti = await self.get_game_status(str(appid))
+            optiscaler_kept = bool(opti.get("patched")) and bool(opti.get("dll_name"))
+            if optiscaler_kept:
+                launch_options = self._merge_launch_options([opti["dll_name"]], include_d3dcompiler=False)
+                message = f"Removed ReShade from {game['name']}. Frame Generation kept on {opti['dll_name']}."
+            else:
+                launch_options = ""
+                message = f"Removed ReShade from {game['name']}."
+
+            decky.logger.info(
+                f"[JediReFrameShade] remove_reshade_only: appid={appid} dir={target_dir} optiscaler_kept={optiscaler_kept}"
+            )
+            return {
+                "status": "success",
+                "appid": str(appid),
+                "name": game["name"],
+                "target_dir": str(target_dir) if target_dir else None,
+                "optiscaler_kept": optiscaler_kept,
+                "optiscaler_slot": opti.get("dll_name") if optiscaler_kept else None,
+                "launch_options": launch_options,
+                "message": message,
+            }
+        except Exception as exc:
+            decky.logger.error(f"[JediReFrameShade] remove_reshade_only failed for {appid}: {exc}")
+            return {"status": "error", "message": str(exc)}
+
+    async def remove_optiscaler_only_manual(self, directory: str, selected_executable_path: str = "") -> dict:
+        """Non-Steam counterpart of remove_optiscaler_only: unpatch the folder and put
+        ReShade's links back if it was sharing the directory."""
+        try:
+            target_dir = Path(os.path.abspath(os.path.expanduser(directory)))
+            if not target_dir.is_dir():
+                return {"status": "error", "message": f"Directory not found: {directory}"}
+
+            reshade_present = self._dir_has_reshade(target_dir)
+            reshade_slot = self._detect_reshade_slot(target_dir) if reshade_present else None
+            was_patched = self._dir_has_optiscaler(target_dir)
+
+            res = self._manual_unpatch_directory_impl(target_dir)
+            if res.get("status") != "success":
+                return res
+
+            # Nothing was actually removed → ReShade's links were never touched.
+            reshade_kept = reshade_present and not was_patched
+            reshade_error = ""
+            if reshade_present and was_patched:
+                rr = await self.install_reshade_for_heroic_game(
+                    str(target_dir),
+                    reshade_slot.replace(".dll", ""),
+                    selected_executable_path or "",
+                )
+                reshade_kept = rr.get("status") == "success"
+                if not reshade_kept:
+                    reshade_error = str(rr.get("message") or rr.get("output") or "unknown error")
+
+            message = (
+                f"Frame Generation removed from {target_dir}."
+                if was_patched
+                else f"No Frame Generation patch found in {target_dir}."
+            )
+            if reshade_present and reshade_kept:
+                message += f" ReShade kept on {reshade_slot}."
+            elif reshade_present:
+                message += f" ReShade could not be restored ({reshade_error}) — re-apply it."
+
+            return {
+                "status": "success",
+                "target_dir": str(target_dir),
+                "reshade_kept": reshade_kept,
+                "reshade_slot": reshade_slot if reshade_kept else None,
+                "message": message,
+            }
+        except Exception as exc:
+            decky.logger.error(f"[JediReFrameShade] remove_optiscaler_only_manual failed for {directory}: {exc}")
+            return {"status": "error", "message": str(exc)}
+
+    async def remove_reshade_only_manual(self, directory: str) -> dict:
+        """Non-Steam counterpart of remove_reshade_only: drop ReShade and report the
+        OptiScaler slot that stays behind."""
+        try:
+            target_dir = Path(os.path.abspath(os.path.expanduser(directory)))
+            if not target_dir.is_dir():
+                return {"status": "error", "message": f"Directory not found: {directory}"}
+
+            rr = await self.uninstall_reshade_for_heroic_game(str(target_dir))
+            if rr.get("status") != "success":
+                return {"status": "error", "message": rr.get("message") or "ReShade removal failed."}
+
+            optiscaler_kept = self._dir_has_optiscaler(target_dir)
+            optiscaler_slot = None
+            marker = target_dir / MARKER_FILENAME
+            if optiscaler_kept and marker.exists():
+                optiscaler_slot = self._read_marker(marker).get("dll_name")
+
+            message = f"ReShade removed from {target_dir}."
+            if optiscaler_kept:
+                message += f" Frame Generation kept{f' on {optiscaler_slot}' if optiscaler_slot else ''}."
+
+            return {
+                "status": "success",
+                "target_dir": str(target_dir),
+                "optiscaler_kept": optiscaler_kept,
+                "optiscaler_slot": optiscaler_slot,
+                "message": message,
+            }
+        except Exception as exc:
+            decky.logger.error(f"[JediReFrameShade] remove_reshade_only_manual failed for {directory}: {exc}")
+            return {"status": "error", "message": str(exc)}

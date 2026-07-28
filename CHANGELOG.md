@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.9
+
+### Added
+- **Partial removal**, the counterpart of the existing "Apply only …" actions: **🗑️ Remove only OptiScaler** in *Framegen Management* and **🗑️ Remove only ReShade** in *ReShade Management*, both for Steam games and for manually chosen non‑Steam `.exe` folders (`remove_optiscaler_only`, `remove_reshade_only`, `remove_optiscaler_only_manual`, `remove_reshade_only_manual`).
+- Removing one mod keeps the other working: the OptiScaler cleanup wipes every proxy slot, so ReShade is re‑linked on its slot afterwards. Launch options are rewritten for whatever remains (Steam games are updated automatically; non‑Steam users get the new launch command copied to the clipboard) and cleared when nothing remains.
+
 ## 1.0.8
 
 ### Added

@@ -101,6 +101,8 @@ callable("list_installed_games");
 const logError$5 = callable("log_error");
 const runManualPatch$1 = callable("manual_patch_directory");
 const patchGame = callable("patch_game");
+const removeOptiScalerOnlySteam = callable("remove_optiscaler_only");
+const removeOptiScalerOnlyManual = callable("remove_optiscaler_only_manual");
 
 /**
  * Utility for creating a timer that automatically clears after specified timeout
@@ -351,6 +353,7 @@ function OptiScalerControls({ pathExists, setPathExists, fgmodInfo, fsr4Variant 
     const [installing, setInstalling] = SP_REACT.useState(false);
     const [uninstalling, setUninstalling] = SP_REACT.useState(false);
     const [applying, setApplying] = SP_REACT.useState(false);
+    const [removingOnly, setRemovingOnly] = SP_REACT.useState(false);
     const [result, setResult] = SP_REACT.useState("");
     const [launchCmd, setLaunchCmd] = SP_REACT.useState("");
     const [copyFailed, setCopyFailed] = SP_REACT.useState(false);
@@ -451,6 +454,69 @@ function OptiScalerControls({ pathExists, setPathExists, fgmodInfo, fsr4Variant 
             setApplying(false);
         }
     };
+    // Takes OptiScaler out of the chosen game while leaving ReShade patched: the
+    // backend re-links ReShade afterwards and hands back the remaining overrides.
+    const handleRemoveOnlyOpti = async () => {
+        try {
+            setRemovingOnly(true);
+            setLaunchCmd("");
+            setCopyFailed(false);
+            if (steamMode) {
+                setResult("Removing OptiScaler from the selected Steam game…");
+                const r = await removeOptiScalerOnlySteam(appid, targetExePath || "");
+                if (r.status === "success") {
+                    try {
+                        setLaunchOptions(parseInt(appid, 10), r.launch_options || "");
+                    }
+                    catch (e) {
+                        console.error(e);
+                    }
+                    setResult(`✅ ${r.message || "OptiScaler removed."}` +
+                        (r.launch_options
+                            ? `\n\nLaunch options updated automatically:\n${r.launch_options}`
+                            : "\n\nLaunch options cleared."));
+                }
+                else {
+                    setResult(`❌ ${r.message || "Failed"}`);
+                }
+            }
+            else {
+                if (!targetFolder) {
+                    setResult('Choose a game .exe in "Choose exe/folder path" above first.');
+                    return;
+                }
+                setResult("Removing OptiScaler from the selected folder…");
+                const r = await removeOptiScalerOnlyManual(targetFolder, targetExePath || "");
+                if (r.status === "success") {
+                    if (r.reshade_kept && r.reshade_slot) {
+                        const cmd = buildLaunchCommand([r.reshade_slot], true);
+                        setLaunchCmd(cmd);
+                        const copied = await autoCopyLaunchCommand(cmd);
+                        setCopyFailed(!copied);
+                        setResult(`✅ ${r.message || "OptiScaler removed."}\n\n` +
+                            `Launch command (ReShade only):\n${cmd}\n\n` +
+                            (copied
+                                ? "Launch options copied automatically — paste them into your launcher."
+                                : '⚠️ Could not copy automatically. Press "Copy launch options" below.'));
+                    }
+                    else {
+                        setResult(`✅ ${r.message || "OptiScaler removed."}\n\n` +
+                            "Remember to clear the launch command from your launcher.");
+                    }
+                }
+                else {
+                    setResult(`❌ ${r.message || "Failed"}`);
+                }
+            }
+        }
+        catch (e) {
+            setResult(`❌ ${String(e)}`);
+            console.error(e);
+        }
+        finally {
+            setRemovingOnly(false);
+        }
+    };
     const handleUninstallClick = async () => {
         try {
             setUninstalling(true);
@@ -494,7 +560,9 @@ function OptiScalerControls({ pathExists, setPathExists, fgmodInfo, fsr4Variant 
             steamMode && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", opacity: 0.7, wordBreak: "break-all" } }, targetExePath ? `Target: ${targetExePath}` : "Target: automatic detection"))),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleApplyOnlyOpti, disabled: applying || (!steamMode && !targetFolder) }, applying ? "Applying…" : "Apply only OptiScaler")),
+                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleApplyOnlyOpti, disabled: applying || removingOnly || (!steamMode && !targetFolder) }, applying ? "Applying…" : "Apply only OptiScaler")),
+            window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleRemoveOnlyOpti, disabled: applying || removingOnly || (!steamMode && !targetFolder) }, removingOnly ? "Removing…" : "🗑️ Remove only OptiScaler")),
             !steamMode && !targetFolder && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", opacity: 0.7 } }, "Choose a game .exe in \"Choose exe/folder path\" above first."))))),
         window.SP_REACT.createElement(InstructionCard, { pathExists: pathExists }),
@@ -1043,6 +1111,8 @@ const manageGameReShade = callable("manage_game_reshade");
 const installReShadeForManualExe$1 = callable("install_reshade_for_heroic_game");
 const detectGameApi$1 = callable("detect_heroic_game_api");
 const getCombinedGameStatus = callable("get_combined_game_status");
+const removeReShadeOnlySteam = callable("remove_reshade_only");
+const removeReShadeOnlyManual = callable("remove_reshade_only_manual");
 const RESHADE_DLL_OPTIONS = [
     { data: "auto", label: "Automatic (Detect API)" },
     { data: "dxgi", label: "DXGI (DirectX 10/11/12)" },
@@ -1080,6 +1150,7 @@ function ReShadeInstallerSection({ appid, targetExePath = "" }) {
     const [installing, setInstalling] = SP_REACT.useState(false);
     const [uninstalling, setUninstalling] = SP_REACT.useState(false);
     const [applyingToSteamGame, setApplyingToSteamGame] = SP_REACT.useState(false);
+    const [removingFromGame, setRemovingFromGame] = SP_REACT.useState(false);
     const [installResult, setInstallResult] = SP_REACT.useState(null);
     const [uninstallResult, setUninstallResult] = SP_REACT.useState(null);
     const [steamGameResult, setSteamGameResult] = SP_REACT.useState(null);
@@ -1460,6 +1531,86 @@ function ReShadeInstallerSection({ appid, targetExePath = "" }) {
             setApplyingToSteamGame(false);
         }
     };
+    // Drops ReShade from the chosen game and keeps OptiScaler patched: the backend
+    // reports the slot that stays behind so the overrides can be rebuilt for it.
+    const handleRemoveOnlyReShade = async () => {
+        const steamTarget = Boolean(appid);
+        if (!steamTarget && !targetExePath) {
+            setSteamGameResult({
+                status: "error",
+                message: 'Choose a game .exe in "Choose exe/folder path" above first.'
+            });
+            return;
+        }
+        try {
+            setRemovingFromGame(true);
+            setLaunchCmd("");
+            setCopyFailed(false);
+            setSteamGameResult({ status: "success", message: "Removing ReShade…" });
+            if (steamTarget) {
+                const result = await removeReShadeOnlySteam(appid, targetExePath || "");
+                if (result.status !== "success") {
+                    setSteamGameResult({
+                        status: "error",
+                        message: result.message || result.output || "Failed to remove ReShade."
+                    });
+                    return;
+                }
+                try {
+                    SteamClient.Apps.SetAppLaunchOptions(parseInt(appid, 10), result.launch_options || "");
+                }
+                catch (e) {
+                    await logError$2(`ReShadeInstallerSection -> SetAppLaunchOptions: ${String(e)}`);
+                }
+                setSteamGameResult({
+                    status: "success",
+                    output: `${result.message || "ReShade removed."}\n` +
+                        (result.launch_options
+                            ? `Launch options updated automatically:\n${result.launch_options}`
+                            : "Launch options cleared.")
+                });
+            }
+            else {
+                const folder = folderForExe(targetExePath);
+                const result = await removeReShadeOnlyManual(folder);
+                if (result.status !== "success") {
+                    setSteamGameResult({
+                        status: "error",
+                        message: result.message || result.output || "Failed to remove ReShade."
+                    });
+                    return;
+                }
+                if (result.optiscaler_kept && result.optiscaler_slot) {
+                    const launchCommand = buildLaunchCommand([result.optiscaler_slot]);
+                    setLaunchCmd(launchCommand);
+                    const copied = await autoCopyLaunchCommand(launchCommand);
+                    setCopyFailed(!copied);
+                    setSteamGameResult({
+                        status: "success",
+                        output: `${result.message || "ReShade removed."}\n` +
+                            `Launch command (OptiScaler only):\n${launchCommand}\n\n` +
+                            (copied
+                                ? "Launch options copied automatically — paste them into your launcher."
+                                : '⚠️ Could not copy automatically. Press "Copy launch options" below.')
+                    });
+                }
+                else {
+                    setSteamGameResult({
+                        status: "success",
+                        output: `${result.message || "ReShade removed."}\n` +
+                            "Remember to clear the launch command from your launcher."
+                    });
+                }
+            }
+        }
+        catch (e) {
+            setSteamGameResult({ status: "error", message: String(e) });
+            await logError$2(`ReShadeInstallerSection -> removeOnlyReShade: ${String(e)}`);
+        }
+        finally {
+            setRemovingFromGame(false);
+        }
+    };
     const handleManageShaders = async () => {
         let currentPreferences = [];
         try {
@@ -1664,7 +1815,9 @@ function ReShadeInstallerSection({ appid, targetExePath = "" }) {
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", opacity: 0.7, wordBreak: "break-all" } }, targetExePath ? `Target: ${targetExePath}` : "Target: automatic detection")),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleApplyReShadeToSteamGame, disabled: applyingToSteamGame || !appid }, applyingToSteamGame ? "Applying ReShade..." : "Apply only ReShade")))),
+                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleApplyReShadeToSteamGame, disabled: applyingToSteamGame || removingFromGame || !appid }, applyingToSteamGame ? "Applying ReShade..." : "Apply only ReShade")),
+            window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleRemoveOnlyReShade, disabled: applyingToSteamGame || removingFromGame || !appid }, removingFromGame ? "Removing ReShade..." : "🗑️ Remove only ReShade")))),
         pathExists === true && !steamMode && (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.DropdownItem, { label: "Proxy DLL name", menuLabel: "Proxy DLL name", rgOptions: RESHADE_DLL_OPTIONS, selectedOption: selectedSteamGameApi, onChange: (option) => {
@@ -1672,7 +1825,9 @@ function ReShadeInstallerSection({ appid, targetExePath = "" }) {
                         setSteamGameResult(null);
                     }, strDefaultLabel: "Proxy DLL name" })),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleApplyOnlyReShadeNonSteam, disabled: applyingToSteamGame || !targetExePath }, applyingToSteamGame ? "Applying ReShade..." : "Apply only ReShade")),
+                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleApplyOnlyReShadeNonSteam, disabled: applyingToSteamGame || removingFromGame || !targetExePath }, applyingToSteamGame ? "Applying ReShade..." : "Apply only ReShade")),
+            window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleRemoveOnlyReShade, disabled: applyingToSteamGame || removingFromGame || !targetExePath }, removingFromGame ? "Removing ReShade..." : "🗑️ Remove only ReShade")),
             !targetExePath && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", opacity: 0.7 } }, "Choose a game .exe in \"Choose exe/folder path\" above first."))))),
         pathExists === true && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
