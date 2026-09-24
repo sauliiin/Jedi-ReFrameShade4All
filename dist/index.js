@@ -586,10 +586,10 @@ const patchAllGame = callable("patch_all_game");
 const unpatchAllGame = callable("unpatch_all_game");
 const logError$4 = callable("log_error");
 const FSR4_OPTIONS = [
-    { data: "rdna23-int8", label: "4.0.2c | RDNA2/3 Mod (recommended)" },
-    { data: "rdna4-native", label: "4.1.0 | RDNA4 Official" },
-    { data: "rdna34-official-411", label: "4.1.1 | RDNA3/4 Official" },
-    { data: "rdna2-valve-411-pre10", label: "4.1.1 | RDNA2 Mod" },
+    { data: "rdna23-int8", label: "4.0.2c | RDNA2/3 Compatibility (recommended)", hint: "Bundled FSR4 INT8 4.0.2c runtime. Safest choice for Steam Deck and other RDNA2/3 GPUs." },
+    { data: "rdna4-native", label: "4.1.1 | FFX 2.3 SDK (RDNA3 dGPU / RDNA4)", hint: "OptiScaler 0.9.4's bundled FSR 4.1.1 upscaler. Official support: RDNA4 (FP8) and RDNA3 desktop GPUs (INT8)." },
+    { data: "rdna34-official-411", label: "4.1.1 | Driver Override (RDNA3/4)", hint: "FSR 4.1.1 SDK upscaler plus a separate 4.1.1 amdxcffx64.dll driver override. Fallback for RDNA3/4." },
+    { data: "rdna2-valve-411-pre10", label: "4.1.1 | Valve RDNA2 Compatibility", hint: "FSR 4.1.1 on RDNA2 via Valve amdxcffx64.dll + amdxc64.dll, the pre10 injector and RDNA2 INI overrides. Experimental." },
 ];
 function getLaunchOptions(appId) {
     return new Promise((resolve) => {
@@ -649,6 +649,11 @@ function selectSteamTargetCandidate(target, executablePath) {
             selected: item.path === executablePath,
         })),
     };
+}
+function gameOptionLabel(game) {
+    if (!game.non_steam)
+        return game.name;
+    return game.needs_manual_exe ? `${game.name} · non-Steam launcher (manual)` : `${game.name} · non-Steam`;
 }
 function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid, detectedTarget, setDetectedTarget, }) {
     const [games, setGames] = SP_REACT.useState([]);
@@ -781,10 +786,10 @@ function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid
             setBusy(false);
         }
     };
-    return (window.SP_REACT.createElement(DFL.PanelSection, { title: "\uD83C\uDFAE Steam Game \u2014 Patch All" },
+    return (window.SP_REACT.createElement(DFL.PanelSection, { title: "\uD83C\uDFAE Game \u2014 Patch All" },
         window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement("div", { style: { fontSize: "0.9em", opacity: 0.85 } },
-                "Pick a Steam game and press ",
+                "Pick a game (Steam or non-Steam shortcut) and press ",
                 window.SP_REACT.createElement("b", null, "Patch All"),
                 ". It installs OptiScaler (Frame Generation) and ReShade if needed, applies both to the game, and sets the launch options for you.")),
         engines && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
@@ -793,9 +798,19 @@ function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid
                 "  •  ",
                 engines.reshade_installed ? `🟢 ReShade ${engines.reshade_version || ""}` : "⚪ ReShade not installed"))),
         window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement("div", { style: { fontSize: "0.82em", opacity: 0.7 } }, "Pick a Steam Game")),
+            window.SP_REACT.createElement("div", { style: { fontSize: "0.82em", opacity: 0.7 } }, "Pick a game (Steam or non-Steam shortcut)")),
         window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement(DFL.DropdownItem, { rgOptions: games.map((g) => ({ data: g.appid, label: g.name })), selectedOption: appid, onChange: (o) => {
+            window.SP_REACT.createElement(DFL.DropdownItem, { rgOptions: games.map((g) => ({ data: g.appid, label: gameOptionLabel(g) })), selectedOption: appid, onChange: (o) => {
+                    const picked = games.find((g) => g.appid === o.data);
+                    if (picked?.needs_manual_exe) {
+                        // Launcher shortcuts (Heroic, Lutris, ...) do not point at the game .exe:
+                        // stay in manual mode so "Choose exe/folder path" is available.
+                        setAppid("");
+                        setDetectedTarget(null);
+                        setStatus(null);
+                        setResult(`ℹ️ "${picked.name}" is a non-Steam shortcut that starts a launcher, not the game .exe.\n\nEnable Advanced controls and use "Choose exe/folder path" to pick the game executable.`);
+                        return;
+                    }
                     setAppid(o.data);
                     setDetectedTarget(null);
                     setResult("");
@@ -812,7 +827,7 @@ function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid
                 status.both_active && window.SP_REACT.createElement("div", { style: { color: "green", marginTop: "2px" } }, "\u2705 Both active and coexisting")))),
         appid && (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.DropdownItem, { label: "FSR4 runtime", rgOptions: FSR4_OPTIONS, selectedOption: fsr4Variant, onChange: (o) => setFsr4Variant(o.data), strDefaultLabel: "FSR4 runtime" })),
+                window.SP_REACT.createElement(DFL.DropdownItem, { label: "FSR4 runtime", description: FSR4_OPTIONS.find((o) => o.data === fsr4Variant)?.hint, rgOptions: FSR4_OPTIONS, selectedOption: fsr4Variant, onChange: (o) => setFsr4Variant(o.data), strDefaultLabel: "FSR4 runtime" })),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.ToggleField, { label: "ReShade add-ons", description: "Enables add-on support (avoid in anti-cheat online games).", checked: addon, onChange: setAddon })),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,

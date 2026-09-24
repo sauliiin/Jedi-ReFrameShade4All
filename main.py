@@ -8,13 +8,14 @@ import filecmp
 import hashlib
 import tempfile
 import urllib.request
+import zlib
 from datetime import datetime, timezone
 from pathlib import Path
 
 OPTISCALER_ARCHIVE_ASSET = {
-    "name": "Optiscaler_0.9.3-final.20260618.7z",
-    "sha256": "e3ac655d60ec11b471ac8cc5f4d3758e4bce9151c86caa339d8f0700c00282e3",
-    "version": "0.9.3-final.20260618",
+    "name": "Optiscaler_0.9.4-final.20260718._MM.7z",
+    "sha256": "575cb4df866116093df75af607e37fd70e10f5163e0f23fd5c804142e80ef0ad",
+    "version": "0.9.4-final.20260718",
 }
 
 FSR4_INT8_ASSET = {
@@ -61,7 +62,7 @@ DEFAULT_FSR4_VARIANT = "rdna23-int8"
 
 FSR4_VARIANTS = {
     "rdna23-int8": {
-        "label": "Steam Deck / RDNA2-3 optimized",
+        "label": "4.0.2c / RDNA2-3 compatibility",
         "dir_name": "fsr4-rdna2-3",
         "sha256": "c7720bc16bede334f59a1a32cd22edbcbbb159685ed5240e61350a5fb0bc8a94",
         "source_asset_name": FSR4_INT8_ASSET["name"],
@@ -70,18 +71,18 @@ FSR4_VARIANTS = {
         "extra_files": [],
     },
     "rdna4-native": {
-        "label": "Native bundle / RDNA4",
+        "label": "4.1.1 SDK / RDNA3 dGPU + RDNA4",
         "dir_name": "fsr4-rdna4",
-        "sha256": "ec7ed3ca674e288240e6f04b986342aece47454c41d9b0959449e82e22bd7f6d",
+        "sha256": "d0dcccc74a43c44ba435b7a369b456e0970d8a4464e4bd683119b374f2c9fb46",
         "source_asset_name": OPTISCALER_ARCHIVE_ASSET["name"],
         "source_version": OPTISCALER_ARCHIVE_ASSET["version"],
         "uses_archive_native": True,
         "extra_files": [],
     },
     "rdna34-official-411": {
-        "label": "4.1.1 official for RDNA 3/4",
+        "label": "4.1.1 driver override / RDNA3-4",
         "dir_name": "fsr4-rdna3-4-official-411",
-        "sha256": "ec7ed3ca674e288240e6f04b986342aece47454c41d9b0959449e82e22bd7f6d",
+        "sha256": "d0dcccc74a43c44ba435b7a369b456e0970d8a4464e4bd683119b374f2c9fb46",
         "source_asset_name": OPTISCALER_ARCHIVE_ASSET["name"],
         "source_version": OPTISCALER_ARCHIVE_ASSET["version"],
         "uses_archive_native": True,
@@ -98,7 +99,7 @@ FSR4_VARIANTS = {
     "rdna2-valve-411-pre10": {
         "label": "4.1.1 Valve RDNA2 compatibility",
         "dir_name": "fsr4-rdna2-valve-411-pre10",
-        "sha256": "ec7ed3ca674e288240e6f04b986342aece47454c41d9b0959449e82e22bd7f6d",
+        "sha256": "d0dcccc74a43c44ba435b7a369b456e0970d8a4464e4bd683119b374f2c9fb46",
         "source_asset_name": OPTISCALER_ARCHIVE_ASSET["name"],
         "source_version": OPTISCALER_ARCHIVE_ASSET["version"],
         "uses_archive_native": True,
@@ -215,6 +216,9 @@ SUPPORT_FILES = [
 ]
 
 MARKER_FILENAME = "FRAMEGEN_PATCH"
+
+# Non-Steam shortcuts whose target is a launcher instead of the game .exe.
+NON_STEAM_LAUNCHER_HINTS = ("heroic", "lutris", "bottles", "legendary", "gogdl", "nile", "itch", "playnite")
 
 BAD_EXE_SUBSTRINGS = [
     "crashreport",
@@ -1034,7 +1038,7 @@ class _OptiScalerMixin:
 
             # ── Stage A: obtain the base OptiScaler archive ───────────────────────
             # Prefer the newest release published on GitHub (auto-update). Fall back to
-            # the bundled, pinned 0.9.3-final archive when the download is unavailable
+            # the bundled, pinned 0.9.4-final archive when the download is unavailable
             # or offline. Stage B below always layers the plugin optimizations on top.
             bundled_archive = bin_path / OPTISCALER_ARCHIVE_ASSET["name"]
             optiscaler_version = OPTISCALER_ARCHIVE_ASSET["version"]
@@ -1795,10 +1799,164 @@ class _OptiScalerMixin:
                 game_info["install_path"] = str(install_path)
                 if appid is None or str(game_info["appid"]) == str(appid):
                     games.append(game_info)
+        for shortcut in self._find_non_steam_shortcuts():
+            if shortcut["kind"] != "exe":
+                continue
+            if appid is None or shortcut["appid"] == str(appid):
+                games.append(shortcut)
         deduped: dict[str, dict] = {}
         for game in games:
             deduped[str(game["appid"])] = game
         return sorted(deduped.values(), key=lambda g: g["name"].lower())
+
+    # ── Non-Steam shortcuts (userdata/<id>/config/shortcuts.vdf) ─────────────
+
+    def _parse_binary_vdf(self, data: bytes) -> dict:
+        """Minimal parser for Steam's binary VDF (map / string / int32 nodes)."""
+        pos = 0
+
+        def read_cstring() -> str:
+            nonlocal pos
+            end = data.index(b"\x00", pos)
+            value = data[pos:end].decode("utf-8", errors="replace")
+            pos = end + 1
+            return value
+
+        def read_map() -> dict:
+            nonlocal pos
+            result: dict = {}
+            while pos < len(data):
+                node_type = data[pos]
+                pos += 1
+                if node_type == 0x08:
+                    return result
+                key = read_cstring()
+                if node_type == 0x00:
+                    result[key] = read_map()
+                elif node_type == 0x01:
+                    result[key] = read_cstring()
+                elif node_type == 0x02:
+                    result[key] = int.from_bytes(data[pos:pos + 4], "little", signed=False)
+                    pos += 4
+                elif node_type == 0x07:
+                    result[key] = int.from_bytes(data[pos:pos + 8], "little", signed=False)
+                    pos += 8
+                else:
+                    raise ValueError(f"Unsupported binary VDF node type 0x{node_type:02x} at {pos - 1}")
+            return result
+
+        return read_map()
+
+    def _shortcuts_vdf_paths(self) -> list[Path]:
+        paths: list[Path] = []
+        seen: set[str] = set()
+        for steam_root in self._steam_root_candidates():
+            userdata = steam_root / "userdata"
+            if not userdata.is_dir():
+                continue
+            for shortcuts_file in userdata.glob("*/config/shortcuts.vdf"):
+                try:
+                    key = str(shortcuts_file.resolve())
+                except OSError:
+                    key = str(shortcuts_file)
+                if key not in seen and shortcuts_file.is_file():
+                    paths.append(shortcuts_file)
+                    seen.add(key)
+        return paths
+
+    def _is_unsafe_scan_root(self, root: Path) -> bool:
+        """Roots too broad to scan recursively for .exe files (home, drive roots, ...)."""
+        home = self._home_path()
+        try:
+            resolved = root.resolve()
+        except OSError:
+            resolved = root
+        if len(resolved.parts) < 4 or resolved == home or resolved in home.parents:
+            return True
+        if resolved.parent == home and resolved.name.lower() in ("desktop", "downloads", "documents", "games"):
+            return True
+        try:
+            return os.path.ismount(resolved)
+        except OSError:
+            return False
+
+    def _find_non_steam_shortcuts(self) -> list[dict]:
+        """Non-Steam shortcuts added to the Steam library.
+
+        kind == "exe":      the shortcut launches a Windows .exe directly → fully patchable,
+                            launch options can be set on the shortcut's appid.
+        kind == "launcher": the shortcut starts a launcher (Heroic, Lutris, ...) → the game
+                            folder is unknown, the user must pick the .exe manually.
+        Native Linux shortcuts (browsers, tools, ...) are ignored.
+        """
+        shortcuts: list[dict] = []
+        for shortcuts_file in self._shortcuts_vdf_paths():
+            try:
+                parsed = self._parse_binary_vdf(shortcuts_file.read_bytes())
+            except Exception as exc:
+                decky.logger.error(f"[Framegen] failed to parse {shortcuts_file}: {exc}")
+                continue
+            root = parsed.get("shortcuts") or parsed.get("Shortcuts") or {}
+            if not isinstance(root, dict):
+                continue
+            for entry in root.values():
+                if not isinstance(entry, dict):
+                    continue
+                fields = {str(k).lower(): v for k, v in entry.items()}
+                name = str(fields.get("appname") or "").strip()
+                exe_raw = str(fields.get("exe") or "").strip()
+                if not name or not exe_raw:
+                    continue
+                appid_value = fields.get("appid")
+                if isinstance(appid_value, int) and appid_value:
+                    appid = appid_value & 0xFFFFFFFF
+                else:
+                    # Older Steam builds do not store the appid; derive it the same way Steam does.
+                    appid = (zlib.crc32((exe_raw + name).encode("utf-8")) & 0xFFFFFFFF) | 0x80000000
+                exe_path_str = exe_raw.strip('"')
+                start_dir = str(fields.get("startdir") or "").strip().strip('"')
+                launch_options = str(fields.get("launchoptions") or "")
+                record = {
+                    "appid": str(appid),
+                    "name": name,
+                    "library_path": "",
+                    "install_path": "",
+                    "non_steam": True,
+                    "shortcut_exe": "",
+                    "kind": "",
+                }
+                if exe_path_str.lower().endswith(".exe"):
+                    exe_path = Path(exe_path_str)
+                    if not exe_path.is_file():
+                        continue
+                    record["kind"] = "exe"
+                    record["shortcut_exe"] = str(exe_path)
+                    record["install_path"] = str(exe_path.parent)
+                else:
+                    haystack = f"{exe_raw} {start_dir} {launch_options}".lower()
+                    if not any(hint in haystack for hint in NON_STEAM_LAUNCHER_HINTS):
+                        continue
+                    record["kind"] = "launcher"
+                shortcuts.append(record)
+        return shortcuts
+
+    def _game_not_found_message(self, appid: str) -> str:
+        for shortcut in self._find_non_steam_shortcuts():
+            if shortcut["appid"] == str(appid) and shortcut["kind"] == "launcher":
+                return (
+                    f"'{shortcut['name']}' is a non-Steam shortcut that starts a launcher "
+                    "(Heroic, Lutris, ...), not the game .exe. Use Advanced controls → "
+                    "\"Choose exe/folder path\" to pick the game executable."
+                )
+        return "Game not found in Steam library or non-Steam shortcuts."
+
+    def _game_candidate_executables(self, game_info: dict) -> list[Path]:
+        install_root = Path(game_info["install_path"])
+        shortcut_exe = game_info.get("shortcut_exe")
+        if shortcut_exe and self._is_unsafe_scan_root(install_root):
+            exe = Path(shortcut_exe)
+            return [exe] if exe.is_file() else []
+        return self._candidate_executables(install_root)
 
     def _game_record(self, appid: str) -> dict | None:
         matches = self._find_installed_games(appid)
@@ -1874,7 +2032,7 @@ class _OptiScalerMixin:
 
     def _guess_patch_target(self, game_info: dict) -> tuple[Path, Path | None]:
         install_root = Path(game_info["install_path"])
-        candidates = self._candidate_executables(install_root)
+        candidates = self._game_candidate_executables(game_info)
         if not candidates:
             return install_root, None
         running_exe = self._best_running_executable(candidates)
@@ -1885,7 +2043,7 @@ class _OptiScalerMixin:
 
     def _ranked_patch_targets(self, game_info: dict, limit: int = 20) -> list[dict]:
         install_root = Path(game_info["install_path"])
-        candidates = self._candidate_executables(install_root)
+        candidates = self._game_candidate_executables(game_info)
         if not candidates:
             return []
 
@@ -1936,8 +2094,7 @@ class _OptiScalerMixin:
         return ranked[:limit]
 
     def _is_game_running(self, game_info: dict) -> bool:
-        install_root = Path(game_info["install_path"])
-        candidates = self._candidate_executables(install_root)
+        candidates = self._game_candidate_executables(game_info)
         return self._best_running_executable(candidates) is not None
 
     # ── Marker file tracking ──────────────────────────────────────────────────
@@ -2031,7 +2188,20 @@ class _OptiScalerMixin:
                     "appid": str(game["appid"]),
                     "name": game["name"],
                     "install_found": install_root.exists(),
+                    "non_steam": bool(game.get("non_steam")),
+                    "needs_manual_exe": False,
                 })
+            for shortcut in self._find_non_steam_shortcuts():
+                if shortcut["kind"] != "launcher":
+                    continue
+                games.append({
+                    "appid": shortcut["appid"],
+                    "name": shortcut["name"],
+                    "install_found": False,
+                    "non_steam": True,
+                    "needs_manual_exe": True,
+                })
+            games.sort(key=lambda g: g["name"].lower())
             return {"status": "success", "games": games}
         except Exception as e:
             decky.logger.error(str(e))
@@ -2099,7 +2269,7 @@ class _OptiScalerMixin:
                     "target_dir": None,
                     "fsr4_variant": None,
                     "fsr4_variant_label": None,
-                    "message": "Game not found in Steam library.",
+                    "message": self._game_not_found_message(str(appid)),
                 }
             install_root = Path(game_info["install_path"])
             if not install_root.exists():
@@ -2175,7 +2345,7 @@ class _OptiScalerMixin:
                 return {"status": "error", "message": f"Invalid proxy DLL name: {dll_name}"}
             game_info = self._game_record(str(appid))
             if not game_info:
-                return {"status": "error", "message": "Game not found in Steam library."}
+                return {"status": "error", "message": self._game_not_found_message(str(appid))}
             install_root = Path(game_info["install_path"])
             if not install_root.exists():
                 return {"status": "error", "message": "Game install directory does not exist."}
@@ -2274,7 +2444,7 @@ class _OptiScalerMixin:
         try:
             game_info = self._game_record(str(appid))
             if not game_info:
-                return {"status": "error", "message": "Game not found in Steam library."}
+                return {"status": "error", "message": self._game_not_found_message(str(appid))}
             install_root = Path(game_info["install_path"])
             if not install_root.exists():
                 return {
@@ -4244,7 +4414,7 @@ class _ReShadeMixin:
     def _resolve_steam_reshade_target(self, appid: str) -> tuple[str, str]:
         game_info = self._game_record(str(appid))
         if not game_info:
-            raise ValueError("Game not found in Steam library.")
+            raise ValueError(self._game_not_found_message(str(appid)))
 
         install_root = Path(game_info["install_path"])
         if not install_root.exists():
@@ -5480,6 +5650,12 @@ Note: If ReShadePreset.ini already existed, your previous settings were preserve
             return None
 
     def _get_steam_game_install_path(self, appid: str) -> str:
+        shortcut = next(
+            (s for s in self._find_non_steam_shortcuts() if s["appid"] == str(appid) and s["kind"] == "exe"),
+            None,
+        )
+        if shortcut:
+            return shortcut["install_path"]
         steam_root = Path(decky.HOME) / ".steam" / "steam"
         library_file = steam_root / "steamapps" / "libraryfolders.vdf"
 
@@ -5953,7 +6129,7 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin):
         try:
             game = self._game_record(str(appid))
             if not game:
-                return {"status": "error", "message": "Game not found in Steam library."}
+                return {"status": "error", "message": self._game_not_found_message(str(appid))}
             if self._is_game_running(game):
                 return {"status": "error", "message": "Close the game before patching."}
 
@@ -6030,7 +6206,7 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin):
         try:
             game = self._game_record(str(appid))
             if not game:
-                return {"status": "error", "message": "Game not found in Steam library."}
+                return {"status": "error", "message": self._game_not_found_message(str(appid))}
             if self._is_game_running(game):
                 return {"status": "error", "message": "Close the game before removing."}
 
@@ -6085,7 +6261,7 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin):
         try:
             game = self._game_record(str(appid))
             if not game:
-                return {"status": "error", "message": "Game not found in Steam library."}
+                return {"status": "error", "message": self._game_not_found_message(str(appid))}
             if self._is_game_running(game):
                 return {"status": "error", "message": "Close the game before removing."}
 
@@ -6150,7 +6326,7 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin):
         try:
             game = self._game_record(str(appid))
             if not game:
-                return {"status": "error", "message": "Game not found in Steam library."}
+                return {"status": "error", "message": self._game_not_found_message(str(appid))}
             if self._is_game_running(game):
                 return {"status": "error", "message": "Close the game before removing."}
 

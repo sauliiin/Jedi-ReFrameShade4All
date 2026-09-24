@@ -4,7 +4,7 @@
 
 It fuses two mature Decky plugins into a single panel:
 
-- **Frame Generation / upscaling** — based on [Decky‑Framegen](https://github.com/xXJSONDeruloXx/Decky-Framegen). Ships the complete bundled, hash‑verified OptiScaler `0.9.3` build; GitHub auto‑update is **opt‑in**.
+- **Frame Generation / upscaling** — based on [Decky‑Framegen](https://github.com/xXJSONDeruloXx/Decky-Framegen). Ships the complete bundled, hash‑verified OptiScaler `0.9.4` build (FFX 2.3 SDK / FSR 4.1.1); GitHub auto‑update is **opt‑in**.
 - **ReShade with add‑ons** — based on [LetMeReShade(All)](https://github.com/itsOwen/LetMeReShade) (downloads ReShade from reshade.me, shader packs, AutoHDR, Steam + Heroic support, manual `.exe` patching).
 
 > ⚠️ **Community fan‑merge.** This is an unofficial combination of two separate projects. It builds cleanly and the UI/back‑end are wired together, but the two injectors were never designed to coexist — **test it per game** and read the *Coexistence* and *Safety* sections below.
@@ -67,13 +67,19 @@ At runtime both mods hook the DXGI swap‑chain — ReShade for post‑processin
 ## Features
 
 **One‑button flow**
-- **Patch All**: pick a Steam game → installs OptiScaler + ReShade if missing, patches both into the game, and sets the merged launch options automatically. **Remove All** reverts everything. Detailed per‑engine controls live under an **Advanced controls** toggle.
+- **Patch All**: pick a Steam game **or a non‑Steam shortcut** → installs OptiScaler + ReShade if missing, patches both into the game, and sets the merged launch options automatically. **Remove All** reverts everything. Detailed per‑engine controls live under an **Advanced controls** toggle.
+- **Non‑Steam shortcuts** are read from `userdata/<id>/config/shortcuts.vdf` and listed next to Steam games. Shortcuts that point straight at a Windows `.exe` get the full one‑button flow, including launch options set on the shortcut automatically. Shortcuts that start a launcher (Heroic, Lutris, Bottles, …) are listed as *non‑Steam launcher (manual)* and send you to **Choose exe/folder path**, because the game folder can't be known from the shortcut.
 
 **Frame Generation / OptiScaler** (FRAMEGEN MANAGEMENT)
 - Install/uninstall with an **installed vs. latest** version widget (same style as ReShade); precise *up to date / update available* and a one‑click **Update**.
-- FSR4 runtime variants, incl. **Steam Deck / RDNA2‑3 INT8**, **RDNA3/4 official 4.1.1**, and the experimental **RDNA2 Valve 4.1.1 pre10** path (chosen once, shared).
+- FSR4 runtime variants (chosen once, shared):
+  - **4.0.2c | RDNA2/3 Compatibility** — bundled INT8 runtime; default for Steam Deck.
+  - **4.1.1 | FFX 2.3 SDK** — OptiScaler 0.9.4's bundled upscaler. Officially RDNA4 (FP8) and RDNA3 desktop (INT8).
+  - **4.1.1 | Driver Override** — 4.1.1 SDK upscaler + separate `amdxcffx64.dll` provider (RDNA3/4 fallback).
+  - **4.1.1 | Valve RDNA2 Compatibility** — 4.1.1 SDK upscaler + Valve `amdxcffx64.dll`/`amdxc64.dll`, the pre10 injector and RDNA2 INI overrides (`FSR.Fsr4ForceModel=2`, `Plugins.LoadCustomAmdxc64OnRdna2=true`).
+  - FSR 4.1.1 can silently fall back to FSR3 on unsupported hardware; set `FSR_Fsr4EnableWatermark=true` to confirm the active path (`FSR4`, `FSR4-i8` or `FSR3`).
 - Per‑game patch/unpatch (Steam) and manual **folder** patching.
-- Default install uses the complete bundled `0.9.3`; Update force‑downloads and verifies the newest upstream archive.
+- Default install uses the complete bundled `0.9.4`; Update force‑downloads and verifies the newest upstream archive.
 
 **ReShade**
 - ReShade **with add‑on support** (toggle) and optional **AutoHDR** (OLED‑oriented).
@@ -114,7 +120,7 @@ See [Building](#building) below, then zip the folder (with `bin/` + `dist/`) and
 
 > **Patch All puts ReShade on `dxgi`**, which covers DX11/DX12 (most games). For DX9/Vulkan/OpenGL titles, use **Advanced → ReShade**, which auto‑detects the API.
 
-> Auto‑update for OptiScaler is **opt‑in** — set `DECKY_OPTISCALER_AUTO_UPDATE=1`. By default the complete bundled `0.9.3` build is used. An explicit update is downloaded and verified before it replaces the installed bundle.
+> Auto‑update for OptiScaler is **opt‑in** — set `DECKY_OPTISCALER_AUTO_UPDATE=1`. By default the complete bundled `0.9.4` build is used. An explicit update is downloaded and verified before it replaces the installed bundle.
 
 ---
 

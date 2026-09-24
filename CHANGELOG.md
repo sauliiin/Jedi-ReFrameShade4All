@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.10
+
+### Updated
+- Bundled OptiScaler from `0.9.3-final` to the official `0.9.4-final.20260718` archive (FFX 2.3 SDK / FSR 4.1.1), matching Decky-Framegen `0.17`.
+- FSR4 runtimes relabeled to match upstream: *4.0.2c RDNA2/3 Compatibility*, *4.1.1 FFX 2.3 SDK*, *4.1.1 Driver Override* and *4.1.1 Valve RDNA2 Compatibility*. The SDK, driver-override and Valve RDNA2 paths now all use the 0.9.4 FSR 4.1.1 upscaler.
+
+### Added
+- The FSR4 runtime dropdown now shows a short description of the selected runtime (ported from Decky-Framegen).
+- **Non-Steam game detection**: shortcuts from Steam's `shortcuts.vdf` appear in the game picker. Direct `.exe` shortcuts support Patch All, per-engine patching, status and removal, with launch options applied to the shortcut automatically; launcher shortcuts (Heroic, Lutris, …) point the user to the manual exe picker. Broad folders (home, drive roots) are never scanned recursively.
+
+### Fixed
+- Variant extra DLLs (`amdxcffx64.dll`, `amdxc64.dll`) are only copied into the game folder when present.
+
 ## 1.0.9
 
 ### Added

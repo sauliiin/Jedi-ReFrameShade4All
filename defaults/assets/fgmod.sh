@@ -428,7 +428,9 @@ cp -f "$fgmod_path/amd_fidelityfx_dx12.dll" "$exe_folder_path/" || true
 cp -f "$fgmod_path/amd_fidelityfx_framegeneration_dx12.dll" "$exe_folder_path/" || true
 cp -f "$fsr4_upscaler_src" "$exe_folder_path/amd_fidelityfx_upscaler_dx12.dll" || true
 for variant_extra_file in "${variant_extra_files[@]}"; do
-  cp -f "$variant_dir/$variant_extra_file" "$exe_folder_path/" || true
+  if [[ -f "$variant_dir/$variant_extra_file" ]]; then
+    cp -f "$variant_dir/$variant_extra_file" "$exe_folder_path/" || true
+  fi
 done
 cp -f "$fgmod_path/amd_fidelityfx_vk.dll" "$exe_folder_path/" || true
 
