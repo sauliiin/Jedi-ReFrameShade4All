@@ -188,6 +188,12 @@ case "$selected_fsr4_variant" in
     variant_ini_overrides+=("FSR.Fsr4ForceModel=2")
     variant_ini_overrides+=("Plugins.LoadCustomAmdxc64OnRdna2=true")
     ;;
+  helixsr)
+    # HelixSR itself lives in the game's HelixSR/ folder (set up by the plugin's patch);
+    # the game root keeps the INT8 FSR4 upscaler, which stays selectable next to it.
+    variant_dir="$fgmod_path/fsr4-rdna2-3"
+    fsr4_upscaler_src="$variant_dir/amd_fidelityfx_upscaler_dx12.dll"
+    ;;
   *)
     selected_fsr4_variant="rdna23-int8"
     variant_dir="$fgmod_path/fsr4-rdna2-3"

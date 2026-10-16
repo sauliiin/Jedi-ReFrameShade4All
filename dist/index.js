@@ -590,7 +590,129 @@ const FSR4_OPTIONS = [
     { data: "rdna4-native", label: "4.1.1 | FFX 2.3 SDK (RDNA3 dGPU / RDNA4)", hint: "OptiScaler 0.9.4's bundled FSR 4.1.1 upscaler. Official support: RDNA4 (FP8) and RDNA3 desktop GPUs (INT8)." },
     { data: "rdna34-official-411", label: "4.1.1 | Driver Override (RDNA3/4)", hint: "FSR 4.1.1 SDK upscaler plus a separate 4.1.1 amdxcffx64.dll driver override. Fallback for RDNA3/4." },
     { data: "rdna2-valve-411-pre10", label: "4.1.1 | Valve RDNA2 Compatibility", hint: "FSR 4.1.1 on RDNA2 via Valve amdxcffx64.dll + amdxc64.dll, the pre10 injector and RDNA2 INI overrides. Experimental." },
+    { data: "helixsr", label: "HelixSR | DLSS Model E on AMD (experimental)", hint: "NVIDIA's DLSS Model E network as D3D12 compute shaders (lonewolf0622/HelixSR). DX12 only. Built once on this device; FSR4 4.0.2c stays selectable in OptiScaler's menu." },
 ];
+// What the game's HelixSR folder and helixsr.log say (helixsr.log appears once OptiScaler loads HelixSR).
+function HelixSRGameStatus({ info }) {
+    const lines = [];
+    if (!info.configured) {
+        lines.push({ color: "#ffb84d", text: "⚠️ OptiScaler.ini doesn't point at HelixSR anymore. Press Patch All again." });
+    }
+    if (info.log_status === "running") {
+        lines.push({ color: "green", text: `✅ HelixSR ${info.version || ""} is upscaling${info.last_upscale ? `: ${info.last_upscale}` : ""}` });
+    }
+    else if (info.log_status === "error") {
+        lines.push({ color: "#ff6b6b", text: `❌ HelixSR loaded but its network isn't running.${info.errors?.length ? `\n${info.errors.join("\n")}` : ""}` });
+    }
+    else if (info.log_status === "loaded") {
+        lines.push({ color: undefined, text: `HelixSR ${info.version || ""} was loaded but hasn't upscaled yet. In OptiScaler (Insert): Upscalers → FSR 3.X/4 → FFX Upscaler → "FSR HelixSR".` });
+    }
+    else {
+        lines.push({ color: undefined, text: `HelixSR ${info.version || ""} is set up but hasn't been loaded yet. Start the game, select DLSS (or FSR/XeSS) as its upscaler, then check OptiScaler (Insert): FFX Upscaler → "FSR HelixSR".` });
+    }
+    if (info.log_time) {
+        lines.push({ color: undefined, text: `helixsr.log: ${info.log_time}` });
+    }
+    return (window.SP_REACT.createElement("div", { style: { marginTop: "4px", whiteSpace: "pre-wrap", wordBreak: "break-word" } }, lines.map((l, i) => (window.SP_REACT.createElement("div", { key: i, style: { color: l.color, opacity: l.color ? 1 : 0.8 } }, l.text)))));
+}
+const getHelixSRStatus = callable("get_helixsr_status");
+const installLatestHelixSR = callable("install_latest_helixsr");
+const cancelHelixSRSetup = callable("cancel_helixsr_setup");
+const formatElapsed = (seconds) => {
+    const s = Math.max(0, Math.floor(seconds || 0));
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+};
+// HelixSR runtime: shows whether the newest HelixSR release is installed and, if not,
+// downloads it and builds its network on this device (replacing the installed one).
+function HelixSRPanel() {
+    const [info, setInfo] = SP_REACT.useState(null);
+    const [working, setWorking] = SP_REACT.useState(false);
+    const [message, setMessage] = SP_REACT.useState("");
+    const refresh = async () => {
+        try {
+            setInfo(await getHelixSRStatus(true));
+        }
+        catch (e) {
+            await logError$4(`HelixSRPanel -> status: ${String(e)}`);
+        }
+    };
+    const building = info?.setup?.state === "running";
+    SP_REACT.useEffect(() => {
+        void refresh();
+    }, []);
+    SP_REACT.useEffect(() => {
+        if (!building)
+            return () => { };
+        const id = setInterval(() => void refresh(), 2000);
+        return () => clearInterval(id);
+    }, [building]);
+    const doInstall = async () => {
+        try {
+            setWorking(true);
+            setMessage("Downloading the latest HelixSR release…");
+            const r = await installLatestHelixSR();
+            setMessage(r.status === "success" ? `✅ ${r.message || "Done"}` : `❌ ${r.message || "Failed"}`);
+        }
+        catch (e) {
+            setMessage(`❌ ${String(e)}`);
+        }
+        finally {
+            setWorking(false);
+            await refresh();
+        }
+    };
+    const handleInstall = () => {
+        const version = info?.latest_version ? ` ${info.latest_version}` : "";
+        DFL.showModal(window.SP_REACT.createElement(DFL.ConfirmModal, { strTitle: `${info?.installed ? "Update" : "Install"} HelixSR${version}?`, strDescription: "HelixSR's setup downloads NVIDIA's DLSS 310.7.0 DLL from NVIDIA's GitHub (NVIDIA's license applies), a portable Python and Microsoft's shader compiler, builds the network on this device and deletes NVIDIA's DLL again. It takes about 7-10 minutes on a Steam Deck: keep it plugged in and awake. The installed HelixSR (if any) is replaced once the build succeeds.", strOKButtonText: "Download and build", strCancelButtonText: "Cancel", onOK: () => void doInstall() }));
+    };
+    const handleCancel = async () => {
+        try {
+            const r = await cancelHelixSRSetup();
+            setMessage(r.status === "success" ? `✅ ${r.message}` : `❌ ${r.message || "Failed"}`);
+        }
+        catch (e) {
+            setMessage(`❌ ${String(e)}`);
+        }
+        finally {
+            await refresh();
+        }
+    };
+    const setup = info?.setup;
+    const installedLine = !info
+        ? "Checking HelixSR…"
+        : info.installed
+            ? info.up_to_date
+                ? `🟢 HelixSR ${info.installed_version || ""} installed (latest)`
+                : info.latest_version
+                    ? `🟡 HelixSR ${info.installed_version || ""} installed — ${info.latest_version} available`
+                    : `🟢 HelixSR ${info.installed_version || ""} installed`
+            : `⚪ HelixSR not installed${info.latest_version ? ` (latest: ${info.latest_version})` : ""}`;
+    const showInstallButton = info && !building && !info.up_to_date;
+    return (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
+        window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+            window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", padding: "8px", backgroundColor: "rgba(255,255,255,0.05)", borderRadius: "4px" } },
+                window.SP_REACT.createElement("div", null, installedLine),
+                info?.message && window.SP_REACT.createElement("div", { style: { opacity: 0.7, marginTop: "2px" } }, info.message),
+                setup?.state === "failed" && (window.SP_REACT.createElement("div", { style: { color: "#ff6b6b", marginTop: "4px", whiteSpace: "pre-wrap", wordBreak: "break-word" } },
+                    "❌ The last HelixSR build failed.",
+                    (setup.errors || []).length > 0 ? `\n${setup.errors.join("\n")}` : "",
+                    `\nLog: ${setup.log_path}`)),
+                setup?.state === "stopped" && (window.SP_REACT.createElement("div", { style: { opacity: 0.7, marginTop: "4px" } }, "The last HelixSR build was interrupted (sleep or restart). Start it again.")))),
+        building && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+            window.SP_REACT.createElement(DFL.ProgressBarWithInfo, { layout: "below", bottomSeparator: "none", nProgress: setup.progress || 0, sOperationText: setup.phase || "Building HelixSR…", sTimeRemaining: setup.elapsed != null ? formatElapsed(setup.elapsed) : undefined, description: `Building HelixSR ${setup.tag || ""} — about 7-10 minutes on a Steam Deck. You can close this menu.` }))),
+        showInstallButton && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+            window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleInstall, disabled: working || info?.downloading }, working || info?.downloading
+                ? "Downloading…"
+                : info.installed
+                    ? `⬆️ Update HelixSR${info.latest_version ? ` to ${info.latest_version}` : ""}`
+                    : `⬇️ Install HelixSR${info.latest_version ? ` ${info.latest_version}` : ""}`))),
+        building && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+            window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleCancel }, "Cancel HelixSR build"))),
+        window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+            window.SP_REACT.createElement("div", { style: { fontSize: "0.8em", opacity: 0.6 } }, "In-game: select DLSS (best input), or FSR/XeSS, as the game's upscaler. After a HelixSR update, press Patch All again to refresh the game.")),
+        message && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+            window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", whiteSpace: "pre-wrap", opacity: 0.85 } }, message)))));
+}
 function getLaunchOptions(appId) {
     return new Promise((resolve) => {
         try {
@@ -821,13 +943,21 @@ function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid
                 window.SP_REACT.createElement("div", null,
                     "Frame Generation: ",
                     status.optiscaler_patched ? `on (${status.optiscaler_slot})` : "off"),
+                status.optiscaler_patched && status.optiscaler_variant_label && (window.SP_REACT.createElement("div", null,
+                    "Upscaler runtime: ",
+                    status.optiscaler_variant_label)),
                 window.SP_REACT.createElement("div", null,
                     "ReShade: ",
                     status.reshade_present ? `on (${status.reshade_slot})` : "off"),
-                status.both_active && window.SP_REACT.createElement("div", { style: { color: "green", marginTop: "2px" } }, "\u2705 Both active and coexisting")))),
+                status.both_active && window.SP_REACT.createElement("div", { style: { color: "green", marginTop: "2px" } }, "\u2705 Both active and coexisting"),
+                fsr4Variant === "helixsr" && status.optiscaler_patched && status.optiscaler_variant !== "helixsr" && (window.SP_REACT.createElement("div", { style: { color: "#ffb84d", marginTop: "4px" } }, "\u26a0\ufe0f This game still uses the runtime above. Press Patch All to switch it to HelixSR.")),
+                status.helixsr && window.SP_REACT.createElement(HelixSRGameStatus, { info: status.helixsr })))),
+        status && appid && status.helixsr && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+            window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: () => void loadStatus(appid), disabled: busy }, "\ud83d\udd04 Check HelixSR again"))),
         appid && (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.DropdownItem, { label: "FSR4 runtime", description: FSR4_OPTIONS.find((o) => o.data === fsr4Variant)?.hint, rgOptions: FSR4_OPTIONS, selectedOption: fsr4Variant, onChange: (o) => setFsr4Variant(o.data), strDefaultLabel: "FSR4 runtime" })),
+                window.SP_REACT.createElement(DFL.DropdownItem, { label: "Upscaler runtime (FSR4 / HelixSR)", description: FSR4_OPTIONS.find((o) => o.data === fsr4Variant)?.hint, rgOptions: FSR4_OPTIONS, selectedOption: fsr4Variant, onChange: (o) => setFsr4Variant(o.data), strDefaultLabel: "Upscaler runtime" })),
+            fsr4Variant === "helixsr" && window.SP_REACT.createElement(HelixSRPanel, null),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.ToggleField, { label: "ReShade add-ons", description: "Enables add-on support (avoid in anti-cheat online games).", checked: addon, onChange: setAddon })),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,

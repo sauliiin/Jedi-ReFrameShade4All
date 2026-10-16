@@ -72,11 +72,12 @@ At runtime both mods hook the DXGI swap‑chain — ReShade for post‑processin
 
 **Frame Generation / OptiScaler** (FRAMEGEN MANAGEMENT)
 - Install/uninstall with an **installed vs. latest** version widget (same style as ReShade); precise *up to date / update available* and a one‑click **Update**.
-- FSR4 runtime variants (chosen once, shared):
+- **Upscaler runtime** (FSR4 variants or HelixSR; chosen once, shared):
   - **4.0.2c | RDNA2/3 Compatibility** — bundled INT8 runtime; default for Steam Deck.
   - **4.1.1 | FFX 2.3 SDK** — OptiScaler 0.9.4's bundled upscaler. Officially RDNA4 (FP8) and RDNA3 desktop (INT8).
   - **4.1.1 | Driver Override** — 4.1.1 SDK upscaler + separate `amdxcffx64.dll` provider (RDNA3/4 fallback).
   - **4.1.1 | Valve RDNA2 Compatibility** — 4.1.1 SDK upscaler + Valve `amdxcffx64.dll`/`amdxc64.dll`, the pre10 injector and RDNA2 INI overrides (`FSR.Fsr4ForceModel=2`, `Plugins.LoadCustomAmdxc64OnRdna2=true`).
+  - **HelixSR | DLSS Model E on AMD** (experimental) — [HelixSR](https://github.com/lonewolf0622/HelixSR) runs NVIDIA's DLSS Model E network as D3D12 compute shaders (DX12 games only). Releases ship no NVIDIA files, so the panel only checks whether the **newest** HelixSR release is installed and, if not, downloads it (verified against GitHub's SHA256) and runs HelixSR's own setup, which builds the network on the device (about 7–10 minutes on a Steam Deck; downloads NVIDIA's DLSS DLL after you confirm). The build lives in `~/fgmod-helixsr/current` and replaces the older one only once it succeeds. Patching puts HelixSR in a `HelixSR/` folder next to `OptiScaler.ini` (as `helixsr.dll` / `helixsr_upscaler.dll`, so it can't collide with the FSR DLLs the game loads) and points `FfxDx12Path`/`FfxDx12SRPath` at it (`[FSR] UpscalerIndex=0`); the previous values are restored when you switch runtime or unpatch. FSR4 4.0.2c stays selectable in OptiScaler's menu, and frame generation keeps working. In the game, select DLSS (or FSR/XeSS).
   - FSR 4.1.1 can silently fall back to FSR3 on unsupported hardware; set `FSR_Fsr4EnableWatermark=true` to confirm the active path (`FSR4`, `FSR4-i8` or `FSR3`).
 - Per‑game patch/unpatch (Steam) and manual **folder** patching.
 - Default install uses the complete bundled `0.9.4`; Update force‑downloads and verifies the newest upstream archive.
@@ -180,6 +181,7 @@ The panel is two parallel sections under an **Advanced controls** toggle — **F
 ## Credits & licenses
 
 - **OptiScaler Frame Generation** — [Decky‑Framegen](https://github.com/xXJSONDeruloXx/Decky-Framegen) by xXJSONDeruloXx, and the [OptiScaler](https://github.com/optiscaler/OptiScaler) project.
+- **HelixSR runtime** — [HelixSR](https://github.com/lonewolf0622/HelixSR) by lonewolf0622 (HelixSR Freeware License; downloaded unmodified, never bundled). Release check, download, setup and OptiScaler integration ported from [DeckyHelixSRManager](https://github.com/PeroTuncay/DeckyHelixSRManager) by PeroTuncay (The Unlicense).
 - **ReShade integration** — [LetMeReShade](https://github.com/itsOwen/LetMeReShade) by itsOwen, and [ReShade](https://reshade.me) by crosire.
 - Built on the Decky plugin template.
 

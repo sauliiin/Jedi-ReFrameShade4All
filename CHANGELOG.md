@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.1.11
+
+### Added
+- **HelixSR** as an upscaler runtime (*HelixSR | DLSS Model E on AMD*, experimental), ported from [DeckyHelixSRManager](https://github.com/PeroTuncay/DeckyHelixSRManager). Selecting it shows whether the newest HelixSR release is installed; if not, **Install/Update HelixSR** downloads it (SHA256-verified) and runs HelixSR's setup in the background with a progress bar (`get_helixsr_status`, `install_latest_helixsr`, `cancel_helixsr_setup`). Only one release is kept: a new build replaces the old one once it succeeds.
+- Patching with HelixSR sets it as OptiScaler's FFX upscaler from a per-game `HelixSR/` folder (FSR4 4.0.2c stays selectable, frame generation keeps working); switching runtime or unpatching restores `OptiScaler.ini` and removes the folder.
+
+### Changed
+- The *FSR4 runtime* dropdown is now **Upscaler runtime (FSR4 / HelixSR)**.
+
+### Fixed
+- HelixSR not showing in OptiScaler's FFX Upscaler list (only FSR 4.0.2c did): in the game, HelixSR is now `helixsr.dll` / `helixsr_upscaler.dll`, so the loader no longer hands back the FSR DLL the game already loaded under the same name. Re-patch the game to apply.
+- Old OptiScaler.ini template bug: an unanchored `Path=auto` → `Path=plugins` also set `OptiDllPath`, `NvapiPath`, `FfxDx12*Path`, `XeSSPath`, `TTFFontPath`, … to `plugins`. Only `[Plugins] Path` gets it now, and patching repairs existing game INIs.
+- The game status shows the applied upscaler runtime and, for HelixSR, what `helixsr.log` reports (loaded / upscaling / network not running), with a **Check HelixSR again** button.
+
 ## 1.0.10
 
 ### Updated

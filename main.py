@@ -1,6 +1,10 @@
 import decky
+import asyncio
 import os
+import signal
 import subprocess
+import time
+import zipfile
 import json
 import shutil
 import re
@@ -128,7 +132,20 @@ FSR4_VARIANTS = {
             "Plugins.LoadCustomAmdxc64OnRdna2": "true",
         },
     },
+    # HelixSR is not bundled: it is downloaded and built on the device (see _HelixSRMixin).
+    # The game root keeps the INT8 FSR4 upscaler, which also stays selectable next to HelixSR.
+    "helixsr": {
+        "label": "HelixSR | DLSS Model E on AMD",
+        "dir_name": "fsr4-rdna2-3",
+        "sha256": FSR4_INT8_ASSET["sha256"],
+        "source_asset_name": FSR4_INT8_ASSET["name"],
+        "source_version": FSR4_INT8_ASSET["version"],
+        "uses_archive_native": False,
+        "extra_files": [],
+        "helixsr": True,
+    },
 }
+HELIXSR_VARIANT = "helixsr"
 VARIANT_EXTRA_FILENAMES = sorted(
     {
         extra_file["name"]
@@ -144,6 +161,51 @@ OPTISCALER_RELEASES_API = "https://api.github.com/repos/optiscaler/OptiScaler/re
 OPTISCALER_ASSET_NAME_RE = re.compile(r"OptiScaler.*\.7z$|Optiscaler.*\.7z$", re.IGNORECASE)
 OPTISCALER_DOWNLOAD_TIMEOUT = 45
 OPTISCALER_LATEST_CACHE_SECONDS = 900
+
+# HelixSR (https://github.com/lonewolf0622/HelixSR): NVIDIA's DLSS Model E network on AMD GPUs.
+# Ported from DeckyHelixSRManager (https://github.com/PeroTuncay/DeckyHelixSRManager, The Unlicense).
+# Releases ship no NVIDIA files: the latest release is downloaded and HelixSR's own setup builds
+# the network into its DLL on this device. Only one (the newest) release is kept installed.
+HELIXSR_RELEASES_API = "https://api.github.com/repos/lonewolf0622/HelixSR/releases?per_page=30"
+HELIXSR_LATEST_CACHE_SECONDS = 900
+HELIXSR_DIRNAME = "fgmod-helixsr"
+HELIXSR_META_FILENAME = ".jedi-helixsr.json"
+HELIXSR_GAME_SUBDIR = "HelixSR"
+HELIXSR_GAME_MARKER = "jedi-helixsr.json"
+HELIXSR_DLL_FFX = "amd_fidelityfx_dx12.dll"   # up to 1.4 and from 1.7: an FSR 3.1 replacement
+HELIXSR_DLL_NGX = "nvngx.dll"                 # 1.5/1.6 (withdrawn): a DLSS replacement, not supported here
+# In the game, HelixSR gets names of its own (as HelixSR's own OptiScaler install did): a game that loads
+# its amd_fidelityfx_*.dll first would otherwise make the loader hand that module back for HelixSR's path,
+# and OptiScaler would only list the FSR4 upscaler.
+HELIXSR_GAME_DLL = "helixsr.dll"                 # OptiScaler's FfxDx12Path
+HELIXSR_GAME_SR_DLL = "helixsr_upscaler.dll"     # OptiScaler's FfxDx12SRPath
+HELIXSR_GAME_OLD_NAMES = (FSR4_UPSCALER_FILENAME, HELIXSR_DLL_FFX)   # 1.1.11 used the FSR file names
+HELIXSR_FSR4_COPY_NAME = "amd_fidelityfx_upscaler_dx12.amd.dll"
+HELIXSR_FG_DLL = "amd_fidelityfx_framegeneration_dx12.dll"
+HELIXSR_EMBED_MAGIC = b"HXSRNET1"
+HELIXSR_SEPARATE_FILES = ("helixsr_weights.bin", "helixsr_kernels.pak")   # the network before 1.4.0
+HELIXSR_GAMES_MARKER = "# --- games ---"   # helixsr-setup.sh 1.7-1.8: HelixSR's own game installer follows
+HELIXSR_BUILD_SCRIPT = ".jedi-helixsr-build.sh"
+HELIXSR_PHASES = [  # (setup log pattern, progress %, label)
+    (r"\[helixsr-setup\] system:", 1, "Checking the system"),
+    (r"portable Python|python\.tar\.gz", 2, "Downloading Python + numpy (one time)"),
+    (r"\[helixsr-setup\] python:", 5, "Preparing the shader compiler"),
+    (r"dxc-win\.zip", 5, "Downloading the shader compiler (one time)"),
+    (r"shader compiler:", 7, "Starting the build"),
+    (r"downloading nvngx_dlss", 8, "Downloading NVIDIA's DLSS DLL"),
+    (r"1/5 weights", 10, "Step 1/5: extracting weights"),
+    (r"2/5 PTX", 14, "Step 2/5: extracting the network kernels"),
+    (r"3/5 fragment tables", 18, "Step 3/5: fragment tables"),
+    (r"4/5 kernel sources", 40, "Step 4/5: generating shader sources"),
+    (r"5/5 shaders", 50, "Step 5/5: compiling shaders"),
+    (r"building the network", 10, "Building the network"),
+    (r"HelixSR is ready|now carries the network|done: the network is built", 100, "Finished"),
+    (r"looking for games with DLSS", 100, "Finished"),
+]
+# 1.7+: "[helixsr-setup] [########------------]  42%  1:23  shaders 12/72"
+HELIXSR_BUILD_PROGRESS = re.compile(r"\[[#-]{5,}\]\s+(\d+)%\s+\d+:\d\d\s+(.*?)\s*$")
+HELIXSR_PROMPT_LINE = re.compile(r"\[Y/n|\[f/n|\[f/r/n")
+HELIXSR_ERROR_PATTERN = re.compile(r"error|failed|traceback|no such file|not found|denied|mismatch|cannot|killed", re.I)
 
 PROXY_DLL_BACKUPS = [
     "dxgi.dll",
@@ -622,7 +684,12 @@ class _OptiScalerMixin:
         return variant_id
 
     def _detect_fsr4_variant(self, directory: Path, upscaler_sha256: str | None) -> str | None:
+        # HelixSR lives in its own subfolder; the game root keeps the INT8 FSR4 upscaler.
+        if (directory / HELIXSR_GAME_SUBDIR / HELIXSR_GAME_MARKER).exists():
+            return HELIXSR_VARIANT
         for variant_id, variant in FSR4_VARIANTS.items():
+            if variant.get("helixsr"):
+                continue
             extra_files = list(variant.get("extra_files") or [])
             if not extra_files:
                 continue
@@ -640,7 +707,7 @@ class _OptiScalerMixin:
             return None
         normalized_sha = str(upscaler_sha256).lower()
         for variant_id, variant in FSR4_VARIANTS.items():
-            if variant.get("extra_files"):
+            if variant.get("extra_files") or variant.get("helixsr"):
                 continue
             if str(variant.get("sha256") or "").lower() == normalized_sha:
                 return variant_id
@@ -755,6 +822,23 @@ class _OptiScalerMixin:
             decky.logger.error(f"Failed to update HQ font setting in OptiScaler.ini: {e}")
             return False
 
+    def _repair_plugins_path_values(self, content: str) -> str:
+        """Undo an old template bug: an unanchored Path=auto -> Path=plugins also turned OptiDllPath, NvapiPath,
+        FfxDx12*Path, XeSSPath, TTFFontPath, ... into "plugins". Only the bare [Plugins] Path keeps it."""
+        return re.sub(r'(?m)^(\s*)(\w+Path)(\s*=\s*)plugins[ \t]*$', r'\1\2\3auto', content)
+
+    def _repair_optiscaler_ini_paths(self, ini_file) -> bool:
+        try:
+            content = Path(ini_file).read_text(encoding="utf-8", errors="replace")
+            repaired = self._repair_plugins_path_values(content)
+            if repaired != content:
+                Path(ini_file).write_text(repaired, encoding="utf-8")
+                decky.logger.info(f"Repaired library paths wrongly set to 'plugins' in {ini_file}")
+            return True
+        except Exception as exc:
+            decky.logger.error(f"Failed to repair OptiScaler.ini paths in {ini_file}: {exc}")
+            return False
+
     def _modify_optiscaler_ini(self, ini_file):
         """Modify OptiScaler.ini to set FG defaults, ASI plugin settings, and safe font defaults."""
         try:
@@ -774,8 +858,9 @@ class _OptiScalerMixin:
                 # Replace LoadAsiPlugins=auto with LoadAsiPlugins=true
                 updated_content = re.sub(r'LoadAsiPlugins\s*=\s*auto', 'LoadAsiPlugins=true', updated_content)
                 
-                # Replace Path=auto with Path=plugins
-                updated_content = re.sub(r'Path\s*=\s*auto', 'Path=plugins', updated_content)
+                # Replace [Plugins] Path=auto with Path=plugins (only the bare "Path" key)
+                updated_content = re.sub(r'(?m)^Path\s*=\s*auto', 'Path=plugins', updated_content)
+                updated_content = self._repair_plugins_path_values(updated_content)
 
                 # Disable new HQ font auto mode to avoid missing font assertions on Proton
                 updated_content = re.sub(r'UseHQFont\s*=\s*auto', 'UseHQFont=false', updated_content)
@@ -1502,6 +1587,12 @@ class _OptiScalerMixin:
         selected_extra_files = self._fsr4_variant_extra_files(selected_variant)
         optiscaler_version = self._fgmod_version(fgmod_path)
         selected_upscaler_sha256 = self._file_sha256(selected_upscaler_src)
+        use_helixsr = bool(selected_variant_info.get("helixsr"))
+        if use_helixsr:
+            try:
+                self._helixsr_built_dll()
+            except RuntimeError as exc:
+                return {"status": "error", "message": str(exc)}
 
         try:
             decky.logger.info(
@@ -1576,6 +1667,7 @@ class _OptiScalerMixin:
             if target_ini.exists():
                 self._migrate_optiscaler_ini(target_ini)
                 self._disable_hq_font_auto(target_ini)
+                self._repair_optiscaler_ini_paths(target_ini)
                 self._apply_optiscaler_ini_overrides(target_ini, selected_config_overrides)
 
             plugins_src = fgmod_path / "plugins"
@@ -1623,12 +1715,18 @@ class _OptiScalerMixin:
             if missing_support:
                 decky.logger.warning(f"Support files missing from fgmod bundle: {missing_support}")
 
+            helixsr_note = ""
+            if use_helixsr:
+                helixsr_note = f" {self._helixsr_apply_to_game(directory)}"
+            elif self._helixsr_remove_from_game(directory, restore_ini=True):
+                helixsr_note = " HelixSR removed; OptiScaler is back to FSR."
+
             decky.logger.info(f"Manual patch complete for {directory}")
             return {
                 "status": "success",
                 "message": (
                     f"OptiScaler files copied to {directory} using "
-                    f"{selected_variant_info['label']}"
+                    f"{selected_variant_info['label']}.{helixsr_note}"
                 ),
                 "fsr4_variant": selected_variant,
                 "fsr4_variant_label": selected_variant_info["label"],
@@ -1681,6 +1779,10 @@ class _OptiScalerMixin:
             if d3d12_dir.exists():
                 shutil.rmtree(d3d12_dir, ignore_errors=True)
                 decky.logger.info(f"Removed D3D12_Optiscaler directory from {d3d12_dir}")
+
+            # OptiScaler.ini is removed above (LEGACY_FILES), so only HelixSR's folder goes.
+            if self._helixsr_remove_from_game(directory, restore_ini=False):
+                decky.logger.info(f"Removed HelixSR folder from {directory}")
 
             restored_backups = []
             for dll in dict.fromkeys(RESTORABLE_BACKUP_FILES):
@@ -5893,8 +5995,649 @@ Note: If ReShadePreset.ini already existed, your previous settings were preserve
 
 
 
+# ===== HelixSR backend =====
+# Ported from DeckyHelixSRManager (https://github.com/PeroTuncay/DeckyHelixSRManager, The Unlicense):
+# release lookup, verified download, HelixSR's own setup run in the background with progress, and
+# the OptiScaler route (HelixSR in a HelixSR folder next to OptiScaler.ini, OptiScaler.ini pointed
+# at it, the previous values remembered). Unlike the manager, only the newest release is kept:
+# an older install is replaced once the newest one has been built.
+class _HelixSRMixin:
+    _helixsr_latest_cache = None   # (fetched_at, release)
+    _helixsr_downloading = False
+
+    # ── paths ────────────────────────────────────────────────────────────────
+    def _helixsr_root(self) -> Path:
+        return Path(decky.HOME) / HELIXSR_DIRNAME
+
+    def _helixsr_current_dir(self) -> Path:
+        return self._helixsr_root() / "current"
+
+    def _helixsr_staging_dir(self) -> Path:
+        return self._helixsr_root() / "staging"
+
+    def _helixsr_setup_log(self) -> Path:
+        return self._helixsr_root() / "setup.log"
+
+    def _helixsr_setup_rc(self) -> Path:
+        return self._helixsr_root() / "setup.rc"
+
+    def _helixsr_setup_state_file(self) -> Path:
+        return self._helixsr_root() / "setup.json"
+
+    # ── HelixSR DLL inspection ───────────────────────────────────────────────
+    def _helixsr_is_helixsr(self, path: Path) -> bool:
+        # "HelixSR 1.4.1" from 1.3 on; 1.2.0 only names itself "HelixSR (3.1.5)"
+        try:
+            with open(path, "rb") as f:
+                return re.search(rb"HelixSR (\d+\.\d+\.\d+|\(3\.1\.\d+\))", f.read(4 << 20)) is not None
+        except OSError:
+            return False
+
+    def _helixsr_dll_version(self, path: Path) -> str | None:
+        try:
+            with open(path, "rb") as f:
+                match = re.search(rb"\x00HelixSR (\d+\.\d+\.\d+)\x00", f.read(4 << 20))
+            return match.group(1).decode() if match else None
+        except OSError:
+            return None
+
+    def _helixsr_has_embedded_network(self, path: Path) -> bool:
+        try:
+            with open(path, "rb") as f:
+                f.seek(-32, os.SEEK_END)
+                return f.read(8) == HELIXSR_EMBED_MAGIC
+        except OSError:
+            return False
+
+    def _helixsr_has_network(self, path: Path) -> bool:
+        """True once the setup appended the network to the DLL (or left the two older files next to it)."""
+        if self._helixsr_has_embedded_network(path):
+            return True
+        return all((Path(path).parent / name).exists() for name in HELIXSR_SEPARATE_FILES)
+
+    def _helixsr_release_dll(self, directory: Path) -> Path | None:
+        for name in (HELIXSR_DLL_NGX, HELIXSR_DLL_FFX):
+            candidate = Path(directory) / name
+            if candidate.exists() and self._helixsr_is_helixsr(candidate):
+                return candidate
+        return None
+
+    def _helixsr_installed(self) -> dict | None:
+        directory = self._helixsr_current_dir()
+        dll = self._helixsr_release_dll(directory)
+        if not dll:
+            return None
+        meta = self._read_json_file(directory / HELIXSR_META_FILENAME)
+        tag = str(meta.get("tag") or "") or None
+        return {
+            "dir": directory,
+            "dll": dll,
+            "tag": tag,
+            "version": self._helixsr_dll_version(dll) or (tag.lstrip("v") if tag else None),
+            "sha256": meta.get("sha256"),
+            "built": self._helixsr_has_network(dll),
+            "kind": "ngx" if dll.name.lower() == HELIXSR_DLL_NGX else "ffx",
+        }
+
+    def _helixsr_built_dll(self) -> Path:
+        installed = self._helixsr_installed()
+        if not installed:
+            raise RuntimeError(
+                "HelixSR isn't installed yet. Select the HelixSR runtime and press \"Install HelixSR\" first."
+            )
+        if installed["kind"] != "ffx":
+            raise RuntimeError("The installed HelixSR release replaces DLSS (nvngx.dll), which this plugin doesn't support.")
+        if not installed["built"]:
+            raise RuntimeError("HelixSR has no network yet (its build didn't finish). Press \"Install HelixSR\" again.")
+        return installed["dll"]
+
+    def _helixsr_copy_dll(self, dll: Path, dest: Path) -> None:
+        """Releases before 1.4.0 keep the network in two files next to the DLL: those go along."""
+        shutil.copyfile(dll, dest)
+        embedded = self._helixsr_has_embedded_network(dll)
+        for name in HELIXSR_SEPARATE_FILES:
+            src, dst = dll.parent / name, dest.parent / name
+            if src.exists() and not embedded:
+                shutil.copyfile(src, dst)
+            elif dst.exists():
+                dst.unlink()
+
+    # ── releases ─────────────────────────────────────────────────────────────
+    def _helixsr_release_zip(self, assets: list) -> dict | None:
+        """HelixSR's own zip (HelixSR-<version>.zip), not HelixSR Scaler or HelixSR Desktop."""
+        zips = [a for a in assets if str(a.get("name", "")).lower().endswith(".zip")]
+        own = [a for a in zips if re.fullmatch(r"helixsr-\d[\w.\-]*\.zip", a["name"].lower())]
+        other = [a for a in zips if not re.search(r"scaler|desktop", a["name"].lower())]
+        return (own or other or [None])[0]
+
+    def _helixsr_latest_release(self, use_cache: bool = True) -> dict:
+        """Newest published (non-draft, non-prerelease) HelixSR release that carries HelixSR's zip."""
+        now = time.time()
+        cached = self._helixsr_latest_cache
+        if use_cache and cached and now - cached[0] < HELIXSR_LATEST_CACHE_SECONDS:
+            return cached[1]
+        releases = self._request_json(HELIXSR_RELEASES_API)
+        if not isinstance(releases, list):
+            raise RuntimeError("Unexpected GitHub releases response")
+        candidates = []
+        for release in releases:
+            if release.get("draft") or release.get("prerelease"):
+                continue
+            tag = str(release.get("tag_name") or "")
+            asset = self._helixsr_release_zip(release.get("assets") or [])
+            if not asset or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,40}", tag):
+                continue
+            digest = str(asset.get("digest") or "")
+            candidates.append({
+                "tag": tag,
+                "version": tag.lstrip("vV"),
+                "name": asset["name"],
+                "url": asset["browser_download_url"],
+                "size": asset.get("size"),
+                "sha256": digest[7:].lower() if re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest) else None,
+                "published_at": release.get("published_at") or "",
+                "page": release.get("html_url"),
+            })
+        if not candidates:
+            raise RuntimeError("No HelixSR release with a HelixSR zip found on GitHub.")
+        candidates.sort(key=lambda r: r["published_at"], reverse=True)
+        self._helixsr_latest_cache = (now, candidates[0])
+        return candidates[0]
+
+    def _helixsr_extract_release(self, zip_path: Path, target: Path) -> None:
+        """Extracts the zip into target, dropping the single top-level folder the releases use."""
+        target.mkdir(parents=True, exist_ok=True)
+        root = target.resolve()
+        with zipfile.ZipFile(zip_path) as archive:
+            members = archive.infolist()
+            tops = {m.filename.split("/", 1)[0] for m in members}
+            strip = len(tops) == 1 and all("/" in m.filename for m in members)
+            for member in members:
+                name = member.filename.split("/", 1)[1] if strip else member.filename
+                if not name or name.endswith("/"):
+                    continue
+                dest = (target / name).resolve()
+                if root not in dest.parents:
+                    raise RuntimeError(f"Unsafe path in the HelixSR zip: {member.filename}")
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(member) as src, open(dest, "wb") as out:
+                    shutil.copyfileobj(src, out)
+                mode = (member.external_attr >> 16) & 0o777
+                if mode:
+                    os.chmod(dest, mode)
+                elif dest.suffix == ".sh":
+                    os.chmod(dest, 0o755)
+
+    def _helixsr_download_to_staging(self, release: dict) -> Path:
+        root = self._helixsr_root()
+        root.mkdir(parents=True, exist_ok=True)
+        staging = self._helixsr_staging_dir()
+        shutil.rmtree(staging, ignore_errors=True)
+        zip_path = root / release["name"]
+        zip_path.unlink(missing_ok=True)
+        try:
+            decky.logger.info(f"[HelixSR] downloading {release['tag']} from {release['url']}")
+            self._download_file(release["url"], zip_path)
+            size = zip_path.stat().st_size
+            if release.get("size") and size != int(release["size"]):
+                raise RuntimeError(f"HelixSR download incomplete ({size} of {release['size']} bytes). Try again.")
+            digest = self._file_sha256(zip_path)
+            if release.get("sha256") and digest.lower() != release["sha256"]:
+                raise RuntimeError("The HelixSR download doesn't match GitHub's SHA256 checksum, so it wasn't used. Try again.")
+            self._helixsr_extract_release(zip_path, staging)
+        finally:
+            zip_path.unlink(missing_ok=True)
+        if not (staging / "helixsr-setup.sh").exists():
+            raise RuntimeError(f"helixsr-setup.sh not found in {release['name']}.")
+        dll = self._helixsr_release_dll(staging)
+        if not dll:
+            raise RuntimeError(f"No HelixSR DLL found in {release['name']}.")
+        if dll.name.lower() == HELIXSR_DLL_NGX:
+            raise RuntimeError(f"HelixSR {release['tag']} replaces DLSS (nvngx.dll), which this plugin doesn't support.")
+        self._write_json_file(staging / HELIXSR_META_FILENAME, {
+            "tag": release["tag"],
+            "asset_name": release["name"],
+            "sha256": digest,
+            "verified": bool(release.get("sha256")),
+            "downloaded_at": datetime.now(timezone.utc).isoformat(),
+        })
+        return staging
+
+    # ── setup (build) ────────────────────────────────────────────────────────
+    def _helixsr_clean_env(self) -> dict:
+        """Decky's bundled Python sets LD_LIBRARY_PATH/PYTHON* to its own files, which breaks curl, Proton's
+        wine and the setup's Python."""
+        env = dict(os.environ)
+        orig = env.pop("LD_LIBRARY_PATH_ORIG", None)
+        for key in list(env):
+            if key in ("PYTHONHOME", "PYTHONPATH", "LD_LIBRARY_PATH") or key.startswith(("_MEI", "_PYI")) or "_MEI" in env[key]:
+                env.pop(key)
+        if orig:
+            env["LD_LIBRARY_PATH"] = orig
+        home = str(Path(decky.HOME))
+        env["HOME"] = home
+        env["XDG_DATA_HOME"] = str(Path(home) / ".local/share")
+        env["PATH"] = env.get("PATH", "") + ":/usr/local/bin:/usr/bin:/bin"
+        return env
+
+    def _helixsr_build_only_script(self, script: Path) -> Path:
+        """1.7-1.8.1 (Apache 2.0): a copy of the setup that ends before HelixSR's own game installer."""
+        text = script.read_text(errors="replace")
+        if "helixsr_install.py" not in text:
+            return script   # up to 1.6: the setup only builds
+        if text.count(HELIXSR_GAMES_MARKER) != 1 or "helixsr_install.py" in text.split(HELIXSR_GAMES_MARKER)[0]:
+            raise RuntimeError(
+                "This HelixSR release's setup changed in a way this plugin hasn't been checked against. "
+                f"Run it from Desktop Mode (Konsole: {script}) or update the plugin."
+            )
+        out = script.parent / HELIXSR_BUILD_SCRIPT
+        out.write_text(text.split(HELIXSR_GAMES_MARKER)[0] + "\nexit 0\n")
+        os.chmod(out, 0o755)
+        return out
+
+    def _helixsr_setup_command(self, script: Path, directory: Path) -> list[str]:
+        """From 1.9 (HelixSR Freeware License) the setup runs unmodified: its game installer gets no answer
+        (stdin is /dev/null) and ends without changing any game. Frame generation for HelixSR Scaler is
+        skipped (--no-fg), since only the upscaler is used here."""
+        text = script.read_text(errors="replace")
+        if "--rebuild" not in text:
+            return ["bash", str(script), str(directory), "--yes"]
+        if "HelixSR Freeware License" in text:
+            no_fg = ["--no-fg"] if "--no-fg" in text else []
+            return ["bash", str(script), "--yes", *no_fg]
+        return ["bash", str(self._helixsr_build_only_script(script)), "--yes"]
+
+    def _helixsr_pid_alive(self, pid) -> bool:
+        try:
+            cmdline = Path(f"/proc/{int(pid)}/cmdline").read_bytes()
+        except (OSError, ValueError, TypeError):
+            return False
+        return b"helixsr" in cmdline
+
+    def _helixsr_tail(self, path: Path, count: int = 400) -> list[str]:
+        try:
+            with open(path, "rb") as f:
+                f.seek(0, os.SEEK_END)
+                f.seek(max(0, f.tell() - 256 * 1024))
+                text = f.read().decode(errors="replace")
+        except OSError:
+            return []
+        # progress bars redraw with \r: keep the last state of each line
+        return [line.split("\r")[-1] for line in text.splitlines()][-count:]
+
+    def _helixsr_phase(self, lines: list[str]) -> tuple[int, str]:
+        pct, label = 0, "Starting"
+        for line in lines:
+            for pattern, value, text in HELIXSR_PHASES:
+                if re.search(pattern, line) and value >= pct:
+                    pct, label = value, text
+            match = HELIXSR_BUILD_PROGRESS.search(line)
+            if match and pct < 100:
+                bar = int(match.group(1))
+                pct, label = 10 + int(bar * 0.89), f"Building the network: {match.group(2)} ({bar}%)"
+        return pct, label
+
+    def _helixsr_setup_status(self) -> dict:
+        state_data = self._read_json_file(self._helixsr_setup_state_file())
+        rc_file = self._helixsr_setup_rc()
+        rc = None
+        if rc_file.exists():
+            try:
+                rc = int(rc_file.read_text().strip())
+            except ValueError:
+                rc = -1
+        running = bool(state_data.get("pid")) and rc is None and self._helixsr_pid_alive(state_data.get("pid"))
+        lines = self._helixsr_tail(self._helixsr_setup_log(), 2000)
+        pct, label = self._helixsr_phase(lines)
+        if running:
+            state = "running"
+        elif state_data.get("finalized"):
+            state = "succeeded"
+        elif state_data.get("cancelled"):
+            state = "cancelled"
+        elif rc is not None:
+            staged = self._helixsr_release_dll(self._helixsr_staging_dir())
+            state = "succeeded" if staged and self._helixsr_has_network(staged) else "failed"
+        elif state_data:
+            state = "stopped"
+        else:
+            state = "idle"
+        started = state_data.get("started")
+        return {
+            "state": state,
+            "tag": state_data.get("tag"),
+            "rc": rc,
+            "progress": 100 if state == "succeeded" else pct,
+            "phase": label,
+            "elapsed": round(time.time() - started) if running and started else None,
+            "errors": [line.strip() for line in lines if HELIXSR_ERROR_PATTERN.search(line)][-4:],
+            "tail": [line for line in lines if line.strip() and not HELIXSR_PROMPT_LINE.search(line)][-4:],
+            "log_path": str(self._helixsr_setup_log()),
+        }
+
+    def _helixsr_finalize(self) -> None:
+        """Once the staged release is built, it replaces the installed one (games keep their own copy)."""
+        state_file = self._helixsr_setup_state_file()
+        state_data = self._read_json_file(state_file)
+        if not state_data or state_data.get("finalized") or not self._helixsr_setup_rc().exists():
+            return
+        staging = self._helixsr_staging_dir()
+        dll = self._helixsr_release_dll(staging)
+        if not dll or not self._helixsr_has_network(dll):
+            return
+        current = self._helixsr_current_dir()
+        previous = self._helixsr_root() / "previous"
+        shutil.rmtree(previous, ignore_errors=True)
+        if current.exists():
+            current.rename(previous)
+        staging.rename(current)
+        shutil.rmtree(previous, ignore_errors=True)
+        state_data["finalized"] = True
+        self._write_json_file(state_file, state_data)
+        decky.logger.info(f"[HelixSR] {state_data.get('tag')} built and installed to {current}")
+
+    def _helixsr_start_setup(self, tag: str) -> None:
+        staging = self._helixsr_staging_dir()
+        script = staging / "helixsr-setup.sh"
+        command = self._helixsr_setup_command(script, staging)
+        log_path = self._helixsr_setup_log()
+        rc_file = self._helixsr_setup_rc()
+        rc_file.unlink(missing_ok=True)
+        tmp_dir = self._helixsr_root() / "tmp"
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        tmp_dir.mkdir(parents=True)
+        env = self._helixsr_clean_env()
+        env["TMPDIR"] = str(tmp_dir)
+        with open(log_path, "wb") as log:
+            log.write(f"[jedi] {time.ctime()}: running {' '.join(command[1:])}\n".encode())
+            log.flush()
+            # The wrapper records the exit code, so the result is known even if Decky restarts the plugin.
+            # --yes: the user agreed to NVIDIA's DLSS download in the confirmation dialog.
+            proc = subprocess.Popen(
+                ["bash", "-c", '"$@"; echo $? > "$0"', str(rc_file), *command],
+                cwd=str(staging), env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        self._write_json_file(self._helixsr_setup_state_file(), {"tag": tag, "pid": proc.pid, "started": time.time()})
+        asyncio.get_event_loop().create_task(self._helixsr_wait_setup(proc))
+
+    async def _helixsr_wait_setup(self, proc) -> None:
+        await asyncio.to_thread(proc.wait)
+        try:
+            await asyncio.to_thread(self._helixsr_finalize)
+        except Exception as exc:
+            decky.logger.error(f"[HelixSR] finalize failed: {exc}")
+
+    # ── OptiScaler route (per game) ──────────────────────────────────────────
+    def _helixsr_ini_get(self, text: str, section: str, key: str) -> str | None:
+        current = None
+        for line in text.splitlines():
+            match = re.match(r"^\s*\[(.+?)\]\s*$", line)
+            if match:
+                current = match.group(1).strip().lower()
+                continue
+            if current == section.lower():
+                match = re.match(r"^\s*([^;#=\s][^=]*?)\s*=\s*(.*?)\s*$", line)
+                if match and match.group(1).lower() == key.lower():
+                    return match.group(2)
+        return None
+
+    def _helixsr_ini_set(self, text: str, section: str, key: str, value: str | None) -> str:
+        """Sets section/key to value (None removes the key), keeping the file's own formatting."""
+        newline = "\r\n" if "\r\n" in text else "\n"
+        current, sec_start, sec_end, found = None, None, None, False
+        out = []
+        for line in text.splitlines():
+            match = re.match(r"^\s*\[(.+?)\]\s*$", line)
+            if match:
+                if current == section.lower():
+                    sec_end = len(out)
+                current = match.group(1).strip().lower()
+                if current == section.lower():
+                    sec_start = len(out) + 1
+                out.append(line)
+                continue
+            if current == section.lower():
+                match = re.match(r"^(\s*)([^;#=\s][^=]*?)(\s*=\s*)(.*?)(\s*)$", line)
+                if match and match.group(2).lower() == key.lower():
+                    found = True
+                    if value is not None:
+                        out.append(f"{match.group(1)}{match.group(2)}{match.group(3)}{value}")
+                    continue
+            out.append(line)
+        if current == section.lower():
+            sec_end = len(out)
+        if not found and value is not None:
+            if sec_start is None:
+                out += ["", f"[{section}]", f"{key}={value}"]
+            else:
+                pos = sec_end
+                while pos > sec_start and not out[pos - 1].strip():
+                    pos -= 1
+                out.insert(pos, f"{key}={value}")
+        return newline.join(out) + newline
+
+    def _helixsr_opti_upscaler_value(self, text: str) -> str:
+        """OptiScaler 0.9+ may call FSR 3.1/4 'ffx' for Dx12Upscaler, older builds 'fsr31' (read from the ini's comment)."""
+        match = re.search(r"\[Upscalers\](.*?)Dx12Upscaler\s*=", text, re.S | re.I)
+        block = match.group(1) if match else ""
+        return "fsr31" if ("fsr31" in block and not re.search(r"\bffx\b", block)) else "ffx"
+
+    def _helixsr_win_path(self, path: Path) -> str:
+        """Linux path -> the Windows path a Proton game sees (Z: is the Linux root)."""
+        return "Z:" + os.path.realpath(path).replace("/", "\\")
+
+    def _helixsr_apply_to_game(self, directory: Path) -> str:
+        """HelixSR as OptiScaler's FFX upscaler: HelixSR/ next to OptiScaler.ini holds HelixSR as helixsr.dll and
+        helixsr_upscaler.dll, AMD's FidelityFX DLL as amd_fidelityfx_dx12.original.dll (frame generation keeps working)
+        and the INT8 FSR4 upscaler as amd_fidelityfx_upscaler_dx12.amd.dll (FSR4 stays selectable)."""
+        dll = self._helixsr_built_dll()
+        ini = directory / "OptiScaler.ini"
+        if not ini.exists():
+            raise RuntimeError(f"OptiScaler.ini not found in {directory}; can't point OptiScaler at HelixSR.")
+        sub = directory / HELIXSR_GAME_SUBDIR
+        marker = sub / HELIXSR_GAME_MARKER
+        if sub.exists() and not marker.exists():
+            raise RuntimeError(
+                f"There's already a {HELIXSR_GAME_SUBDIR} folder next to OptiScaler.ini that this plugin didn't "
+                "create (HelixSR's own setup or another tool). Remove HelixSR with that tool first."
+            )
+        previous = self._read_json_file(marker).get("previous") if marker.exists() else None
+        sub.mkdir(exist_ok=True)
+
+        for name in HELIXSR_GAME_OLD_NAMES:
+            (sub / name).unlink(missing_ok=True)
+        self._helixsr_copy_dll(dll, sub / HELIXSR_GAME_DLL)
+        self._helixsr_copy_dll(dll, sub / HELIXSR_GAME_SR_DLL)
+        # HelixSR forwards non-upscaling effects (frame generation) to these files next to itself.
+        ffx_loader = directory / HELIXSR_DLL_FFX
+        if ffx_loader.exists() and not self._helixsr_is_helixsr(ffx_loader):
+            shutil.copyfile(ffx_loader, sub / "amd_fidelityfx_dx12.original.dll")
+        fg_dll = directory / HELIXSR_FG_DLL
+        if fg_dll.exists() and not self._helixsr_is_helixsr(fg_dll):
+            shutil.copyfile(fg_dll, sub / HELIXSR_FG_DLL)
+        fsr4_dll = directory / FSR4_UPSCALER_FILENAME
+        keep_fsr4 = fsr4_dll.exists() and not self._helixsr_is_helixsr(fsr4_dll)
+        if keep_fsr4:
+            shutil.copyfile(fsr4_dll, sub / HELIXSR_FSR4_COPY_NAME)
+
+        helix_ini = sub / "helixsr.ini"
+        if not helix_ini.exists():
+            template = dll.parent / "fsr3-drop-in" / "helixsr.ini"
+            if template.exists():
+                shutil.copyfile(template, helix_ini)
+        if keep_fsr4:
+            helix_text = helix_ini.read_text(encoding="utf-8", errors="replace") if helix_ini.exists() else ""
+            helix_ini.write_text(
+                self._helixsr_ini_set(helix_text, "Forwarding", "UpscalerDll", HELIXSR_FSR4_COPY_NAME),
+                encoding="utf-8",
+            )
+
+        text = ini.read_text(encoding="utf-8", errors="replace")
+        wanted = {
+            ("Upscalers", "Dx12Upscaler"): self._helixsr_opti_upscaler_value(text),
+            ("Libraries", "FfxDx12Path"): self._helixsr_win_path(sub / HELIXSR_GAME_DLL),
+            ("Libraries", "FfxDx12SRPath"): self._helixsr_win_path(sub / HELIXSR_GAME_SR_DLL),
+        }
+        if self._helixsr_ini_get(text, "FSR", "UpscalerIndex") is not None:
+            wanted[("FSR", "UpscalerIndex")] = "0"   # HelixSR is the first upscaler its DLL lists
+        if previous is None:
+            previous = {f"{s}/{k}": self._helixsr_ini_get(text, s, k) for (s, k) in wanted}
+        for (section, key), value in wanted.items():
+            text = self._helixsr_ini_set(text, section, key, value)
+        ini.write_text(text, encoding="utf-8")
+
+        installed = self._helixsr_installed() or {}
+        self._write_json_file(marker, {
+            "previous": previous,
+            "set": {f"{s}/{k}": v for (s, k), v in wanted.items()},
+            "helixsr": self._helixsr_dll_version(dll),
+            "tag": installed.get("tag"),
+            "installed_at": datetime.now(timezone.utc).isoformat(),
+        })
+        version = self._helixsr_dll_version(dll) or installed.get("tag") or ""
+        return (
+            f"HelixSR {version} set as OptiScaler's upscaler"
+            + (" (FSR4 stays selectable in OptiScaler's menu)." if keep_fsr4 else ".")
+        )
+
+    def _helixsr_game_check(self, directory: Path) -> dict | None:
+        """Whether a game patched with HelixSR is set up and what helixsr.log (written next to HelixSR once
+        OptiScaler loads it) says. None when the game doesn't use HelixSR."""
+        sub = Path(directory) / HELIXSR_GAME_SUBDIR
+        if not (sub / HELIXSR_GAME_MARKER).exists():
+            return None
+        dll = sub / HELIXSR_GAME_SR_DLL
+        ini_text = ""
+        try:
+            ini_text = (Path(directory) / "OptiScaler.ini").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            pass
+        sr_value = (self._helixsr_ini_get(ini_text, "Libraries", "FfxDx12SRPath") or "").strip()
+        configured = dll.exists() and sr_value.lower() == self._helixsr_win_path(dll).lower()
+        log = sub / "helixsr.log"
+        lines = self._helixsr_tail(log, 400) if log.exists() else []
+        text = "\n".join(lines)
+        if not lines:
+            log_status = "not_loaded"
+        elif "HelixSR ERROR" in text or "NOT RUNNING" in text:
+            log_status = "error"
+        elif "network running" in text:
+            log_status = "running"
+        else:
+            log_status = "loaded"
+        last_upscale = None
+        for line in lines:
+            match = re.search(r"dispatch \d+: render (\d+)x(\d+) -> (\d+)x(\d+)", line)
+            if match and "dry run" not in line:
+                last_upscale = f"{match.group(1)}x{match.group(2)} -> {match.group(3)}x{match.group(4)}"
+        errors = [line.strip() for line in lines if "HelixSR ERROR" in line or "NOT RUNNING" in line][-2:]
+        return {
+            "version": self._helixsr_dll_version(dll) if dll.exists() else None,
+            "configured": configured,
+            "log_status": log_status,
+            "log_time": datetime.fromtimestamp(log.stat().st_mtime).strftime("%Y-%m-%d %H:%M") if lines else None,
+            "last_upscale": last_upscale,
+            "errors": errors,
+        }
+
+    def _helixsr_remove_from_game(self, directory: Path, restore_ini: bool = True) -> bool:
+        """Removes the HelixSR folder this plugin made and, if asked, puts OptiScaler.ini's previous values
+        back (only those that still hold HelixSR's value). False when there was nothing to remove."""
+        sub = directory / HELIXSR_GAME_SUBDIR
+        marker = sub / HELIXSR_GAME_MARKER
+        if not marker.exists():
+            return False
+        data = self._read_json_file(marker)
+        ini = directory / "OptiScaler.ini"
+        if restore_ini and ini.exists():
+            text = ini.read_text(encoding="utf-8", errors="replace")
+            for section_key, old in (data.get("previous") or {}).items():
+                section, key = section_key.split("/", 1)
+                if (self._helixsr_ini_get(text, section, key) or "") == ((data.get("set") or {}).get(section_key) or ""):
+                    if old is None or (key.lower().endswith("path") and str(old).strip().lower() == "plugins"):
+                        old = "auto"   # never put back the old template bug
+                    text = self._helixsr_ini_set(text, section, key, old)
+            ini.write_text(text, encoding="utf-8")
+        shutil.rmtree(sub, ignore_errors=True)
+        return True
+
+    # ── frontend API ─────────────────────────────────────────────────────────
+    async def get_helixsr_status(self, check_latest: bool = True) -> dict:
+        try:
+            await asyncio.to_thread(self._helixsr_finalize)
+        except Exception as exc:
+            decky.logger.warning(f"[HelixSR] finalize failed: {exc}")
+        setup = await asyncio.to_thread(self._helixsr_setup_status)
+        installed = self._helixsr_installed()
+        latest, latest_error = None, None
+        if check_latest:
+            try:
+                latest = await asyncio.to_thread(self._helixsr_latest_release)
+            except Exception as exc:
+                latest_error = f"Could not reach GitHub: {exc}"
+        is_latest = bool(
+            installed and installed["built"] and latest and installed.get("tag") == latest["tag"]
+            and (not latest.get("sha256") or not installed.get("sha256") or installed["sha256"] == latest["sha256"])
+        )
+        return {
+            "status": "success",
+            "installed": bool(installed and installed["built"]),
+            "installed_version": installed["version"] if installed else None,
+            "installed_tag": installed["tag"] if installed else None,
+            "latest_version": latest["version"] if latest else None,
+            "latest_tag": latest["tag"] if latest else None,
+            "up_to_date": is_latest,
+            "update_available": bool(latest) and not is_latest,
+            "downloading": bool(self._helixsr_downloading),
+            "setup": setup,
+            "message": latest_error,
+        }
+
+    async def install_latest_helixsr(self) -> dict:
+        """Installs the newest HelixSR release, unless it's the one installed already. The installed release
+        stays in use until the newest one has been built."""
+        if self._helixsr_downloading:
+            return {"status": "error", "message": "HelixSR is already being downloaded."}
+        if (await asyncio.to_thread(self._helixsr_setup_status))["state"] == "running":
+            return {"status": "error", "message": "HelixSR is already being built."}
+        self._helixsr_downloading = True
+        try:
+            latest = await asyncio.to_thread(self._helixsr_latest_release, False)
+            installed = self._helixsr_installed()
+            if (installed and installed["built"] and installed.get("tag") == latest["tag"]
+                    and (not latest.get("sha256") or installed.get("sha256") in (None, latest["sha256"]))):
+                return {"status": "success", "started": False,
+                        "message": f"HelixSR {latest['version']} (the latest) is already installed."}
+            await asyncio.to_thread(self._helixsr_download_to_staging, latest)
+            self._helixsr_setup_state_file().unlink(missing_ok=True)
+            await asyncio.to_thread(self._helixsr_start_setup, latest["tag"])
+            action = "Updating" if installed else "Installing"
+            return {"status": "success", "started": True,
+                    "message": f"{action} HelixSR {latest['version']}: building its network (about 7-10 minutes on a Steam Deck). Keep the device awake."}
+        except Exception as exc:
+            decky.logger.error(f"[HelixSR] install failed: {exc}")
+            return {"status": "error", "message": str(exc)}
+        finally:
+            self._helixsr_downloading = False
+
+    async def cancel_helixsr_setup(self) -> dict:
+        state_file = self._helixsr_setup_state_file()
+        state_data = self._read_json_file(state_file)
+        pid = state_data.get("pid")
+        if not pid or not self._helixsr_pid_alive(pid):
+            return {"status": "error", "message": "No HelixSR build is running."}
+        state_data["cancelled"] = True
+        self._write_json_file(state_file, state_data)
+        try:
+            os.killpg(int(pid), signal.SIGTERM)
+        except (ProcessLookupError, PermissionError) as exc:
+            return {"status": "error", "message": f"Could not stop the build: {exc}"}
+        return {"status": "success", "message": "HelixSR build cancelled. The installed release (if any) is unchanged."}
+
+
 # ===== Unified plugin =====
-class Plugin(_OptiScalerMixin, _ReShadeMixin):
+class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin):
     # Coexistence policy ("fixed + auto-merge"): ReShade owns the graphics proxy slot
     # (default dxgi); OptiScaler/Framegen is forced onto a non-graphics proxy so the two
     # never fight over the same file. Users can override per game via set_slots_manual.
@@ -6031,7 +6774,9 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin):
             "name": opti.get("name"),
             "optiscaler_patched": bool(opti.get("patched")),
             "optiscaler_slot": opti.get("dll_name"),
+            "optiscaler_variant": opti.get("fsr4_variant"),
             "optiscaler_variant_label": opti.get("fsr4_variant_label"),
+            "helixsr": self._helixsr_game_check(directory) if directory and opti.get("patched") else None,
             "reshade_present": reshade_present,
             "reshade_slot": self._detect_reshade_slot(directory) if reshade_present else None,
             "both_active": bool(opti.get("patched")) and reshade_present,
@@ -6132,6 +6877,11 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin):
                 return {"status": "error", "message": self._game_not_found_message(str(appid))}
             if self._is_game_running(game):
                 return {"status": "error", "message": "Close the game before patching."}
+            if FSR4_VARIANTS.get(str(fsr4_variant or ""), {}).get("helixsr"):
+                try:
+                    self._helixsr_built_dll()
+                except RuntimeError as exc:
+                    return {"status": "error", "message": str(exc)}
 
             steps = []
 
