@@ -637,19 +637,22 @@ function HelixSRPanel() {
         }
     };
     const building = info?.setup?.state === "running";
+    const download = info?.download;
+    const downloading = Boolean(download?.active);
+    const busy = building || downloading;
     SP_REACT.useEffect(() => {
         void refresh();
     }, []);
     SP_REACT.useEffect(() => {
-        if (!building)
+        if (!busy)
             return () => { };
-        const id = setInterval(() => void refresh(), 2000);
+        const id = setInterval(() => void refresh(), 1500);
         return () => clearInterval(id);
-    }, [building]);
+    }, [busy]);
     const doInstall = async () => {
         try {
             setWorking(true);
-            setMessage("Downloading the latest HelixSR release…");
+            setMessage("Checking the latest HelixSR release…");
             const r = await installLatestHelixSR();
             setMessage(r.status === "success" ? `✅ ${r.message || "Done"}` : `❌ ${r.message || "Failed"}`);
         }
@@ -687,7 +690,22 @@ function HelixSRPanel() {
                     ? `🟡 HelixSR ${info.installed_version || ""} installed — ${info.latest_version} available`
                     : `🟢 HelixSR ${info.installed_version || ""} installed`
             : `⚪ HelixSR not installed${info.latest_version ? ` (latest: ${info.latest_version})` : ""}`;
-    const showInstallButton = info && !building && !info.up_to_date;
+    const showInstallButton = info && !busy && !info.up_to_date;
+    const mb = (bytes) => `${((bytes || 0) / 1048576).toFixed(0)} MB`;
+    const downloadText = !downloading
+        ? ""
+        : download.phase === "verifying"
+            ? "Verifying the download (SHA256)…"
+            : download.phase === "extracting"
+                ? "Extracting…"
+                : download.total
+                    ? `Downloading: ${mb(download.bytes)} of ${mb(download.total)}`
+                    : `Downloading: ${mb(download.bytes)}`;
+    const downloadProgress = !downloading
+        ? 0
+        : download.phase === "downloading"
+            ? (download.total ? Math.min(99, Math.floor((download.bytes / download.total) * 100)) : 0)
+            : 100;
     return (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
         window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", padding: "8px", backgroundColor: "rgba(255,255,255,0.05)", borderRadius: "4px" } },
@@ -697,12 +715,15 @@ function HelixSRPanel() {
                     "❌ The last HelixSR build failed.",
                     (setup.errors || []).length > 0 ? `\n${setup.errors.join("\n")}` : "",
                     `\nLog: ${setup.log_path}`)),
+                download?.error && (window.SP_REACT.createElement("div", { style: { color: "#ff6b6b", marginTop: "4px", whiteSpace: "pre-wrap", wordBreak: "break-word" } }, `❌ HelixSR ${download.version || ""} download failed: ${download.error}`)),
                 setup?.state === "stopped" && (window.SP_REACT.createElement("div", { style: { opacity: 0.7, marginTop: "4px" } }, "The last HelixSR build was interrupted (sleep or restart). Start it again.")))),
+        downloading && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+            window.SP_REACT.createElement(DFL.ProgressBarWithInfo, { layout: "below", bottomSeparator: "none", indeterminate: download.phase === "downloading" && !download.total,nProgress: downloadProgress, sOperationText: downloadText, description: `HelixSR ${download.version || ""}: the build starts right after. You can close this menu.` }))),
         building && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement(DFL.ProgressBarWithInfo, { layout: "below", bottomSeparator: "none", nProgress: setup.progress || 0, sOperationText: setup.phase || "Building HelixSR…", sTimeRemaining: setup.elapsed != null ? formatElapsed(setup.elapsed) : undefined, description: `Building HelixSR ${setup.tag || ""} — about 7-10 minutes on a Steam Deck. You can close this menu.` }))),
         showInstallButton && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleInstall, disabled: working || info?.downloading }, working || info?.downloading
-                ? "Downloading…"
+            window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleInstall, disabled: working }, working
+                ? "Starting…"
                 : info.installed
                     ? `⬆️ Update HelixSR${info.latest_version ? ` to ${info.latest_version}` : ""}`
                     : `⬇️ Install HelixSR${info.latest_version ? ` ${info.latest_version}` : ""}`))),

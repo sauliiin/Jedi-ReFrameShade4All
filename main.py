@@ -184,6 +184,9 @@ HELIXSR_FSR4_COPY_NAME = "amd_fidelityfx_upscaler_dx12.amd.dll"
 HELIXSR_FG_DLL = "amd_fidelityfx_framegeneration_dx12.dll"
 HELIXSR_EMBED_MAGIC = b"HXSRNET1"
 HELIXSR_SEPARATE_FILES = ("helixsr_weights.bin", "helixsr_kernels.pak")   # the network before 1.4.0
+# Release folders not needed here: HelixSR Scaler (from 1.9.3 in HelixSR's zip, ~205 MB) is OptiScaler-based
+# and only installed by HelixSR's own installer; the setup builds the network without it.
+HELIXSR_SKIP_DIRS = ("helixsr-scaler/",)
 HELIXSR_GAMES_MARKER = "# --- games ---"   # helixsr-setup.sh 1.7-1.8: HelixSR's own game installer follows
 HELIXSR_BUILD_SCRIPT = ".jedi-helixsr-build.sh"
 HELIXSR_PHASES = [  # (setup log pattern, progress %, label)
@@ -6003,7 +6006,7 @@ Note: If ReShadePreset.ini already existed, your previous settings were preserve
 # an older install is replaced once the newest one has been built.
 class _HelixSRMixin:
     _helixsr_latest_cache = None   # (fetched_at, release)
-    _helixsr_downloading = False
+    _helixsr_download = None   # the download in progress or its error: {tag, version, path, total, phase, error}
 
     # ── paths ────────────────────────────────────────────────────────────────
     def _helixsr_root(self) -> Path:
@@ -6154,7 +6157,7 @@ class _HelixSRMixin:
             strip = len(tops) == 1 and all("/" in m.filename for m in members)
             for member in members:
                 name = member.filename.split("/", 1)[1] if strip else member.filename
-                if not name or name.endswith("/"):
+                if not name or name.endswith("/") or name.startswith(HELIXSR_SKIP_DIRS):
                     continue
                 dest = (target / name).resolve()
                 if root not in dest.parents:
@@ -6175,15 +6178,19 @@ class _HelixSRMixin:
         shutil.rmtree(staging, ignore_errors=True)
         zip_path = root / release["name"]
         zip_path.unlink(missing_ok=True)
+        progress = self._helixsr_download if isinstance(self._helixsr_download, dict) else {}
+        progress["path"] = str(zip_path)   # the progress bar reads its size
         try:
             decky.logger.info(f"[HelixSR] downloading {release['tag']} from {release['url']}")
             self._download_file(release["url"], zip_path)
+            progress["phase"] = "verifying"
             size = zip_path.stat().st_size
             if release.get("size") and size != int(release["size"]):
                 raise RuntimeError(f"HelixSR download incomplete ({size} of {release['size']} bytes). Try again.")
             digest = self._file_sha256(zip_path)
             if release.get("sha256") and digest.lower() != release["sha256"]:
                 raise RuntimeError("The HelixSR download doesn't match GitHub's SHA256 checksum, so it wasn't used. Try again.")
+            progress["phase"] = "extracting"
             self._helixsr_extract_release(zip_path, staging)
         finally:
             zip_path.unlink(missing_ok=True)
@@ -6336,7 +6343,7 @@ class _HelixSRMixin:
         self._write_json_file(state_file, state_data)
         decky.logger.info(f"[HelixSR] {state_data.get('tag')} built and installed to {current}")
 
-    def _helixsr_start_setup(self, tag: str) -> None:
+    def _helixsr_start_setup(self, tag: str) -> subprocess.Popen:
         staging = self._helixsr_staging_dir()
         script = staging / "helixsr-setup.sh"
         command = self._helixsr_setup_command(script, staging)
@@ -6359,7 +6366,7 @@ class _HelixSRMixin:
                 start_new_session=True,
             )
         self._write_json_file(self._helixsr_setup_state_file(), {"tag": tag, "pid": proc.pid, "started": time.time()})
-        asyncio.get_event_loop().create_task(self._helixsr_wait_setup(proc))
+        return proc
 
     async def _helixsr_wait_setup(self, proc) -> None:
         await asyncio.to_thread(proc.wait)
@@ -6589,37 +6596,69 @@ class _HelixSRMixin:
             "latest_tag": latest["tag"] if latest else None,
             "up_to_date": is_latest,
             "update_available": bool(latest) and not is_latest,
-            "downloading": bool(self._helixsr_downloading),
+            "download": self._helixsr_download_status(),
             "setup": setup,
             "message": latest_error,
         }
 
+    def _helixsr_download_status(self) -> dict:
+        data = self._helixsr_download
+        if not isinstance(data, dict):
+            return {"active": False}
+        done = 0
+        try:
+            if data.get("phase") == "downloading" and data.get("path"):
+                done = os.path.getsize(data["path"])
+        except OSError:
+            pass
+        return {
+            "active": not data.get("error"),
+            "tag": data.get("tag"),
+            "version": data.get("version"),
+            "phase": data.get("phase"),
+            "bytes": done,
+            "total": data.get("total"),
+            "error": data.get("error"),
+        }
+
     async def install_latest_helixsr(self) -> dict:
-        """Installs the newest HelixSR release, unless it's the one installed already. The installed release
-        stays in use until the newest one has been built."""
-        if self._helixsr_downloading:
+        """Installs the newest HelixSR release, unless it's the one installed already. Download, verification,
+        extraction and the build run in the background (get_helixsr_status reports progress). The installed
+        release stays in use until the newest one has been built."""
+        if self._helixsr_download_status().get("active"):
             return {"status": "error", "message": "HelixSR is already being downloaded."}
         if (await asyncio.to_thread(self._helixsr_setup_status))["state"] == "running":
             return {"status": "error", "message": "HelixSR is already being built."}
-        self._helixsr_downloading = True
         try:
             latest = await asyncio.to_thread(self._helixsr_latest_release, False)
-            installed = self._helixsr_installed()
-            if (installed and installed["built"] and installed.get("tag") == latest["tag"]
-                    and (not latest.get("sha256") or installed.get("sha256") in (None, latest["sha256"]))):
-                return {"status": "success", "started": False,
-                        "message": f"HelixSR {latest['version']} (the latest) is already installed."}
-            await asyncio.to_thread(self._helixsr_download_to_staging, latest)
+        except Exception as exc:
+            return {"status": "error", "message": f"Could not reach GitHub: {exc}"}
+        installed = self._helixsr_installed()
+        if (installed and installed["built"] and installed.get("tag") == latest["tag"]
+                and (not latest.get("sha256") or installed.get("sha256") in (None, latest["sha256"]))):
+            return {"status": "success", "started": False,
+                    "message": f"HelixSR {latest['version']} (the latest) is already installed."}
+        self._helixsr_download = {"tag": latest["tag"], "version": latest["version"], "path": None,
+                                  "total": latest.get("size"), "phase": "downloading", "error": None}
+        asyncio.get_event_loop().create_task(self._helixsr_install_task(latest))
+        size_mb = f" ({int(latest['size']) / 1048576:.0f} MB)" if latest.get("size") else ""
+        return {"status": "success", "started": True,
+                "message": f"Downloading HelixSR {latest['version']}{size_mb}, then building its network "
+                           "(about 7-10 minutes on a Steam Deck). Keep the device awake."}
+
+    async def _helixsr_install_task(self, release: dict) -> None:
+        try:
+            await asyncio.to_thread(self._helixsr_download_to_staging, release)
             self._helixsr_setup_state_file().unlink(missing_ok=True)
-            await asyncio.to_thread(self._helixsr_start_setup, latest["tag"])
-            action = "Updating" if installed else "Installing"
-            return {"status": "success", "started": True,
-                    "message": f"{action} HelixSR {latest['version']}: building its network (about 7-10 minutes on a Steam Deck). Keep the device awake."}
+            proc = await asyncio.to_thread(self._helixsr_start_setup, release["tag"])
+            self._helixsr_download = None
+            await self._helixsr_wait_setup(proc)
         except Exception as exc:
             decky.logger.error(f"[HelixSR] install failed: {exc}")
-            return {"status": "error", "message": str(exc)}
-        finally:
-            self._helixsr_downloading = False
+            if isinstance(self._helixsr_download, dict):
+                self._helixsr_download["error"] = str(exc)
+            else:
+                self._helixsr_download = {"tag": release["tag"], "version": release["version"], "error": str(exc)}
 
     async def cancel_helixsr_setup(self) -> dict:
         state_file = self._helixsr_setup_state_file()

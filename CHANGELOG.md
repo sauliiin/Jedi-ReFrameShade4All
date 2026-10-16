@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.1.12
+
+### Added
+- HelixSR download progress: the download (about 130 MB from HelixSR 1.9.3, which now bundles HelixSR Scaler), its SHA256 check and the extraction run in the background with a progress bar, followed by the build. A failed download is shown in the panel; the installed HelixSR stays untouched.
+
+### Changed
+- HelixSR Scaler (`helixsr-scaler/`, ~205 MB in HelixSR 1.9.3's zip) is no longer extracted: it isn't used here and the setup builds the network without it. An installed release now takes about 8 MB.
+- Checked against HelixSR 1.9.3 and DeckyHelixSRManager 0.10.2: same setup flags, FSR4 forwarding and frame generation forwarding.
+
+### Fixed
+- The HelixSR build was started from a worker thread, which made the install report an error ("no current event loop") although the build was running.
+
 ## 1.1.11
 
 ### Added
