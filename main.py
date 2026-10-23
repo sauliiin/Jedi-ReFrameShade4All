@@ -52,6 +52,29 @@ OPTISCALER_PRE10_ASSET = {
     "version": "0.10.0-pre1.20260622_135940",
 }
 
+# FSR 4.1.2 Lite (FSR4L-i8): AMD's driver FSR from Adrenalin 26.10.1, unmodified (AMD/WHQL signed). Both
+# carry the INT8 Lite model (ffxProvider_FSR4Lite_Int8), the smaller INT8 model AMD made for APUs.
+FSR4_LITE_412_ASSET = {
+    "name": "amdxcffx64_4.1.2_2.4.0.4370.dll",
+    "sha256": "c33a287f3048bf02311cae430b6a977500b94ca7b315cd7bff751e6b03e483e3",
+    "version": "4.1.2-lite-2.4.0.4370",
+}
+
+FSR4_LITE_412_VK_ASSET = {
+    "name": "amdvkffx64_4.1.2_2.4.0.4370.dll",
+    "sha256": "80e761f7c8c0ec8ead7b321df01911baaf917defae51388d29eaecb1d6bc58bd",
+    "version": "4.1.2-lite-2.4.0.4370",
+}
+
+# OptiScaler 10 built from optiscaler/OptiScaler master 2128299c: selects FSR 4.1.2 models (Fsr4Model=3 = INT8
+# Lite) and keeps the AMD vendor id for amdxcffx64 while spoofing (8f2a943). Its FFX/XeSS libraries are the
+# same files as 0.9.4's, so only the injector changes.
+OPTISCALER_V10_ASSET = {
+    "name": "OptiScaler_10.0.0-master.2128299c.dll",
+    "sha256": "52b3045d6e0d5322f45368652c16185ca8c34a4fe5da0b0ab098818fb2f458a5",
+    "version": "10.0.0-master.2128299c",
+}
+
 OPTIPATCHER_ASSET = {
     "name": "OptiPatcher_rolling.asi",
     "sha256": "88b9e1be3559737cd205fdf5f2c8550cf1923fb1def4c603e5bf03c3e84131b1",
@@ -60,6 +83,7 @@ OPTIPATCHER_ASSET = {
 
 FSR4_UPSCALER_FILENAME = "amd_fidelityfx_upscaler_dx12.dll"
 FSR4_DRIVER_OVERRIDE_FILENAME = "amdxcffx64.dll"
+FSR4_VK_DRIVER_OVERRIDE_FILENAME = "amdvkffx64.dll"
 INSTALL_MANIFEST_FILENAME = "install-manifest.json"
 VERSION_FILENAME = "version.txt"
 DEFAULT_FSR4_VARIANT = "rdna23-int8"
@@ -132,6 +156,55 @@ FSR4_VARIANTS = {
             "Plugins.LoadCustomAmdxc64OnRdna2": "true",
         },
     },
+    "lite-412-i8": {
+        "label": "4.1.2 Lite FSR4L-i8 / Steam Deck + APUs",
+        "dir_name": "fsr4-lite-412-i8",
+        "sha256": "d0dcccc74a43c44ba435b7a369b456e0970d8a4464e4bd683119b374f2c9fb46",
+        "source_asset_name": OPTISCALER_ARCHIVE_ASSET["name"],
+        "source_version": OPTISCALER_ARCHIVE_ASSET["version"],
+        "uses_archive_native": True,
+        "injector": {
+            "name": "OptiScaler.dll",
+            "sha256": OPTISCALER_V10_ASSET["sha256"],
+            "source_asset_name": OPTISCALER_V10_ASSET["name"],
+            "source_version": OPTISCALER_V10_ASSET["version"],
+        },
+        "extra_files": [
+            {
+                "name": FSR4_DRIVER_OVERRIDE_FILENAME,
+                "sha256": FSR4_LITE_412_ASSET["sha256"],
+                "source_asset_name": FSR4_LITE_412_ASSET["name"],
+                "source_version": FSR4_LITE_412_ASSET["version"],
+            },
+            {
+                "name": FSR4_VK_DRIVER_OVERRIDE_FILENAME,
+                "sha256": FSR4_LITE_412_VK_ASSET["sha256"],
+                "source_asset_name": FSR4_LITE_412_VK_ASSET["name"],
+                "source_version": FSR4_LITE_412_VK_ASSET["version"],
+            },
+        ],
+        # OptiScaler 10 keys: GPU treated as INT8 Lite, Lite model, FSR 4 as the DX12 upscaler. FGInput=nukems
+        # is gone in 10 (it reads as no FG): the same Nukems DLSSG replacement is FGInput=NvngxFG.
+        "config_overrides": {
+            "FSR.Fsr4GpuSupport": "4",
+            "FSR.Fsr4Model": "3",
+            "FSR.UpscalerIndex": "0",
+            "Upscalers.Dx12Upscaler": "ffx",
+            "FrameGen.FGInput": "NvngxFG",
+            "FrameGen.FGOutput": "auto",
+            "FrameGen.FGNvngxReplacement": "Nukems",
+        },
+        # What a game gets back when it leaves this variant for an OptiScaler 0.9.4 one.
+        "leave_config_overrides": {
+            "FSR.Fsr4GpuSupport": "auto",
+            "FSR.Fsr4Model": "auto",
+            "FSR.UpscalerIndex": "auto",
+            "Upscalers.Dx12Upscaler": "auto",
+            "FrameGen.FGInput": "nukems",
+            "FrameGen.FGOutput": "nukems",
+            "FrameGen.FGNvngxReplacement": "auto",
+        },
+    },
     # HelixSR is not bundled: it is downloaded and built on the device (see _HelixSRMixin).
     # The game root keeps the INT8 FSR4 upscaler, which also stays selectable next to HelixSR.
     "helixsr": {
@@ -174,6 +247,10 @@ HELIXSR_GAME_SUBDIR = "HelixSR"
 HELIXSR_GAME_MARKER = "jedi-helixsr.json"
 HELIXSR_DLL_FFX = "amd_fidelityfx_dx12.dll"   # up to 1.4 and from 1.7: an FSR 3.1 replacement
 HELIXSR_DLL_NGX = "nvngx.dll"                 # 1.5/1.6 (withdrawn): a DLSS replacement, not supported here
+HELIXSR_OUT_SUBDIR = "HelixSR-fsrfg"          # 2.0+: HelixSR's DLL (and what the setup builds) is in this folder
+HELIXSR_DLSS_FILENAME = ".jedi-nvngx_dlss.dll"   # NVIDIA's DLSS DLL for the setup's --dlss, deleted after the build
+HELIXSR_DLSS_URL = re.compile(r"""^DLSS_URL\s*=\s*['"](https://[^'"]+)['"]""", re.M)
+HELIXSR_DLSS_SHA256 = re.compile(r"""^DLSS_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]""", re.M)
 # In the game, HelixSR gets names of its own (as HelixSR's own OptiScaler install did): a game that loads
 # its amd_fidelityfx_*.dll first would otherwise make the loader hand that module back for HelixSR's path,
 # and OptiScaler would only list the FSR4 upscaler.
@@ -258,6 +335,7 @@ ORIGINAL_DLL_BACKUPS = [
     "amd_fidelityfx_framegeneration_dx12.dll",
     FSR4_UPSCALER_FILENAME,
     FSR4_DRIVER_OVERRIDE_FILENAME,
+    FSR4_VK_DRIVER_OVERRIDE_FILENAME,
     "amdxc64.dll",
     "amd_fidelityfx_vk.dll",
 ]
@@ -1091,6 +1169,9 @@ class _OptiScalerMixin:
                 FSR4_VALVE_411_ASSET["name"],
                 AMDXC64_RDNA2_ASSET["name"],
                 OPTISCALER_PRE10_ASSET["name"],
+                FSR4_LITE_412_ASSET["name"],
+                FSR4_LITE_412_VK_ASSET["name"],
+                OPTISCALER_V10_ASSET["name"],
                 OPTIPATCHER_ASSET["name"],
             ]
             try:
@@ -1108,6 +1189,9 @@ class _OptiScalerMixin:
             fsr4_valve_411_src = bin_path / FSR4_VALVE_411_ASSET["name"]
             amdxc64_rdna2_src = bin_path / AMDXC64_RDNA2_ASSET["name"]
             optiscaler_pre10_src = bin_path / OPTISCALER_PRE10_ASSET["name"]
+            fsr4_lite_412_src = bin_path / FSR4_LITE_412_ASSET["name"]
+            fsr4_lite_412_vk_src = bin_path / FSR4_LITE_412_VK_ASSET["name"]
+            optiscaler_v10_src = bin_path / OPTISCALER_V10_ASSET["name"]
             optipatcher_src = bin_path / OPTIPATCHER_ASSET["name"]
             for required_path, asset in [
                 (fsr4_int8_src, FSR4_INT8_ASSET),
@@ -1115,6 +1199,9 @@ class _OptiScalerMixin:
                 (fsr4_valve_411_src, FSR4_VALVE_411_ASSET),
                 (amdxc64_rdna2_src, AMDXC64_RDNA2_ASSET),
                 (optiscaler_pre10_src, OPTISCALER_PRE10_ASSET),
+                (fsr4_lite_412_src, FSR4_LITE_412_ASSET),
+                (fsr4_lite_412_vk_src, FSR4_LITE_412_VK_ASSET),
+                (optiscaler_v10_src, OPTISCALER_V10_ASSET),
                 (optipatcher_src, OPTIPATCHER_ASSET),
             ]:
                 if not required_path.exists():
@@ -1319,6 +1406,27 @@ class _OptiScalerMixin:
             )
             if not self._create_renamed_copies(rdna2_valve_injector, rdna2_valve_dir / "renames"):
                 return {"status": "error", "message": "Failed to prepare renamed pre10 OptiScaler proxies."}
+
+            lite_412_dir = extract_path / FSR4_VARIANTS["lite-412-i8"]["dir_name"]
+            lite_412_dir.mkdir(parents=True, exist_ok=True)
+            lite_412_upscaler = lite_412_dir / FSR4_UPSCALER_FILENAME
+            shutil.copy2(native_upscaler_root if native_upscaler_root.exists() else rdna4_upscaler, lite_412_upscaler)
+            if archive_is_pinned:
+                self._verify_bundled_asset(
+                    lite_412_upscaler,
+                    FSR4_VARIANTS["lite-412-i8"]["sha256"],
+                    "Prepared lite-412-i8 FSR4 upscaler",
+                )
+            for source, destination_name, asset in [
+                (fsr4_lite_412_src, FSR4_DRIVER_OVERRIDE_FILENAME, FSR4_LITE_412_ASSET),
+                (fsr4_lite_412_vk_src, FSR4_VK_DRIVER_OVERRIDE_FILENAME, FSR4_LITE_412_VK_ASSET),
+                (optiscaler_v10_src, "OptiScaler.dll", OPTISCALER_V10_ASSET),
+            ]:
+                destination = lite_412_dir / destination_name
+                shutil.copy2(source, destination)
+                self._verify_bundled_asset(destination, asset["sha256"], f"Prepared lite-412-i8 {destination_name}")
+            if not self._create_renamed_copies(lite_412_dir / "OptiScaler.dll", lite_412_dir / "renames"):
+                return {"status": "error", "message": "Failed to prepare renamed OptiScaler 10 proxies."}
 
             rdna23_dir = extract_path / FSR4_VARIANTS["rdna23-int8"]["dir_name"]
             rdna23_dir.mkdir(parents=True, exist_ok=True)
@@ -1579,6 +1687,9 @@ class _OptiScalerMixin:
         if previous_variant == "rdna2-valve-411-pre10" and selected_variant != previous_variant:
             selected_config_overrides.setdefault("FSR.Fsr4ForceModel", "auto")
             selected_config_overrides.setdefault("Plugins.LoadCustomAmdxc64OnRdna2", "false")
+        if previous_variant in FSR4_VARIANTS and selected_variant != previous_variant:
+            for key, value in (FSR4_VARIANTS[previous_variant].get("leave_config_overrides") or {}).items():
+                selected_config_overrides.setdefault(key, value)
         selected_upscaler_src = self._fsr4_variant_path(fgmod_path, selected_variant)
         if not selected_upscaler_src.exists():
             selected_upscaler_src = fgmod_path / FSR4_UPSCALER_FILENAME
@@ -1723,6 +1834,10 @@ class _OptiScalerMixin:
                 helixsr_note = f" {self._helixsr_apply_to_game(directory)}"
             elif self._helixsr_remove_from_game(directory, restore_ini=True):
                 helixsr_note = " HelixSR removed; OptiScaler is back to FSR."
+                # HelixSR's restore puts back keys still holding its values (Dx12Upscaler=ffx, UpscalerIndex=0),
+                # which can be this variant's own values too.
+                if target_ini.exists():
+                    self._apply_optiscaler_ini_overrides(target_ini, self._fsr4_variant_config_overrides(selected_variant))
 
             decky.logger.info(f"Manual patch complete for {directory}")
             return {
@@ -6059,10 +6174,11 @@ class _HelixSRMixin:
         return all((Path(path).parent / name).exists() for name in HELIXSR_SEPARATE_FILES)
 
     def _helixsr_release_dll(self, directory: Path) -> Path | None:
-        for name in (HELIXSR_DLL_NGX, HELIXSR_DLL_FFX):
-            candidate = Path(directory) / name
-            if candidate.exists() and self._helixsr_is_helixsr(candidate):
-                return candidate
+        for folder in (Path(directory) / HELIXSR_OUT_SUBDIR, Path(directory)):
+            for name in (HELIXSR_DLL_NGX, HELIXSR_DLL_FFX):
+                candidate = folder / name
+                if candidate.exists() and self._helixsr_is_helixsr(candidate):
+                    return candidate
         return None
 
     def _helixsr_installed(self) -> dict | None:
@@ -6201,6 +6317,9 @@ class _HelixSRMixin:
             raise RuntimeError(f"No HelixSR DLL found in {release['name']}.")
         if dll.name.lower() == HELIXSR_DLL_NGX:
             raise RuntimeError(f"HelixSR {release['tag']} replaces DLSS (nvngx.dll), which this plugin doesn't support.")
+        dlss_source = self._helixsr_dlss_source(staging / "helixsr-setup.sh")
+        if dlss_source:
+            self._helixsr_fetch_dlss(*dlss_source, progress)
         self._write_json_file(staging / HELIXSR_META_FILENAME, {
             "tag": release["tag"],
             "asset_name": release["name"],
@@ -6209,6 +6328,39 @@ class _HelixSRMixin:
             "downloaded_at": datetime.now(timezone.utc).isoformat(),
         })
         return staging
+
+    def _helixsr_dlss_path(self) -> Path:
+        return self._helixsr_root() / HELIXSR_DLSS_FILENAME
+
+    def _helixsr_dlss_source(self, script: Path) -> tuple[str, str] | None:
+        """(url, sha256) of NVIDIA's DLSS DLL for setups that get it through --dlss (from 1.9, see
+        _helixsr_setup_command), as the release's own helixsr_setup.py names and checks it."""
+        text = script.read_text(errors="replace")
+        if "HelixSR Freeware License" not in text:
+            return None
+        try:
+            setup_py = (script.parent / "setup" / "helixsr_setup.py").read_text(errors="replace")
+        except OSError:
+            setup_py = ""
+        url, sha256 = HELIXSR_DLSS_URL.search(setup_py), HELIXSR_DLSS_SHA256.search(setup_py)
+        if "--dlss" not in text or not url or not sha256:
+            raise RuntimeError(
+                "This HelixSR release's setup changed in a way this plugin hasn't been checked against. "
+                f"Run it from Desktop Mode (Konsole: {script}) or update the plugin."
+            )
+        return url.group(1), sha256.group(1).lower()
+
+    def _helixsr_fetch_dlss(self, url: str, sha256: str, progress: dict) -> Path:
+        path = self._helixsr_dlss_path()
+        path.unlink(missing_ok=True)
+        progress.update({"phase": "downloading", "path": str(path), "total": None})
+        decky.logger.info(f"[HelixSR] downloading NVIDIA's DLSS DLL from {url}")
+        self._download_file(url, path)
+        progress["phase"] = "verifying"
+        if self._file_sha256(path).lower() != sha256:
+            path.unlink(missing_ok=True)
+            raise RuntimeError("NVIDIA's DLSS DLL doesn't match the checksum HelixSR's setup expects, so it wasn't used. Try again.")
+        return path
 
     # ── setup (build) ────────────────────────────────────────────────────────
     def _helixsr_clean_env(self) -> dict:
@@ -6243,15 +6395,20 @@ class _HelixSRMixin:
         return out
 
     def _helixsr_setup_command(self, script: Path, directory: Path) -> list[str]:
-        """From 1.9 (HelixSR Freeware License) the setup runs unmodified: its game installer gets no answer
-        (stdin is /dev/null) and ends without changing any game. Frame generation for HelixSR Scaler is
-        skipped (--no-fg), since only the upscaler is used here."""
+        """From 1.9 (HelixSR Freeware License) the setup runs unmodified, without --yes: 2.0 hands --yes on to
+        its game installer, which then puts HelixSR into every game it finds. NVIDIA's DLSS DLL (downloaded
+        and checked by the plugin) goes in with --dlss instead, so the build asks nothing, and the game
+        installer gets no answer (stdin is /dev/null) and ends without changing any game. Frame generation
+        for HelixSR Scaler is skipped (--no-fg), since only the upscaler is used here."""
         text = script.read_text(errors="replace")
         if "--rebuild" not in text:
             return ["bash", str(script), str(directory), "--yes"]
         if "HelixSR Freeware License" in text:
+            dlss = self._helixsr_dlss_path()
+            if not dlss.exists():
+                raise RuntimeError("NVIDIA's DLSS DLL is missing. Press \"Install HelixSR\" again.")
             no_fg = ["--no-fg"] if "--no-fg" in text else []
-            return ["bash", str(script), "--yes", *no_fg]
+            return ["bash", str(script), "--dlss", str(dlss), *no_fg]
         return ["bash", str(self._helixsr_build_only_script(script)), "--yes"]
 
     def _helixsr_pid_alive(self, pid) -> bool:
@@ -6359,7 +6516,7 @@ class _HelixSRMixin:
             log.write(f"[jedi] {time.ctime()}: running {' '.join(command[1:])}\n".encode())
             log.flush()
             # The wrapper records the exit code, so the result is known even if Decky restarts the plugin.
-            # --yes: the user agreed to NVIDIA's DLSS download in the confirmation dialog.
+            # --yes / --dlss: the user agreed to NVIDIA's DLSS download in the confirmation dialog.
             proc = subprocess.Popen(
                 ["bash", "-c", '"$@"; echo $? > "$0"', str(rc_file), *command],
                 cwd=str(staging), env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
@@ -6370,6 +6527,7 @@ class _HelixSRMixin:
 
     async def _helixsr_wait_setup(self, proc) -> None:
         await asyncio.to_thread(proc.wait)
+        self._helixsr_dlss_path().unlink(missing_ok=True)
         try:
             await asyncio.to_thread(self._helixsr_finalize)
         except Exception as exc:
@@ -6655,6 +6813,7 @@ class _HelixSRMixin:
             await self._helixsr_wait_setup(proc)
         except Exception as exc:
             decky.logger.error(f"[HelixSR] install failed: {exc}")
+            self._helixsr_dlss_path().unlink(missing_ok=True)
             if isinstance(self._helixsr_download, dict):
                 self._helixsr_download["error"] = str(exc)
             else:

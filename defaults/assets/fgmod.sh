@@ -188,6 +188,16 @@ case "$selected_fsr4_variant" in
     variant_ini_overrides+=("FSR.Fsr4ForceModel=2")
     variant_ini_overrides+=("Plugins.LoadCustomAmdxc64OnRdna2=true")
     ;;
+  lite-412-i8)
+    # FSR 4.1.2 Lite (FSR4L-i8): OptiScaler 10 injector + AMD's 26.10.1 driver FSR (DX12 and Vulkan).
+    # OptiScaler 10 reads FGInput=nukems as no FG; NvngxFG + Nukems is the same DLSSG replacement.
+    variant_dir="$fgmod_path/fsr4-lite-412-i8"
+    fsr4_upscaler_src="$variant_dir/amd_fidelityfx_upscaler_dx12.dll"
+    variant_extra_files+=("amdxcffx64.dll" "amdvkffx64.dll")
+    variant_ini_overrides+=("FSR.Fsr4GpuSupport=4" "FSR.Fsr4Model=3" "FSR.UpscalerIndex=0")
+    variant_ini_overrides+=("Upscalers.Dx12Upscaler=ffx")
+    variant_ini_overrides+=("FrameGen.FGInput=NvngxFG" "FrameGen.FGOutput=auto" "FrameGen.FGNvngxReplacement=Nukems")
+    ;;
   helixsr)
     # HelixSR itself lives in the game's HelixSR/ folder (set up by the plugin's patch);
     # the game root keeps the INT8 FSR4 upscaler, which stays selectable next to it.
@@ -203,6 +213,15 @@ esac
 [[ -f "$fsr4_upscaler_src" ]] || fsr4_upscaler_src="$fgmod_path/amd_fidelityfx_upscaler_dx12.dll"
 logger -t fgmod "Using FSR4 variant: $selected_fsr4_variant (source: $fsr4_upscaler_src)"
 
+# A game leaving lite-412-i8 for an OptiScaler 0.9.4 variant gets its 0.9.4 settings back
+if [[ "$selected_fsr4_variant" != "lite-412-i8" ]] \
+  && grep -qi '^Fsr4GpuSupport=4' "$exe_folder_path/OptiScaler.ini" 2>/dev/null \
+  && grep -qi '^Fsr4Model=3' "$exe_folder_path/OptiScaler.ini" 2>/dev/null; then
+  variant_ini_overrides+=("FSR.Fsr4GpuSupport=auto" "FSR.Fsr4Model=auto" "FSR.UpscalerIndex=auto")
+  variant_ini_overrides+=("Upscalers.Dx12Upscaler=auto")
+  variant_ini_overrides+=("FrameGen.FGInput=nukems" "FrameGen.FGOutput=nukems" "FrameGen.FGNvngxReplacement=auto")
+fi
+
 is_managed_support_file() {
   local existing_file="$1"
   local filename
@@ -214,7 +233,8 @@ is_managed_support_file() {
       "$fgmod_path/fsr4-rdna2-3/amd_fidelityfx_upscaler_dx12.dll" \
       "$fgmod_path/fsr4-rdna4/amd_fidelityfx_upscaler_dx12.dll" \
       "$fgmod_path/fsr4-rdna3-4-official-411/amd_fidelityfx_upscaler_dx12.dll" \
-      "$fgmod_path/fsr4-rdna2-valve-411-pre10/amd_fidelityfx_upscaler_dx12.dll"; do
+      "$fgmod_path/fsr4-rdna2-valve-411-pre10/amd_fidelityfx_upscaler_dx12.dll" \
+      "$fgmod_path/fsr4-lite-412-i8/amd_fidelityfx_upscaler_dx12.dll"; do
       [[ -f "$candidate" && -f "$existing_file" ]] && cmp -s "$existing_file" "$candidate" && return 0
     done
     return 1
@@ -223,7 +243,16 @@ is_managed_support_file() {
     for candidate in \
       "$fgmod_path/amdxcffx64.dll" \
       "$fgmod_path/fsr4-rdna3-4-official-411/amdxcffx64.dll" \
-      "$fgmod_path/fsr4-rdna2-valve-411-pre10/amdxcffx64.dll"; do
+      "$fgmod_path/fsr4-rdna2-valve-411-pre10/amdxcffx64.dll" \
+      "$fgmod_path/fsr4-lite-412-i8/amdxcffx64.dll"; do
+      [[ -f "$candidate" && -f "$existing_file" ]] && cmp -s "$existing_file" "$candidate" && return 0
+    done
+    return 1
+  fi
+  if [[ "$filename" == "amdvkffx64.dll" ]]; then
+    for candidate in \
+      "$fgmod_path/amdvkffx64.dll" \
+      "$fgmod_path/fsr4-lite-412-i8/amdvkffx64.dll"; do
       [[ -f "$candidate" && -f "$existing_file" ]] && cmp -s "$existing_file" "$candidate" && return 0
     done
     return 1
@@ -262,7 +291,7 @@ done
 unset cleanup_file
 
 # === Optional: Backup Original DLLs ===
-original_dlls=("d3dcompiler_47.dll" "amd_fidelityfx_dx12.dll" "amd_fidelityfx_framegeneration_dx12.dll" "amd_fidelityfx_upscaler_dx12.dll" "amdxcffx64.dll" "amdxc64.dll" "amd_fidelityfx_vk.dll")
+original_dlls=("d3dcompiler_47.dll" "amd_fidelityfx_dx12.dll" "amd_fidelityfx_framegeneration_dx12.dll" "amd_fidelityfx_upscaler_dx12.dll" "amdxcffx64.dll" "amdvkffx64.dll" "amdxc64.dll" "amd_fidelityfx_vk.dll")
 for dll in "${original_dlls[@]}"; do
   existing_path="$exe_folder_path/$dll"
   backup_path="$exe_folder_path/$dll.b"

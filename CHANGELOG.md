@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.13
+
+### Added
+- **4.1.2 Lite | FSR4L-i8** upscaler runtime (experimental): AMD's FSR 4.1.2 INT8 Lite model, the smaller INT8 model AMD made for APUs (Steam Deck, RDNA2/3 iGPUs). It ships AMD's unmodified, signed Adrenalin 26.10.1 driver FSR (`amdxcffx64.dll` and, for Vulkan games, `amdvkffx64.dll`, 2.4.0.4370) with an OptiScaler 10 injector built from master `2128299c` (the first build that selects 4.1.2 models and keeps the AMD vendor id for `amdxcffx64` while spoofing). The FFX/XeSS libraries stay 0.9.4's: they are the same files in OptiScaler 10.
+- Patching with it sets OptiScaler 10's keys (`Fsr4GpuSupport=4`, `Fsr4Model=3`, `Dx12Upscaler=ffx`, `UpscalerIndex=0`) and keeps Nukems frame generation working (`FGInput=NvngxFG`, `FGNvngxReplacement=Nukems`: OptiScaler 10 reads `FGInput=nukems` as no FG). Switching a game to another runtime puts the 0.9.4 values back.
+
+### Fixed
+- HelixSR 2.0.0 failed with "No HelixSR DLL found": 2.0 keeps the DLL in `HelixSR-fsrfg/`. The setup also stopped getting `--yes`, which 2.0 hands on to its game installer (it would have put HelixSR into every game it finds): the plugin downloads NVIDIA's DLSS DLL itself (checked against the release's own SHA256) and passes it with `--dlss`, so the build asks nothing and the game installer changes no game.
+
 ## 1.1.12
 
 ### Added

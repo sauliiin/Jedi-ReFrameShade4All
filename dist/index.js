@@ -590,6 +590,7 @@ const FSR4_OPTIONS = [
     { data: "rdna4-native", label: "4.1.1 | FFX 2.3 SDK (RDNA3 dGPU / RDNA4)", hint: "OptiScaler 0.9.4's bundled FSR 4.1.1 upscaler. Official support: RDNA4 (FP8) and RDNA3 desktop GPUs (INT8)." },
     { data: "rdna34-official-411", label: "4.1.1 | Driver Override (RDNA3/4)", hint: "FSR 4.1.1 SDK upscaler plus a separate 4.1.1 amdxcffx64.dll driver override. Fallback for RDNA3/4." },
     { data: "rdna2-valve-411-pre10", label: "4.1.1 | Valve RDNA2 Compatibility", hint: "FSR 4.1.1 on RDNA2 via Valve amdxcffx64.dll + amdxc64.dll, the pre10 injector and RDNA2 INI overrides. Experimental." },
+    { data: "lite-412-i8", label: "4.1.2 Lite | FSR4L-i8 (Steam Deck / APUs)", hint: "AMD's FSR 4.1.2 INT8 Lite model (from Adrenalin 26.10.1), made for APUs: lighter than the full INT8 model. Uses an OptiScaler 10 injector (built from master 2128299c) with Fsr4GpuSupport=4 / Fsr4Model=3. Experimental." },
     { data: "helixsr", label: "HelixSR | DLSS Model E on AMD (experimental)", hint: "NVIDIA's DLSS Model E network as D3D12 compute shaders (lonewolf0622/HelixSR). DX12 only. Built once on this device; FSR4 4.0.2c stays selectable in OptiScaler's menu." },
 ];
 // What the game's HelixSR folder and helixsr.log say (helixsr.log appears once OptiScaler loads HelixSR).
