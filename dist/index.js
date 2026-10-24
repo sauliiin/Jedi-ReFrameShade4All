@@ -397,14 +397,20 @@ const resolveSteamReShadeTargetForPatchAll = callable("resolve_steam_reshade_tar
 const patchAllGame = callable("patch_all_game");
 const unpatchAllGame = callable("unpatch_all_game");
 const getCachyosFsr4Status = callable("get_cachyos_fsr4_status");
-// Adds/removes FSR4_UPGRADE=1 (Proton-CachyOS) while keeping the rest of the launch options.
-function withFsr4Upgrade(opts, enabled) {
-    const rest = (opts || "").replace(/(^|\s)FSR4_UPGRADE=\S*/g, " ").trim().replace(/\s+/g, " ");
+// Proton-CachyOS variables the toggles add as NAME=1.
+const FSR4_UPGRADE_ENV = "FSR4_UPGRADE";
+const FSR4_INDICATOR_ENV = "PROTON_FSR4_INDICATOR";
+// Adds/removes NAME=1 while keeping the rest of the launch options.
+function withLaunchEnv(opts, name, enabled) {
+    const rest = (opts || "").replace(new RegExp(`(^|\\s)${name}=\\S*`, "g"), " ").trim().replace(/\s+/g, " ");
     if (!enabled)
         return rest === "%command%" ? "" : rest;
     if (!rest)
-        return "FSR4_UPGRADE=1 %command%";
-    return rest.includes("%command%") ? `FSR4_UPGRADE=1 ${rest}` : `FSR4_UPGRADE=1 %command% ${rest}`;
+        return `${name}=1 %command%`;
+    return rest.includes("%command%") ? `${name}=1 ${rest}` : `${name}=1 %command% ${rest}`;
+}
+function hasLaunchEnv(opts, name) {
+    return new RegExp(`(^|\\s)${name}=1(\\s|$)`).test(opts || "");
 }
 const logError$4 = callable("log_error");
 const FSR4_OPTIONS = [
@@ -629,30 +635,32 @@ function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid
     const [result, setResult] = SP_REACT.useState("");
     const [cachyos, setCachyos] = SP_REACT.useState(null);
     const [fsr4Upgrade, setFsr4Upgrade] = SP_REACT.useState(false);
+    const [fsr4Indicator, setFsr4Indicator] = SP_REACT.useState(false);
     const loadCachyos = async (id) => {
         setCachyos(null);
         try {
             const [r, current] = await Promise.all([getCachyosFsr4Status(id), getLaunchOptions(parseInt(id, 10))]);
             setCachyos(r);
-            setFsr4Upgrade(/(^|\s)FSR4_UPGRADE=1(\s|$)/.test(current));
+            setFsr4Upgrade(hasLaunchEnv(current, FSR4_UPGRADE_ENV));
+            setFsr4Indicator(hasLaunchEnv(current, FSR4_INDICATOR_ENV));
         }
         catch (e) {
             await logError$4(`SteamGameCombinedSection -> cachyos: ${String(e)}`);
         }
     };
-    const handleFsr4UpgradeToggle = async (enabled) => {
+    const handleLaunchEnvToggle = async (name, enabled, setChecked) => {
         if (!appid)
             return;
         try {
             const current = await getLaunchOptions(parseInt(appid, 10));
-            const next = withFsr4Upgrade(current, enabled);
+            const next = withLaunchEnv(current, name, enabled);
             SteamClient.Apps.SetAppLaunchOptions(parseInt(appid, 10), next);
-            setFsr4Upgrade(enabled);
+            setChecked(enabled);
             setResult(`✅ Launch options: ${next || "(empty)"}`);
         }
         catch (e) {
             setResult(`❌ ${String(e)}`);
-            await logError$4(`SteamGameCombinedSection -> fsr4Upgrade: ${String(e)}`);
+            await logError$4(`SteamGameCombinedSection -> ${name}: ${String(e)}`);
         }
     };
     const refreshEngines = async () => {
@@ -724,7 +732,9 @@ function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid
             const r = await patchAllGame(appid, fsr4Variant, addon, current, detectedTarget?.target_executable || "");
             if (r.status === "success") {
                 if (r.launch_options && fsr4Upgrade)
-                    r.launch_options = withFsr4Upgrade(r.launch_options, true);
+                    r.launch_options = withLaunchEnv(r.launch_options, FSR4_UPGRADE_ENV, true);
+                if (r.launch_options && fsr4Indicator)
+                    r.launch_options = withLaunchEnv(r.launch_options, FSR4_INDICATOR_ENV, true);
                 if (r.launch_options) {
                     try {
                         SteamClient.Apps.SetAppLaunchOptions(parseInt(appid, 10), r.launch_options);
@@ -822,7 +832,11 @@ function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid
                         ? "Checking the game's Proton…"
                         : cachyos.supported
                             ? `Adds FSR4_UPGRADE=1 to launch options (${cachyos.tool_label}).`
-                            : `Needs Proton-CachyOS set for this game${cachyos.tool_label ? ` (now: ${cachyos.tool_label})` : ""}.`, checked: fsr4Upgrade, disabled: busy || !cachyos || (!cachyos.supported && !fsr4Upgrade), onChange: (v) => void handleFsr4UpgradeToggle(v) })),
+                            : `Needs Proton-CachyOS set for this game${cachyos.tool_label ? ` (now: ${cachyos.tool_label})` : ""}.`, checked: fsr4Upgrade, disabled: busy || !cachyos || (!cachyos.supported && !fsr4Upgrade), onChange: (v) => void handleLaunchEnvToggle(FSR4_UPGRADE_ENV, v, setFsr4Upgrade) })),
+            window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+                window.SP_REACT.createElement(DFL.ToggleField, { label: "Show FSR watermark", description: cachyos && !cachyos.supported
+                        ? "Needs Proton-CachyOS set for this game."
+                        : "Adds PROTON_FSR4_INDICATOR=1: AMD's FSR watermark, top left, when FSR4 runs.", checked: fsr4Indicator, disabled: busy || !cachyos || (!cachyos.supported && !fsr4Indicator), onChange: (v) => void handleLaunchEnvToggle(FSR4_INDICATOR_ENV, v, setFsr4Indicator) })),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.DropdownItem, { label: "Upscaler runtime (FSR4 / HelixSR)", description: FSR4_OPTIONS.find((o) => o.data === fsr4Variant)?.hint, rgOptions: FSR4_OPTIONS, selectedOption: fsr4Variant, onChange: (o) => setFsr4Variant(o.data), strDefaultLabel: "Upscaler runtime" })),
             fsr4Variant === "helixsr" && window.SP_REACT.createElement(HelixSRPanel, null),

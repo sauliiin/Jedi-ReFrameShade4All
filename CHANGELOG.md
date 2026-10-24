@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.17
+
+### Added
+- **Show FSR watermark** toggle under **Proton-CachyOS FSR4**: adds `PROTON_FSR4_INDICATOR=1` to the launch options (Proton-CachyOS's shorthand for `FSR_WATERMARK=1` + `FSR_FG_WATERMARK=1`), so AMD's driver shows which FSR runs, top left; turning it off removes only that. Like the FSR4 toggle, it needs Proton-CachyOS set for the game, and Patch All keeps it.
+
 ## 1.1.16
 
 ### Added
