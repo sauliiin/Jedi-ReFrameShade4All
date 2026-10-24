@@ -5,7 +5,7 @@
 It fuses two mature Decky plugins into a single panel:
 
 - **Frame Generation / upscaling** — based on [Decky‑Framegen](https://github.com/xXJSONDeruloXx/Decky-Framegen). Ships the complete bundled, hash‑verified OptiScaler `0.9.4` build (FFX 2.3 SDK / FSR 4.1.1); GitHub auto‑update is **opt‑in**.
-- **ReShade with add‑ons** — based on [LetMeReShade(All)](https://github.com/itsOwen/LetMeReShade) (downloads ReShade from reshade.me, shader packs, AutoHDR, Steam + Heroic support, manual `.exe` patching).
+- **ReShade with add‑ons** — based on [LetMeReShade(All)](https://github.com/itsOwen/LetMeReShade) (downloads ReShade from reshade.me, shader packs, AutoHDR).
 
 > ⚠️ **Community fan‑merge.** This is an unofficial combination of two separate projects. It builds cleanly and the UI/back‑end are wired together, but the two injectors were never designed to coexist — **test it per game** and read the *Coexistence* and *Safety* sections below.
 
@@ -67,8 +67,9 @@ At runtime both mods hook the DXGI swap‑chain — ReShade for post‑processin
 ## Features
 
 **One‑button flow**
-- **Patch All**: pick a Steam game **or a non‑Steam shortcut** → installs OptiScaler + ReShade if missing, patches both into the game, and sets the merged launch options automatically. **Remove All** reverts everything. Detailed per‑engine controls live under an **Advanced controls** toggle.
-- **Non‑Steam shortcuts** are read from `userdata/<id>/config/shortcuts.vdf` and listed next to Steam games. Shortcuts that point straight at a Windows `.exe` get the full one‑button flow, including launch options set on the shortcut automatically. Shortcuts that start a launcher (Heroic, Lutris, Bottles, …) are listed as *non‑Steam launcher (manual)* and send you to **Choose exe/folder path**, because the game folder can't be known from the shortcut.
+- **Patch All**: pick a Steam game **or a non‑Steam shortcut** → installs OptiScaler + ReShade if missing, patches both into the game, and sets the merged launch options automatically. **Remove All** reverts everything: it looks through every folder of the game, so nothing either mod put there is left behind, and gives back your own launch options. Detailed per‑engine controls live under an **Advanced controls** toggle.
+- **Non‑Steam shortcuts** are read from `userdata/<id>/config/shortcuts.vdf` and listed next to Steam games when they point straight at a Windows `.exe`; they get the full one‑button flow, including launch options set on the shortcut automatically. Shortcuts that start a launcher (Heroic, Lutris, Bottles, …) aren't listed: the game folder can't be known from the shortcut.
+- **Plugin Update**: the panel checks this plugin's newest GitHub release and installs it through Decky's own installer (Decky asks to confirm, then reloads the plugin).
 
 **Frame Generation / OptiScaler** (FRAMEGEN MANAGEMENT)
 - Install/uninstall with an **installed vs. latest** version widget (same style as ReShade); precise *up to date / update available* and a one‑click **Update**.
@@ -80,14 +81,14 @@ At runtime both mods hook the DXGI swap‑chain — ReShade for post‑processin
   - **4.1.2 Lite | FSR4L-i8** (experimental) — AMD's FSR 4.1.2 INT8 Lite model, the smaller INT8 model made for APUs (Steam Deck, RDNA2/3 iGPUs). Unmodified, signed `amdxcffx64.dll` / `amdvkffx64.dll` 2.4.0.4370 from Adrenalin 26.10.1, an OptiScaler 10 injector built from master `2128299c`, and OptiScaler 10 INI keys (`FSR.Fsr4GpuSupport=4`, `FSR.Fsr4Model=3`, `Upscalers.Dx12Upscaler=ffx`, `FSR.UpscalerIndex=0`, Nukems FG as `FGInput=NvngxFG` + `FGNvngxReplacement=Nukems`); switching runtime puts the 0.9.4 values back. The watermark shows `FSR4L-i8` when the Lite model is running.
   - **HelixSR | DLSS Model E on AMD** (experimental) — [HelixSR](https://github.com/lonewolf0622/HelixSR) runs NVIDIA's DLSS Model E network as D3D12 compute shaders (DX12 games only). Releases ship no NVIDIA files, so the panel only checks whether the **newest** HelixSR release is installed and, if not, downloads it (verified against GitHub's SHA256) and runs HelixSR's own setup, which builds the network on the device (about 7–10 minutes on a Steam Deck; downloads NVIDIA's DLSS DLL after you confirm). The build lives in `~/fgmod-helixsr/current` and replaces the older one only once it succeeds. Patching puts HelixSR in a `HelixSR/` folder next to `OptiScaler.ini` (as `helixsr.dll` / `helixsr_upscaler.dll`, so it can't collide with the FSR DLLs the game loads) and points `FfxDx12Path`/`FfxDx12SRPath` at it (`[FSR] UpscalerIndex=0`); the previous values are restored when you switch runtime or unpatch. FSR4 4.0.2c stays selectable in OptiScaler's menu, and frame generation keeps working. In the game, select DLSS (or FSR/XeSS).
   - FSR 4.1.1 can silently fall back to FSR3 on unsupported hardware; set `FSR_Fsr4EnableWatermark=true` to confirm the active path (`FSR4`, `FSR4-i8` or `FSR3`).
-- Per‑game patch/unpatch (Steam) and manual **folder** patching.
+- Per‑game patch/unpatch.
 - Default install uses the complete bundled `0.9.4`; Update force‑downloads and verifies the newest upstream archive.
 
 **ReShade**
 - ReShade **with add‑on support** (toggle) and optional **AutoHDR** (OLED‑oriented).
 - Downloads ReShade from reshade.me with an **installed vs. latest** version widget.
 - Shader pack selection (AstrayFX, MartyMcFly, prod80, SweetFX, RetroArch…).
-- Steam games + **Heroic** games + manual **`.exe`** patching ("Choose exe path").
+- Per‑game patch/unpatch, with the API auto‑detected.
 
 **Coexistence**
 - Automatic, conflict‑free default slots (ReShade `dxgi`, Frame Gen `winmm`) + a **manual slot override** per game.
@@ -114,11 +115,11 @@ See [Building](#building) below, then zip the folder (with `bin/` + `dist/`) and
 2. In‑game: press **HOME** for the ReShade overlay.
 
 **Advanced controls** (toggle near the top) expose the original per‑engine UIs when you need them:
-- OptiScaler: install/uninstall, FSR4 variant, proxy DLL, manual folder patch, **Apply only OptiScaler** / **🗑️ Remove only OptiScaler**.
-- ReShade: add‑on/AutoHDR toggles, shader pack selection, per‑game and manual `.exe` patching, **Apply only ReShade** / **🗑️ Remove only ReShade**.
+- OptiScaler: install/uninstall, FSR4 variant, proxy DLL, **Apply only OptiScaler** / **🗑️ Remove only OptiScaler**.
+- ReShade: add‑on/AutoHDR toggles, shader pack selection, **Apply only ReShade** / **🗑️ Remove only ReShade**.
 - Coexistence / DLL slots: inspect what's active and override the Frame Generation slot per game.
 
-> **Removing one mod keeps the other one working.** OptiScaler's cleanup wipes *every* proxy slot, so **Remove only OptiScaler** re‑links ReShade afterwards; both partial removals then rewrite the launch options for whatever stays behind (and clear them when nothing does).
+> **Removing one mod keeps the other one working.** OptiScaler's cleanup puts back the game DLLs it had set aside, so **Remove only OptiScaler** re‑links ReShade afterwards; both partial removals then rewrite the launch options for whatever stays behind (and give back your own when nothing does). Removing ReShade also deletes `ReShadePreset.ini`.
 
 > **Patch All puts ReShade on `dxgi`**, which covers DX11/DX12 (most games). For DX9/Vulkan/OpenGL titles, use **Advanced → ReShade**, which auto‑detects the API.
 
@@ -153,8 +154,7 @@ Jedi-ReFrameShade4All/
 │  ├─ SteamGameCombinedSection.tsx  # primary one-button "Patch All" (both mods)
 │  ├─ ConflictSlotSection.tsx       # coexistence + manual slot picker (Advanced)
 │  ├─ ReShadeInstallerSection.tsx   # "ReShade Management" — install/version/update/add-ons/shaders
-│  ├─ ChooseExePathSection.tsx      # ReShade manual .exe patcher for non-Steam games
-│  ├─ ExecutablePathBrowserModal.tsx, ShaderSelectionModal.tsx  # ReShade modals
+│  ├─ ShaderSelectionModal.tsx      # ReShade shader pack picker
 │  ├─ components/                   # "Framegen Management" — OptiScalerControls + helpers
 │  ├─ api/index.ts                  # typed backend callables
 │  └─ utils/, types/               # helpers, constants, type decls

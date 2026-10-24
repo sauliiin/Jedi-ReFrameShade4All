@@ -235,6 +235,11 @@ OPTISCALER_ASSET_NAME_RE = re.compile(r"OptiScaler.*\.7z$|Optiscaler.*\.7z$", re
 OPTISCALER_DOWNLOAD_TIMEOUT = 45
 OPTISCALER_LATEST_CACHE_SECONDS = 900
 
+# Plugin self-update: the newest release of this plugin on GitHub, installed by Decky's own installer.
+PLUGIN_RELEASES_API = "https://api.github.com/repos/sauliiin/Jedi-ReFrameShade4All/releases?per_page=20"
+PLUGIN_ZIP_RE = re.compile(r"^Jedi-ReFrameShade4All-(\d+(?:\.\d+)+)\.zip$")
+PLUGIN_UPDATE_CACHE_SECONDS = 600
+
 # HelixSR (https://github.com/lonewolf0622/HelixSR): NVIDIA's DLSS Model E network on AMD GPUs.
 # Ported from DeckyHelixSRManager (https://github.com/PeroTuncay/DeckyHelixSRManager, The Unlicense).
 # Releases ship no NVIDIA files: the latest release is downloaded and HelixSR's own setup builds
@@ -261,6 +266,11 @@ HELIXSR_FSR4_COPY_NAME = "amd_fidelityfx_upscaler_dx12.amd.dll"
 HELIXSR_FG_DLL = "amd_fidelityfx_framegeneration_dx12.dll"
 HELIXSR_EMBED_MAGIC = b"HXSRNET1"
 HELIXSR_SEPARATE_FILES = ("helixsr_weights.bin", "helixsr_kernels.pak")   # the network before 1.4.0
+# Everything this plugin puts in (or HelixSR writes to) the game's HelixSR folder
+HELIXSR_GAME_OWN_FILES = {
+    HELIXSR_GAME_MARKER, HELIXSR_GAME_DLL, HELIXSR_GAME_SR_DLL, *HELIXSR_GAME_OLD_NAMES, HELIXSR_FSR4_COPY_NAME,
+    HELIXSR_FG_DLL, "amd_fidelityfx_dx12.original.dll", "helixsr.ini", "helixsr.log", *HELIXSR_SEPARATE_FILES,
+}
 # Release folders not needed here: HelixSR Scaler (from 1.9.3 in HelixSR's zip, ~205 MB) is OptiScaler-based
 # and only installed by HelixSR's own installer; the setup builds the network without it.
 HELIXSR_SKIP_DIRS = ("helixsr-scaler/",)
@@ -359,9 +369,6 @@ SUPPORT_FILES = [
 ]
 
 MARKER_FILENAME = "FRAMEGEN_PATCH"
-
-# Non-Steam shortcuts whose target is a launcher instead of the game .exe.
-NON_STEAM_LAUNCHER_HINTS = ("heroic", "lutris", "bottles", "legendary", "gogdl", "nile", "itch", "playnite")
 
 BAD_EXE_SUBSTRINGS = [
     "crashreport",
@@ -477,6 +484,16 @@ class _OptiScalerMixin:
         bundled_copy = fgmod_path / "renames" / file_path.name
         return self._files_match(file_path, bundled_copy)
 
+    def _is_reshade_link(self, path: Path) -> bool:
+        """A link the ReShade side made into ~/.local/share/reshade (dangling or not): ReShade's, not OptiScaler's."""
+        if not path.is_symlink():
+            return False
+        try:
+            target = os.path.normpath(os.path.join(str(path.parent), os.readlink(path)))
+        except OSError:
+            return False
+        return target.startswith(os.path.normpath(self.main_path) + os.sep)
+
     def _has_patch_fingerprint(self, directory: Path) -> bool:
         return any((directory / filename).exists() for filename in PATCH_FINGERPRINT_FILES)
 
@@ -486,7 +503,7 @@ class _OptiScalerMixin:
         for filename in PROXY_DLL_BACKUPS:
             source = directory / filename
             backup = directory / f"{filename}.b"
-            if not source.exists() or backup.exists():
+            if not source.exists() or backup.exists() or self._is_reshade_link(source):
                 continue
             if already_patched or self._is_bundled_proxy_copy(source, fgmod_path):
                 continue
@@ -1538,7 +1555,11 @@ class _OptiScalerMixin:
         try:
             # Remove fgmod directory
             fgmod_path = Path(decky.HOME) / "fgmod"
-            
+            # half-done installs/updates leave staging and backup copies of the bundle next to it
+            for leftover in fgmod_path.parent.glob(".fgmod-*"):
+                if leftover.is_dir() and leftover.name.startswith((".fgmod-staging-", ".fgmod-backup-")):
+                    shutil.rmtree(leftover, ignore_errors=True)
+
             if fgmod_path.exists():
                 shutil.rmtree(fgmod_path)
                 decky.logger.info(f"Removed directory: {fgmod_path}")
@@ -1645,18 +1666,6 @@ class _OptiScalerMixin:
             "install_manifest_present": bool(manifest),
         }
 
-    def _resolve_target_directory(self, directory: str) -> Path:
-        decky.logger.info(f"Resolving target directory: {directory}")
-        target = Path(directory).expanduser()
-        if not target.exists():
-            raise FileNotFoundError(f"Target directory does not exist: {directory}")
-        if not target.is_dir():
-            raise NotADirectoryError(f"Target path is not a directory: {directory}")
-        if not os.access(target, os.W_OK | os.X_OK):
-            raise PermissionError(f"Insufficient permissions for {directory}")
-        decky.logger.info(f"Resolved directory {directory} to absolute path {target}")
-        return target
-
     def _manual_patch_directory_impl(
         self,
         directory: Path,
@@ -1723,7 +1732,7 @@ class _OptiScalerMixin:
             removed_patch_files = []
             for filename in dict.fromkeys(PATCH_CLEANUP_FILES):
                 path = directory / filename
-                if path.exists():
+                if path.exists() and not self._is_reshade_link(path):
                     path.unlink()
                     removed_patch_files.append(filename)
             decky.logger.info(
@@ -1737,7 +1746,7 @@ class _OptiScalerMixin:
             for dll in ORIGINAL_DLL_BACKUPS:
                 source = directory / dll
                 backup = directory / f"{dll}.b"
-                if not source.exists() or backup.exists():
+                if not source.exists() or backup.exists() or self._is_reshade_link(source):
                     continue
                 if allow_managed_support_cleanup and self._is_managed_support_file(source, fgmod_path):
                     source.unlink()
@@ -1765,6 +1774,8 @@ class _OptiScalerMixin:
                 source_for_copy = root_renamed
             else:
                 source_for_copy = optiscaler_dll
+            if destination_dll.is_symlink():   # copying onto ReShade's link would overwrite ReShade's own DLL
+                destination_dll.unlink()
             shutil.copy2(source_for_copy, destination_dll)
             decky.logger.info(f"Copied injector DLL from {source_for_copy} to {destination_dll}")
 
@@ -1872,7 +1883,7 @@ class _OptiScalerMixin:
             removed_files = []
             for filename in set(INJECTOR_FILENAMES + SUPPORT_FILES + VARIANT_EXTRA_FILENAMES + [FSR4_UPSCALER_FILENAME]):
                 path = directory / filename
-                if path.exists():
+                if path.exists() and not self._is_reshade_link(path):
                     path.unlink()
                     removed_files.append(filename)
             decky.logger.info(f"Removed injector/support files: {removed_files}" if removed_files else "No injector/support files found to remove")
@@ -1889,9 +1900,12 @@ class _OptiScalerMixin:
             decky.logger.info(f"Removed legacy artifacts: {legacy_removed}" if legacy_removed else "No legacy artifacts present")
 
             plugins_dir = directory / "plugins"
-            if plugins_dir.exists():
-                shutil.rmtree(plugins_dir, ignore_errors=True)
+            (plugins_dir / "OptiPatcher.asi").unlink(missing_ok=True)
+            try:
+                plugins_dir.rmdir()   # only when nothing else is in it
                 decky.logger.info(f"Removed plugins directory at {plugins_dir}")
+            except OSError:
+                pass
 
             d3d12_dir = directory / "D3D12_Optiscaler"
             if d3d12_dir.exists():
@@ -1906,6 +1920,9 @@ class _OptiScalerMixin:
             for dll in dict.fromkeys(RESTORABLE_BACKUP_FILES):
                 backup = directory / f"{dll}.b"
                 original = directory / dll
+                if self._is_reshade_link(backup):   # set aside by an older patch: ReShade relinks itself
+                    backup.unlink()
+                    continue
                 if backup.exists():
                     if original.exists():
                         original.unlink()
@@ -1917,6 +1934,8 @@ class _OptiScalerMixin:
             if uninstaller.exists():
                 uninstaller.unlink()
                 decky.logger.info(f"Removed fgmod uninstaller at {uninstaller}")
+
+            (directory / MARKER_FILENAME).unlink(missing_ok=True)
 
             decky.logger.info(f"Manual unpatch complete for {directory}")
             return {
@@ -2020,8 +2039,6 @@ class _OptiScalerMixin:
                 if appid is None or str(game_info["appid"]) == str(appid):
                     games.append(game_info)
         for shortcut in self._find_non_steam_shortcuts():
-            if shortcut["kind"] != "exe":
-                continue
             if appid is None or shortcut["appid"] == str(appid):
                 games.append(shortcut)
         deduped: dict[str, dict] = {}
@@ -2101,13 +2118,9 @@ class _OptiScalerMixin:
             return False
 
     def _find_non_steam_shortcuts(self) -> list[dict]:
-        """Non-Steam shortcuts added to the Steam library.
-
-        kind == "exe":      the shortcut launches a Windows .exe directly → fully patchable,
-                            launch options can be set on the shortcut's appid.
-        kind == "launcher": the shortcut starts a launcher (Heroic, Lutris, ...) → the game
-                            folder is unknown, the user must pick the .exe manually.
-        Native Linux shortcuts (browsers, tools, ...) are ignored.
+        """Non-Steam shortcuts that launch a Windows .exe directly: patchable like a Steam game,
+        with launch options set on the shortcut's appid. Shortcuts that start a launcher
+        (Heroic, Lutris, ...) or a native Linux program are ignored: the game .exe is unknown.
         """
         shortcuts: list[dict] = []
         for shortcuts_file in self._shortcuts_vdf_paths():
@@ -2134,40 +2147,22 @@ class _OptiScalerMixin:
                     # Older Steam builds do not store the appid; derive it the same way Steam does.
                     appid = (zlib.crc32((exe_raw + name).encode("utf-8")) & 0xFFFFFFFF) | 0x80000000
                 exe_path_str = exe_raw.strip('"')
-                start_dir = str(fields.get("startdir") or "").strip().strip('"')
-                launch_options = str(fields.get("launchoptions") or "")
-                record = {
+                if not exe_path_str.lower().endswith(".exe"):
+                    continue
+                exe_path = Path(exe_path_str)
+                if not exe_path.is_file():
+                    continue
+                shortcuts.append({
                     "appid": str(appid),
                     "name": name,
                     "library_path": "",
-                    "install_path": "",
+                    "install_path": str(exe_path.parent),
                     "non_steam": True,
-                    "shortcut_exe": "",
-                    "kind": "",
-                }
-                if exe_path_str.lower().endswith(".exe"):
-                    exe_path = Path(exe_path_str)
-                    if not exe_path.is_file():
-                        continue
-                    record["kind"] = "exe"
-                    record["shortcut_exe"] = str(exe_path)
-                    record["install_path"] = str(exe_path.parent)
-                else:
-                    haystack = f"{exe_raw} {start_dir} {launch_options}".lower()
-                    if not any(hint in haystack for hint in NON_STEAM_LAUNCHER_HINTS):
-                        continue
-                    record["kind"] = "launcher"
-                shortcuts.append(record)
+                    "shortcut_exe": str(exe_path),
+                })
         return shortcuts
 
     def _game_not_found_message(self, appid: str) -> str:
-        for shortcut in self._find_non_steam_shortcuts():
-            if shortcut["appid"] == str(appid) and shortcut["kind"] == "launcher":
-                return (
-                    f"'{shortcut['name']}' is a non-Steam shortcut that starts a launcher "
-                    "(Heroic, Lutris, ...), not the game .exe. Use Advanced controls → "
-                    "\"Choose exe/folder path\" to pick the game executable."
-                )
         return "Game not found in Steam library or non-Steam shortcuts."
 
     def _game_candidate_executables(self, game_info: dict) -> list[Path]:
@@ -2409,17 +2404,6 @@ class _OptiScalerMixin:
                     "name": game["name"],
                     "install_found": install_root.exists(),
                     "non_steam": bool(game.get("non_steam")),
-                    "needs_manual_exe": False,
-                })
-            for shortcut in self._find_non_steam_shortcuts():
-                if shortcut["kind"] != "launcher":
-                    continue
-                games.append({
-                    "appid": shortcut["appid"],
-                    "name": shortcut["name"],
-                    "install_found": False,
-                    "non_steam": True,
-                    "needs_manual_exe": True,
                 })
             games.sort(key=lambda g: g["name"].lower())
             return {"status": "success", "games": games}
@@ -2427,52 +2411,8 @@ class _OptiScalerMixin:
             decky.logger.error(str(e))
             return {"status": "error", "message": str(e)}
 
-    async def get_path_defaults(self) -> dict:
-        try:
-            home_path = Path(decky.HOME)
-        except TypeError:
-            home_path = Path(str(decky.HOME))
-
-        steam_common = home_path / ".local" / "share" / "Steam" / "steamapps" / "common"
-
-        return {
-            "home": str(home_path),
-            "steam_common": str(steam_common),
-        }
-
     async def log_error(self, error: str) -> None:
         decky.logger.error(f"FRONTEND: {error}")
-
-    async def manual_patch_directory(
-        self,
-        directory: str,
-        dll_name: str = "dxgi.dll",
-        fsr4_variant: str = DEFAULT_FSR4_VARIANT,
-    ) -> dict:
-        if dll_name not in VALID_DLL_NAMES:
-            return {"status": "error", "message": f"Invalid proxy DLL name: {dll_name}"}
-        try:
-            target_dir = self._resolve_target_directory(directory)
-        except (FileNotFoundError, NotADirectoryError, PermissionError) as exc:
-            decky.logger.error(f"Manual patch validation failed: {exc}")
-            return {"status": "error", "message": str(exc)}
-
-        allow_managed_support_cleanup = (target_dir / MARKER_FILENAME).exists()
-        return self._manual_patch_directory_impl(
-            target_dir,
-            dll_name,
-            fsr4_variant,
-            allow_managed_support_cleanup=allow_managed_support_cleanup,
-        )
-
-    async def manual_unpatch_directory(self, directory: str) -> dict:
-        try:
-            target_dir = self._resolve_target_directory(directory)
-        except (FileNotFoundError, NotADirectoryError, PermissionError) as exc:
-            decky.logger.error(f"Manual unpatch validation failed: {exc}")
-            return {"status": "error", "message": str(exc)}
-
-        return self._manual_unpatch_directory_impl(target_dir)
 
     # ── AppID-based patch / unpatch / status ───────────────────────────────────────
 
@@ -2658,51 +2598,6 @@ class _OptiScalerMixin:
             }
         except Exception as exc:
             decky.logger.error(f"[Framegen] patch_game failed for {appid}: {exc}")
-            return {"status": "error", "message": str(exc)}
-
-    async def unpatch_game(self, appid: str) -> dict:
-        try:
-            game_info = self._game_record(str(appid))
-            if not game_info:
-                return {"status": "error", "message": self._game_not_found_message(str(appid))}
-            install_root = Path(game_info["install_path"])
-            if not install_root.exists():
-                return {
-                    "status": "success",
-                    "appid": str(appid),
-                    "name": game_info["name"],
-                    "launch_options": "",
-                    "message": "Game install directory does not exist.",
-                }
-            if self._is_game_running(game_info):
-                return {"status": "error", "message": "Close the game before unpatching."}
-            marker = self._find_marker(install_root)
-            if not marker:
-                return {
-                    "status": "success",
-                    "appid": str(appid),
-                    "name": game_info["name"],
-                    "launch_options": "",
-                    "message": "No Framegen patch found for this game.",
-                }
-            metadata = self._read_marker(marker)
-            target_dir = Path(metadata.get("target_dir", str(marker.parent)))
-            original_launch_options = str(metadata.get("original_launch_options") or "")
-            self._manual_unpatch_directory_impl(target_dir)
-            try:
-                marker.unlink()
-            except FileNotFoundError:
-                pass
-            decky.logger.info(f"[Framegen] unpatch_game success: appid={appid} target={target_dir}")
-            return {
-                "status": "success",
-                "appid": str(appid),
-                "name": game_info["name"],
-                "launch_options": original_launch_options,
-                "message": f"Unpatched {game_info['name']}.",
-            }
-        except Exception as exc:
-            decky.logger.error(f"[Framegen] unpatch_game failed for {appid}: {exc}")
             return {"status": "error", "message": str(exc)}
 
 
@@ -3403,288 +3298,6 @@ class _ReShadeMixin:
                 "message": str(e)
             }
 
-    async def find_heroic_game_executable_path(self, game_path: str, game_name: str) -> dict:
-        """
-        Find executable paths for a Heroic game, similar to Steam game detection
-        """
-        try:
-            decky.logger.info(f"Finding executable path for Heroic game: {game_name} at {game_path}")
-            
-            # Check cache first
-            cache_key = f"heroic_{game_path}_{game_name}"
-            if cache_key in self.executable_cache:
-                cached_result = self.executable_cache[cache_key]
-                # Check if cache is less than 1 hour old
-                if time.time() - cached_result.get('timestamp', 0) < 3600:
-                    decky.logger.info(f"Using cached result for {game_name}")
-                    return cached_result
-            
-            # Verify game path exists
-            if not os.path.exists(game_path):
-                return {"status": "error", "message": f"Game path not found: {game_path}"}
-            
-            game_path_obj = Path(game_path)
-            
-            # Find all executables in the game directory
-            all_executables = []
-            
-            decky.logger.info(f"Walking directory tree starting from: {game_path}")
-            for root, dirs, files in os.walk(game_path):
-                for file in files:
-                    if file.lower().endswith('.exe'):
-                        exe_path = os.path.join(root, file)
-                        try:
-                            file_size = os.path.getsize(exe_path)
-                            rel_path = os.path.relpath(exe_path, game_path)
-                            
-                            all_executables.append({
-                                "path": exe_path,
-                                "directory_path": os.path.dirname(exe_path),
-                                "relative_path": rel_path,
-                                "filename": file,
-                                "size": file_size,
-                                "size_mb": round(file_size / (1024 * 1024), 1)
-                            })
-                            decky.logger.debug(f"Found exe: {file} ({rel_path}) - {round(file_size / (1024 * 1024), 1)}MB")
-                        except Exception as e:
-                            decky.logger.warning(f"Error getting size for {exe_path}: {str(e)}")
-                            continue
-            
-            if not all_executables:
-                return {
-                    "status": "error",
-                    "method": "heroic_enhanced_detection",
-                    "message": f"No executables found in game directory: {game_path}"
-                }
-            
-            decky.logger.info(f"Found {len(all_executables)} total executables")
-            
-            # Enhanced filtering based on discovered patterns
-            def score_executable(exe_info):
-                score = 50  # Start with a base score
-                filename = exe_info["filename"].lower()
-                filename_no_ext = os.path.splitext(filename)[0]  # Remove extension
-                rel_path = exe_info["relative_path"].lower()
-                size_mb = exe_info["size_mb"]
-                
-                decky.logger.debug(f"Scoring {filename} at {rel_path}")
-                
-                # LESS aggressive utility filtering - only skip very obvious ones
-                utility_keywords = ["unins", "setup", "vcredist", "directx", "redist"]
-                if any(skip in filename for skip in utility_keywords):
-                    decky.logger.debug(f"  Utility file detected: {filename}")
-                    return 0
-                
-                # Enhanced game name matching with multiple normalization approaches
-                # 1. Get directory name and clean game name
-                dir_name = os.path.basename(game_path).lower()
-                clean_game_name = game_name.lower()
-                
-                # 2. Clean up names by removing spaces, special chars, etc.
-                clean_dir_name = re.sub(r'[^a-z0-9]', '', dir_name)
-                norm_game_name = re.sub(r'[^a-z0-9]', '', clean_game_name)
-                norm_filename = re.sub(r'[^a-z0-9]', '', filename_no_ext)
-                
-                # 3. Split into words for more flexible matching
-                dir_words = re.findall(r'[a-z0-9]+', dir_name)
-                game_name_words = re.findall(r'[a-z0-9]+', clean_game_name)
-                filename_words = re.findall(r'[a-z0-9]+', filename_no_ext)
-                
-                # Log the normalized values for debugging
-                decky.logger.debug(f"  Normalized names - Dir: '{clean_dir_name}', Game: '{norm_game_name}', File: '{norm_filename}'")
-                
-                # 4. Calculate various types of matches
-                name_match_score = 0
-                
-                # Exact matches (highest priority)
-                if norm_filename == norm_game_name or norm_filename == clean_dir_name:
-                    name_match_score += 60
-                    decky.logger.debug(f"  Exact name match: +60 (normalized names match exactly)")
-                
-                # Handle specific cases like "among us.exe" vs "amongus" folder
-                elif (norm_filename.replace(" ", "") == norm_game_name or 
-                    norm_game_name.replace(" ", "") == norm_filename or
-                    norm_filename.replace(" ", "") == clean_dir_name or
-                    clean_dir_name.replace(" ", "") == norm_filename):
-                    name_match_score += 55
-                    decky.logger.debug(f"  Space-normalized match: +55")
-                
-                # Substantial partial matches (high priority)
-                elif (norm_game_name in norm_filename or norm_filename in norm_game_name or
-                    clean_dir_name in norm_filename or norm_filename in clean_dir_name):
-                    # Calculate how much of the string matches
-                    match_ratio = max(
-                        len(norm_game_name) / len(norm_filename) if len(norm_filename) > 0 else 0,
-                        len(norm_filename) / len(norm_game_name) if len(norm_game_name) > 0 else 0,
-                        len(clean_dir_name) / len(norm_filename) if len(norm_filename) > 0 else 0,
-                        len(norm_filename) / len(clean_dir_name) if len(clean_dir_name) > 0 else 0
-                    )
-                    # Scale the score based on how much of the string matches (max 45 points)
-                    partial_score = min(45, int(match_ratio * 45))
-                    name_match_score += partial_score
-                    decky.logger.debug(f"  Partial name match: +{partial_score} (ratio: {match_ratio:.2f})")
-                    
-                    # Extra case for when folder has additional characters (like "DREDGEmKMzX" vs "DREDGE.exe")
-                    if (norm_filename in clean_dir_name and len(norm_filename) > 4 and
-                        len(norm_filename) >= len(clean_dir_name) * 0.5):
-                        extra_bonus = 15
-                        name_match_score += extra_bonus
-                        decky.logger.debug(f"  Extra partial match bonus: +{extra_bonus} (likely main game exe)")
-                
-                # Word-level matches (medium priority)
-                else:
-                    # Find matching words between game name/dir and filename
-                    matching_game_words = set(game_name_words).intersection(set(filename_words))
-                    matching_dir_words = set(dir_words).intersection(set(filename_words))
-                    
-                    # Use the best match (dir or game name)
-                    best_matches = matching_game_words if len(matching_game_words) > len(matching_dir_words) else matching_dir_words
-                    if best_matches:
-                        # Calculate match percentage relative to the source words
-                        match_percentage = len(best_matches) / len(game_name_words) if game_name_words else 0
-                        word_score = len(best_matches) * 5.0 * (1 + match_percentage)  # Scale based on percentage match
-                        name_match_score += min(40, round(word_score))  # Cap at 40 points
-                        decky.logger.debug(f"  Word match: +{min(40, round(word_score))} ({best_matches})")
-                
-                # Common game executable names bonus
-                if any(common in filename_no_ext.lower() for common in ["game", "main", "client", "app", "play"]):
-                    common_bonus = 15
-                    name_match_score += common_bonus
-                    decky.logger.debug(f"  Common game exe name: +{common_bonus}")
-                
-                # Add the name match score to the total score
-                score += name_match_score
-                
-                # Size-based scoring (reduced weights)
-                size_score = 0
-                if size_mb > 50:      # Large games
-                    size_score = 10  # Reduced from 35
-                elif size_mb > 20:    # Medium games  
-                    size_score = 8   # Reduced from 25
-                elif size_mb > 5:     # Small games
-                    size_score = 5   # Reduced from 15
-                elif size_mb > 1:     # Small but not tiny
-                    size_score = 2   # Reduced from 5
-                elif size_mb < 0.5:   # Very small files (likely utilities)
-                    size_score = -10  # Reduced from 20
-                
-                score += size_score
-                decky.logger.debug(f"  Size score: +{size_score} ({size_mb} MB)")
-                
-                # Path-based scoring
-                path_score = 0
-                if "binaries/win64" in rel_path or "binaries\\win64" in rel_path:    # Unreal Engine pattern
-                    path_score += 15  # Reduced from 25
-                elif "bin" in rel_path:             # Common bin directory
-                    path_score += 10  # Reduced from 15
-                elif "game" in rel_path:            # Game subdirectory
-                    path_score += 8   # Reduced from 10
-                elif rel_path.count("/") == 0 and rel_path.count("\\") == 0:  # Root directory
-                    path_score += 5   # Reduced from 8
-                
-                score += path_score
-                decky.logger.debug(f"  Path score: +{path_score}")
-                
-                # Special patterns scoring
-                special_score = 0
-                if "shipping" in filename:          # Unreal shipping builds
-                    special_score += 15  # Reduced from 20
-                elif "win64" in filename:           # 64-bit indicator
-                    special_score += 5   # Reduced from 8
-                elif "launcher" in filename:        # Launchers (lower score but don't exclude)
-                    special_score -= 25  # Increased penalty from 15
-                
-                score += special_score
-                if special_score != 0:
-                    decky.logger.debug(f"  Special pattern score: {special_score}")
-                
-                # Moderate penalty for deep nesting
-                path_depth = rel_path.count("/") + rel_path.count("\\")
-                if path_depth > 4:  # Increased threshold
-                    depth_penalty = (path_depth - 4) * 3
-                    score -= depth_penalty
-                    decky.logger.debug(f"  Deep nesting penalty: -{depth_penalty}")
-                
-                # Cap score between 0 and 100
-                score = max(0, min(100, score))
-                
-                # Round to 1 decimal place for cleaner display
-                score = round(score, 1)
-                
-                decky.logger.debug(f"  Final score for {filename}: {score} (name match: {name_match_score})")
-                return score
-            
-            # Score all executables
-            scored_executables = []
-            for exe_info in all_executables:
-                score = score_executable(exe_info)
-                if score > 0:
-                    scored_executables.append({
-                        **exe_info,
-                        "score": score
-                    })
-                else:
-                    decky.logger.debug(f"Filtered out {exe_info['filename']} with score {score}")
-            
-            if not scored_executables:
-                # If we filtered everything out, include everything with any positive score
-                decky.logger.warning("All executables filtered out, using less restrictive filtering")
-                for exe_info in all_executables:
-                    score = score_executable(exe_info)
-                    if score >= 0:
-                        scored_executables.append({
-                            **exe_info,
-                            "score": score
-                        })
-            
-            if not scored_executables:
-                # Last resort: include everything
-                decky.logger.warning("Still no executables, including all found")
-                for exe_info in all_executables:
-                    scored_executables.append({
-                        **exe_info,
-                        "score": score_executable(exe_info)
-                    })
-            
-            # Sort by score (highest first) and take top 5
-            scored_executables.sort(key=lambda x: x["score"], reverse=True)
-            top_executables = scored_executables[:5]
-            
-            best_executable = top_executables[0]
-            
-            decky.logger.info(f"Total executables after filtering: {len(scored_executables)}")
-            decky.logger.info(f"Top 5 executables:")
-            for i, exe in enumerate(top_executables):
-                decky.logger.info(f"  {i+1}. {exe['filename']} (score: {exe['score']}) at {exe['relative_path']}")
-            
-            result = {
-                "status": "success",
-                "heroic_enhanced_detection_result": {
-                    "status": "success",
-                    "method": "heroic_enhanced_detection",
-                    "executable_path": best_executable["path"],
-                    "directory_path": best_executable["directory_path"],
-                    "filename": best_executable["filename"],
-                    "all_executables": top_executables,
-                    "confidence": "high" if best_executable["score"] > 70 else "medium"
-                },
-                "recommended_method": "heroic_enhanced_detection",
-                "timestamp": time.time()
-            }
-            
-            # Cache the result
-            self.executable_cache[cache_key] = result
-            
-            return result
-            
-        except Exception as e:
-            decky.logger.error(f"Heroic executable detection error: {str(e)}")
-            return {
-                "status": "error",
-                "method": "heroic_enhanced_detection",
-                "message": str(e)
-            }
-
     async def save_shader_preferences(self, selected_shaders: list) -> dict:
         """Save user's shader preferences to a file"""
         try:
@@ -4336,158 +3949,6 @@ class _ReShadeMixin:
                 "message": str(error)
             }
 
-    async def validate_windows_executable_path(self, selected_executable_path: str) -> dict:
-        try:
-            is_valid, result = self._validate_selected_windows_executable_path(selected_executable_path)
-            if not is_valid:
-                return {
-                    "status": "error",
-                    "valid": False,
-                    "message": result
-                }
-
-            return {
-                "status": "success",
-                "valid": True,
-                "normalized_path": result
-            }
-        except Exception as error:
-            decky.logger.error(f"Error validating executable path: {str(error)}")
-            return {
-                "status": "error",
-                "valid": False,
-                "message": str(error)
-            }
-
-    async def browse_filesystem_for_executable(self, current_path: str = "", show_hidden: bool = True) -> dict:
-        try:
-            normalized_path = os.path.abspath(os.path.expanduser(current_path or "/home/deck"))
-
-            if not os.path.exists(normalized_path):
-                return {
-                    "status": "error",
-                    "message": f"Path not found: {normalized_path}"
-                }
-
-            if not os.path.isdir(normalized_path):
-                normalized_path = os.path.dirname(normalized_path)
-
-            entries = []
-            with os.scandir(normalized_path) as directory_entries:
-                for entry in directory_entries:
-                    try:
-                        is_dir = entry.is_dir(follow_symlinks=True)
-                        is_file = entry.is_file(follow_symlinks=True)
-                    except OSError:
-                        continue
-
-                    is_hidden = entry.name.startswith(".")
-                    if is_hidden and not show_hidden:
-                        continue
-
-                    if not is_dir and not (is_file and entry.name.lower().endswith(".exe")):
-                        continue
-
-                    entries.append({
-                        "name": entry.name,
-                        "path": entry.path,
-                        "is_dir": is_dir,
-                        "is_file": is_file,
-                        "is_hidden": is_hidden,
-                        "is_symlink": entry.is_symlink()
-                    })
-
-            entries.sort(key=lambda item: (0 if item["is_dir"] else 1, item["name"].lower()))
-
-            if normalized_path == os.path.sep:
-                parent_path = None
-            else:
-                parent_path = os.path.dirname(normalized_path.rstrip(os.path.sep)) or os.path.sep
-
-            return {
-                "status": "success",
-                "current_path": normalized_path,
-                "parent_path": parent_path,
-                "entries": entries
-            }
-        except Exception as error:
-            decky.logger.error(f"Error browsing filesystem for executable selection: {str(error)}")
-            return {
-                "status": "error",
-                "message": str(error)
-            }
-
-    async def get_sd_card_mount_path(self) -> dict:
-        try:
-            search_roots = ["/run/media", "/media"]
-            candidate_paths = []
-            ignored_names = {"deck", "root", "media"}
-
-            for root in search_roots:
-                if not os.path.isdir(root):
-                    continue
-
-                with os.scandir(root) as root_entries:
-                    for entry in root_entries:
-                        if not entry.is_dir(follow_symlinks=True):
-                            continue
-
-                        if (
-                            entry.name.lower() not in ignored_names and
-                            os.access(entry.path, os.R_OK | os.X_OK) and
-                            os.path.ismount(entry.path)
-                        ):
-                            candidate_paths.append(entry.path)
-                            continue
-
-                        if entry.name.lower() in ignored_names:
-                            nested_dirs = []
-                            try:
-                                with os.scandir(entry.path) as nested_entries:
-                                    nested_dirs = [
-                                        nested.path
-                                        for nested in nested_entries
-                                        if nested.is_dir(follow_symlinks=True)
-                                        and os.access(nested.path, os.R_OK | os.X_OK)
-                                        and os.path.ismount(nested.path)
-                                    ]
-                            except OSError:
-                                nested_dirs = []
-
-                            if nested_dirs:
-                                candidate_paths.extend(nested_dirs)
-
-            unique_candidates = []
-            for path in candidate_paths:
-                if path not in unique_candidates:
-                    unique_candidates.append(path)
-
-            preferred_candidates = sorted(
-                [
-                    path for path in unique_candidates
-                    if os.path.basename(path).lower() not in ignored_names
-                ],
-                key=lambda path: (path.count(os.path.sep), path.lower())
-            )
-
-            resolved_path = preferred_candidates[0] if preferred_candidates else (
-                unique_candidates[0] if unique_candidates else "/run/media"
-            )
-
-            return {
-                "status": "success",
-                "path": resolved_path,
-                "available": bool(unique_candidates)
-            }
-        except Exception as error:
-            decky.logger.error(f"Error resolving SD card mount path: {str(error)}")
-            return {
-                "status": "error",
-                "path": "/run/media",
-                "available": False,
-                "message": str(error)
-            }
-
     async def run_install_reshade(self, with_addon: bool = False, with_autohdr: bool = False, selected_shaders: list = None) -> dict:
         try:
             assets_dir = self._get_assets_dir()
@@ -4773,799 +4234,6 @@ class _ReShadeMixin:
             decky.logger.error(str(e))
             return {"status": "error", "message": str(e)}
 
-    async def find_heroic_games(self) -> dict:
-        """Find games installed through Heroic Launcher using the config file"""
-        try:
-            # Read the Heroic config file to get the default install path
-            heroic_config_path = os.path.expanduser("~/.var/app/com.heroicgameslauncher.hgl/config/heroic/store/config.json")
-            
-            if not os.path.exists(heroic_config_path):
-                return {"status": "error", "message": "Heroic config file not found"}
-                
-            with open(heroic_config_path, 'r', encoding='utf-8') as f:
-                heroic_config = json.load(f)
-            
-            # Get the install path from config
-            default_install_path = heroic_config.get("settings", {}).get("defaultInstallPath")
-            if not default_install_path:
-                default_install_path = os.path.expanduser("~/Games/Heroic")  # Fallback
-            
-            decky.logger.info(f"Heroic games install path: {default_install_path}")
-            
-            # Get the list of recent games for quick reference
-            recent_games = heroic_config.get("games", {}).get("recent", [])
-            recent_games_map = {game.get("title"): game.get("appName") for game in recent_games if game.get("title") and game.get("appName")}
-            
-            # Find all game directories in the install path
-            games = []
-            if os.path.exists(default_install_path):
-                for game_dir in os.listdir(default_install_path):
-                    game_path = os.path.join(default_install_path, game_dir)
-                    if os.path.isdir(game_path) and game_dir.lower() not in ["prefixes", "temp", "legendary", "gog", "state", "logs"]:
-                        # This is likely a game directory
-                        game_info = {
-                            "name": game_dir,
-                            "path": game_path
-                        }
-                        
-                        # Check if this game is in the recent games list
-                        if game_dir in recent_games_map:
-                            game_info["app_id"] = recent_games_map[game_dir]
-                        
-                        # Try to find a better name from appinfo.json if it exists
-                        appinfo_paths = [
-                            os.path.join(game_path, "appinfo.json"),
-                            os.path.join(game_path, ".egstore", "appinfo.json")
-                        ]
-                        
-                        for appinfo_path in appinfo_paths:
-                            if os.path.exists(appinfo_path):
-                                try:
-                                    with open(appinfo_path, 'r', encoding='utf-8') as f:
-                                        appinfo = json.load(f)
-                                        if "DisplayName" in appinfo:
-                                            game_info["name"] = appinfo["DisplayName"]
-                                        elif "AppName" in appinfo:
-                                            game_info["name"] = appinfo["AppName"]
-                                        if "AppId" in appinfo:
-                                            game_info["app_id"] = str(appinfo["AppId"])
-                                        break
-                                except Exception as e:
-                                    decky.logger.error(f"Error reading appinfo.json for {game_dir}: {str(e)}")
-                        
-                        # Find and cache the config file information if available
-                        if "app_id" in game_info:
-                            # Check if there's a direct config file match
-                            games_config_dir = os.path.expanduser("~/.var/app/com.heroicgameslauncher.hgl/config/heroic/GamesConfig")
-                            for config_file in os.listdir(games_config_dir):
-                                if config_file.endswith(".json"):
-                                    config_file_path = os.path.join(games_config_dir, config_file)
-                                    try:
-                                        with open(config_file_path, 'r', encoding='utf-8') as f:
-                                            config_data = json.load(f)
-                                            # Check if app_id is a key in this config file
-                                            if game_info["app_id"] in config_data:
-                                                game_info["config_file"] = config_file
-                                                game_info["config_key"] = game_info["app_id"]
-                                                break
-                                    except Exception as e:
-                                        decky.logger.error(f"Error reading config file {config_file}: {str(e)}")
-                        
-                        games.append(game_info)
-            
-            # Sort games alphabetically by name
-            games.sort(key=lambda g: g["name"].lower())
-            
-            return {"status": "success", "games": games}
-        except Exception as e:
-            decky.logger.error(f"Error finding Heroic games: {str(e)}")
-            return {"status": "error", "message": str(e)}
-
-    async def find_heroic_game_config(self, game_path: str, game_name: str) -> dict:
-        """
-        Find the config file and key for a Heroic game using the config.json file
-        """
-        try:
-            decky.logger.info(f"Finding config for Heroic game: {game_name} at {game_path}")
-            
-            # Normalize game name for more flexible matching
-            normalized_game_name = game_name.lower().replace(" ", "").replace("-", "").replace("_", "")
-            normalized_game_path = os.path.normpath(game_path)
-            base_folder_name = os.path.basename(normalized_game_path).lower()
-            
-            decky.logger.info(f"Normalized game name: {normalized_game_name}")
-            decky.logger.info(f"Base folder name: {base_folder_name}")
-            
-            # First, try to read the Heroic config file
-            heroic_config_path = os.path.expanduser("~/.var/app/com.heroicgameslauncher.hgl/config/heroic/store/config.json")
-            if os.path.exists(heroic_config_path):
-                with open(heroic_config_path, 'r', encoding='utf-8') as f:
-                    heroic_config = json.load(f)
-                
-                # Get the list of recent games
-                recent_games = heroic_config.get("games", {}).get("recent", [])
-                
-                # Look for a match by title with flexible matching
-                for game in recent_games:
-                    game_title = game.get("title", "")
-                    normalized_title = game_title.lower().replace(" ", "").replace("-", "").replace("_", "")
-                    
-                    # Try multiple matching approaches
-                    if (game.get("title") == game_name or  # Exact match
-                        normalized_title == normalized_game_name or  # Normalized match
-                        normalized_game_name in normalized_title or  # Normalized game name is in title
-                        normalized_title in normalized_game_name or  # Normalized title is in game name
-                        base_folder_name.startswith(normalized_title) or  # Folder starts with title
-                        normalized_title.startswith(base_folder_name)):  # Title starts with folder
-                        
-                        app_name = game.get("appName")
-                        if app_name:
-                            decky.logger.info(f"Found appName in config.json for '{game_title}': {app_name}")
-                            
-                            # Now look for this appName in the GamesConfig directory
-                            games_config_dir = os.path.expanduser("~/.var/app/com.heroicgameslauncher.hgl/config/heroic/GamesConfig")
-                            for config_file in os.listdir(games_config_dir):
-                                if not config_file.endswith(".json"):
-                                    continue
-                                    
-                                config_file_path = os.path.join(games_config_dir, config_file)
-                                try:
-                                    with open(config_file_path, 'r', encoding='utf-8') as f:
-                                        config_data = json.load(f)
-                                        
-                                        if app_name in config_data:
-                                            decky.logger.info(f"Found config file: {config_file}, key: {app_name}")
-                                            return {
-                                                "status": "success",
-                                                "config_file": config_file,
-                                                "config_key": app_name
-                                            }
-                                except Exception as e:
-                                    decky.logger.error(f"Error reading config file {config_file}: {str(e)}")
-                
-                # If direct matching failed, try checking winePrefix paths in all config files
-                decky.logger.info("Trying to match using winePrefix paths...")
-                games_config_dir = os.path.expanduser("~/.var/app/com.heroicgameslauncher.hgl/config/heroic/GamesConfig")
-                
-                for config_file in os.listdir(games_config_dir):
-                    if not config_file.endswith(".json"):
-                        continue
-                        
-                    config_file_path = os.path.join(games_config_dir, config_file)
-                    try:
-                        with open(config_file_path, 'r', encoding='utf-8') as f:
-                            config_data = json.load(f)
-                            
-                            # Check each game config
-                            for app_key, app_config in config_data.items():
-                                # Check winePrefix path
-                                wine_prefix = app_config.get("winePrefix", "")
-                                if wine_prefix:
-                                    # Get both last part and parent part of path for more chances to match
-                                    prefix_parts = wine_prefix.rstrip('/').split('/')
-                                    last_part = prefix_parts[-1].lower()
-                                    parent_part = prefix_parts[-2].lower() if len(prefix_parts) > 1 else ""
-                                    
-                                    # Normalize for matching
-                                    last_part_norm = last_part.replace(" ", "").replace("-", "").replace("_", "")
-                                    parent_part_norm = parent_part.replace(" ", "").replace("-", "").replace("_", "")
-                                    
-                                    # Enhanced matching for Wine prefix components
-                                    if (last_part.lower() == game_name.lower() or
-                                        last_part_norm == normalized_game_name or
-                                        normalized_game_name in last_part_norm or
-                                        last_part_norm in normalized_game_name or
-                                        base_folder_name.startswith(last_part_norm) or
-                                        last_part_norm.startswith(base_folder_name) or
-                                        # Also check parent directory if it's not a common prefix folder
-                                        (parent_part and parent_part not in ["prefixes", "wine", "pfx"] and (
-                                            parent_part.lower() == game_name.lower() or
-                                            parent_part_norm == normalized_game_name or
-                                            normalized_game_name in parent_part_norm or
-                                            parent_part_norm in normalized_game_name or
-                                            base_folder_name.startswith(parent_part_norm) or
-                                            parent_part_norm.startswith(base_folder_name)))):
-                                        
-                                        match_type = "last_part" if (last_part.lower() == game_name.lower() or 
-                                                                    last_part_norm == normalized_game_name or
-                                                                    normalized_game_name in last_part_norm or
-                                                                    last_part_norm in normalized_game_name) else "parent_part"
-                                        
-                                        decky.logger.info(f"Found match via winePrefix {match_type}: {wine_prefix}")
-                                        decky.logger.info(f"Config file: {config_file}, key: {app_key}")
-                                        return {
-                                            "status": "success",
-                                            "config_file": config_file,
-                                            "config_key": app_key
-                                        }
-                    except Exception as e:
-                        decky.logger.error(f"Error reading config file {config_file}: {str(e)}")
-            
-            # Improved executable name matching
-            decky.logger.info("Trying enhanced matching using executable names...")
-            
-            # Find the executable directory
-            exe_dir = self._find_heroic_game_executable_directory(game_path)
-            if not exe_dir:
-                exe_dir = game_path
-                
-            # Find executable files - get all to increase chances of a match
-            exe_files = []
-            try:
-                for file in os.listdir(exe_dir):
-                    if file.lower().endswith(".exe") and not any(skip in file.lower() for skip in 
-                                                            ["unins", "launcher", "crash", "setup", "config", "redist"]):
-                        exe_files.append(file)
-                        
-                # Try additional subdirectories if no EXEs found in main directory
-                if not exe_files:
-                    for subdir in ["bin", "binaries", "game", "win64", "x64"]:
-                        subdir_path = os.path.join(exe_dir, subdir)
-                        if os.path.exists(subdir_path) and os.path.isdir(subdir_path):
-                            for file in os.listdir(subdir_path):
-                                if file.lower().endswith(".exe") and not any(skip in file.lower() for skip in 
-                                                                        ["unins", "launcher", "crash", "setup", "config", "redist"]):
-                                    exe_files.append(file)
-                                    decky.logger.info(f"Found exe in subdirectory {subdir}: {file}")
-            except Exception as e:
-                decky.logger.error(f"Error listing executable directory: {str(e)}")
-                
-            if exe_files:
-                # Use all executable names for matching, not just the first one
-                games_config_dir = os.path.expanduser("~/.var/app/com.heroicgameslauncher.hgl/config/heroic/GamesConfig")
-                
-                for exe_file in exe_files:
-                    # Get name without .exe extension
-                    exe_name = os.path.splitext(exe_file)[0].lower()
-                    exe_name_norm = exe_name.replace(" ", "").replace("-", "").replace("_", "")
-                    
-                    decky.logger.info(f"Trying to match using executable: {exe_name}")
-                    
-                    # Check all config files for matches
-                    for config_file in os.listdir(games_config_dir):
-                        if not config_file.endswith(".json"):
-                            continue
-                            
-                        config_file_path = os.path.join(games_config_dir, config_file)
-                        try:
-                            with open(config_file_path, 'r', encoding='utf-8') as f:
-                                config_data = json.load(f)
-                                
-                                # Check all games in this config
-                                for app_key, app_config in config_data.items():
-                                    # Get game info and any other relevant fields that might contain the game name
-                                    game_info = app_config.get("game", {})
-                                    config_title = game_info.get("title", "").lower()
-                                    config_title_norm = config_title.replace(" ", "").replace("-", "").replace("_", "")
-                                    
-                                    # Also check the app config directly for game name
-                                    app_title = app_config.get("title", "").lower()
-                                    app_title_norm = app_title.replace(" ", "").replace("-", "").replace("_", "")
-                                    
-                                    # Enhanced matching for executable names
-                                    if (exe_name == config_title.lower() or
-                                        exe_name_norm == config_title_norm or
-                                        exe_name == app_title.lower() or
-                                        exe_name_norm == app_title_norm or
-                                        exe_name_norm in config_title_norm or
-                                        exe_name_norm in app_title_norm or
-                                        config_title_norm in exe_name_norm or
-                                        app_title_norm in exe_name_norm):
-                                        
-                                        match_source = "game_info" if exe_name_norm in config_title_norm else "app_config"
-                                        match_type = "exact" if (exe_name == config_title.lower() or exe_name == app_title.lower()) else "partial"
-                                        
-                                        decky.logger.info(f"Found match via executable name: {exe_name} matches '{config_title or app_title}' ({match_type} match from {match_source})")
-                                        decky.logger.info(f"Config file: {config_file}, key: {app_key}")
-                                        return {
-                                            "status": "success",
-                                            "config_file": config_file,
-                                            "config_key": app_key
-                                        }
-                        except Exception as e:
-                            decky.logger.error(f"Error reading config file {config_file}: {str(e)}")
-                        
-            # Check install path as before
-            decky.logger.info("Trying to match using install path...")
-            games_config_dir = os.path.expanduser("~/.var/app/com.heroicgameslauncher.hgl/config/heroic/GamesConfig")
-            for config_file in os.listdir(games_config_dir):
-                if not config_file.endswith(".json"):
-                    continue
-                    
-                config_file_path = os.path.join(games_config_dir, config_file)
-                try:
-                    with open(config_file_path, 'r', encoding='utf-8') as f:
-                        config_data = json.load(f)
-                        
-                        # Check all games in this config
-                        for app_key, app_config in config_data.items():
-                            install_path = app_config.get("installPath", "")
-                            if install_path:
-                                normalized_install_path = os.path.normpath(install_path)
-                                install_folder = os.path.basename(normalized_install_path).lower()
-                                install_folder_norm = install_folder.replace(" ", "").replace("-", "").replace("_", "")
-                                
-                                # Enhanced matching for install paths
-                                if (normalized_install_path == normalized_game_path or
-                                    install_folder == base_folder_name or
-                                    (normalized_game_name in install_folder_norm) or
-                                    (install_folder_norm in normalized_game_name) or
-                                    base_folder_name.startswith(install_folder_norm) or
-                                    install_folder_norm.startswith(base_folder_name)):
-                                    
-                                    decky.logger.info(f"Found match via install path: {install_path}")
-                                    decky.logger.info(f"Config file: {config_file}, key: {app_key}")
-                                    return {
-                                        "status": "success",
-                                        "config_file": config_file,
-                                        "config_key": app_key
-                                    }
-                except Exception as e:
-                    decky.logger.error(f"Error reading config file {config_file}: {str(e)}")
-            
-            # NEW FALLBACK: Check store-specific installed.json files if all other methods fail
-            decky.logger.info("Trying to find game in store-specific installed.json files...")
-            
-            # Define paths to different store installed.json files
-            installed_json_paths = {
-                "epic": os.path.expanduser("~/.var/app/com.heroicgameslauncher.hgl/config/heroic/legendaryConfig/legendary/installed.json"),
-                "gog": os.path.expanduser("~/.var/app/com.heroicgameslauncher.hgl/config/heroic/gog_store/installed.json"),
-                "amazon": os.path.expanduser("~/.var/app/com.heroicgameslauncher.hgl/config/heroic/nile_config/nile/installed.json")
-            }
-            
-            # Check each store's installed.json file
-            for store, json_path in installed_json_paths.items():
-                if not os.path.exists(json_path):
-                    decky.logger.debug(f"{store.upper()} installed.json not found: {json_path}")
-                    continue
-                    
-                try:
-                    with open(json_path, 'r', encoding='utf-8') as f:
-                        installed_data = json.load(f)
-                    
-                    decky.logger.info(f"Checking {store.upper()} installed.json file")
-                    
-                    # Handle Epic Games format (object with app IDs as keys)
-                    if store == "epic":
-                        for app_id, game_info in installed_data.items():
-                            title = game_info.get("title", "").lower()
-                            title_norm = title.replace(" ", "").replace("-", "").replace("_", "")
-                            install_path = os.path.normpath(game_info.get("install_path", ""))
-                            executable = game_info.get("executable", "").lower()
-                            executable_name = os.path.splitext(executable)[0].lower() if executable else ""
-                            
-                            # Comprehensive matching
-                            if (title.lower() == game_name.lower() or
-                                title_norm == normalized_game_name or
-                                normalized_game_name in title_norm or
-                                title_norm in normalized_game_name or
-                                install_path == normalized_game_path or
-                                os.path.basename(install_path).lower() == base_folder_name or
-                                (executable_name and (
-                                    executable_name == normalized_game_name or
-                                    normalized_game_name in executable_name or
-                                    executable_name in normalized_game_name
-                                ))):
-                                
-                                app_name = game_info.get("app_name", app_id)
-                                if app_name:
-                                    decky.logger.info(f"Found match in Epic installed.json: {app_name} for {title}")
-                                    
-                                    # Now search for this app_name in GamesConfig directory
-                                    config_result = self._find_config_for_app_name(app_name)
-                                    if config_result["status"] == "success":
-                                        return config_result
-                    
-                    # Handle GOG format (installed array)
-                    elif store == "gog":
-                        installed_array = installed_data.get("installed", [])
-                        for game_info in installed_array:
-                            install_path = os.path.normpath(game_info.get("install_path", ""))
-                            app_name = game_info.get("appName")
-                            
-                            # Match based on install path
-                            if (install_path == normalized_game_path or
-                                os.path.basename(install_path).lower() == base_folder_name):
-                                
-                                if app_name:
-                                    decky.logger.info(f"Found match in GOG installed.json: {app_name}")
-                                    
-                                    # Search for this app_name in config files
-                                    config_result = self._find_config_for_app_name(app_name)
-                                    if config_result["status"] == "success":
-                                        return config_result
-                    
-                    # Handle Amazon format (likely similar to others)
-                    elif store == "amazon":
-                        # Implementation would depend on exact structure
-                        # This is a placeholder assuming similar structure to other stores
-                        if isinstance(installed_data, dict) and "installed" in installed_data:
-                            # Array format like GOG
-                            for game_info in installed_data.get("installed", []):
-                                app_name = game_info.get("appName") or game_info.get("app_name")
-                                install_path = os.path.normpath(game_info.get("install_path", ""))
-                                
-                                if (install_path == normalized_game_path or
-                                    os.path.basename(install_path).lower() == base_folder_name):
-                                    
-                                    if app_name:
-                                        decky.logger.info(f"Found match in Amazon installed.json: {app_name}")
-                                        
-                                        # Search for this app_name in config files
-                                        config_result = self._find_config_for_app_name(app_name)
-                                        if config_result["status"] == "success":
-                                            return config_result
-                        else:
-                            # Object format like Epic
-                            for app_id, game_info in installed_data.items():
-                                app_name = game_info.get("appName") or game_info.get("app_name")
-                                install_path = os.path.normpath(game_info.get("install_path", ""))
-                                
-                                if (install_path == normalized_game_path or
-                                    os.path.basename(install_path).lower() == base_folder_name):
-                                    
-                                    if app_name:
-                                        decky.logger.info(f"Found match in Amazon installed.json: {app_name}")
-                                        
-                                        # Search for this app_name in config files
-                                        config_result = self._find_config_for_app_name(app_name)
-                                        if config_result["status"] == "success":
-                                            return config_result
-                        
-                except Exception as e:
-                    decky.logger.error(f"Error reading {store} installed.json: {str(e)}")
-            
-            # If we still couldn't find a match, look for appinfo.json
-            return {"status": "error", "message": f"Could not find config for game: {game_name}"}
-        except Exception as e:
-            decky.logger.error(f"Error finding Heroic game config: {str(e)}")
-            return {"status": "error", "message": str(e)}
-
-    def _find_config_for_app_name(self, app_name: str) -> dict:
-        """Find config file containing the specified app_name as a key"""
-        games_config_dir = os.path.expanduser("~/.var/app/com.heroicgameslauncher.hgl/config/heroic/GamesConfig")
-        
-        for config_file in os.listdir(games_config_dir):
-            if not config_file.endswith(".json"):
-                continue
-                
-            config_file_path = os.path.join(games_config_dir, config_file)
-            try:
-                with open(config_file_path, 'r', encoding='utf-8') as f:
-                    config_data = json.load(f)
-                    
-                    if app_name in config_data:
-                        decky.logger.info(f"Found config file for {app_name}: {config_file}")
-                        return {
-                            "status": "success",
-                            "config_file": config_file,
-                            "config_key": app_name
-                        }
-            except Exception as e:
-                decky.logger.error(f"Error reading config file {config_file}: {str(e)}")
-        
-        return {"status": "error", "message": f"No config file found for app name: {app_name}"}
-
-    async def update_heroic_config(self, config_file: str, config_key: str, dll_override: str) -> dict:
-        """Update Heroic game configuration with WINEDLLOVERRIDES for ReShade"""
-        try:
-            config_path = os.path.expanduser("~/.var/app/com.heroicgameslauncher.hgl/config/heroic/GamesConfig/")
-            config_file_path = os.path.join(config_path, config_file)
-            
-            if not os.path.exists(config_file_path):
-                return {"status": "error", "message": f"Config file not found: {config_file}"}
-                
-            # Read the config file
-            with open(config_file_path, 'r', encoding='utf-8') as f:
-                config_data = json.load(f)
-                
-            if config_key not in config_data:
-                return {"status": "error", "message": f"Game config key '{config_key}' not found in config file"}
-                
-            # Check if environmentOptions exists (note: it's "environmentOptions" in newer versions, not "enviromentOptions")
-            env_key = "environmentOptions" if "environmentOptions" in config_data[config_key] else "enviromentOptions"
-            
-            if env_key not in config_data[config_key]:
-                config_data[config_key][env_key] = []
-            
-            # Handle WINEDLLOVERRIDES
-            # Remove any existing WINEDLLOVERRIDES
-            config_data[config_key][env_key] = [
-                env for env in config_data[config_key][env_key] 
-                if env.get("key") != "WINEDLLOVERRIDES"
-            ]
-            
-            # Add new WINEDLLOVERRIDES if not removing
-            if dll_override != "remove":
-                config_data[config_key][env_key].append({
-                    "key": "WINEDLLOVERRIDES",
-                    "value": f"d3dcompiler_47=n;{dll_override}=n,b"
-                })
-            
-            # Write back the updated config
-            with open(config_file_path, 'w', encoding='utf-8') as f:
-                json.dump(config_data, f, indent=2)
-                
-            return {"status": "success", "output": f"Updated Heroic config with {dll_override} override."}
-        except Exception as e:
-            decky.logger.error(f"Error updating Heroic config: {str(e)}")
-            return {"status": "error", "message": str(e)}
-
-    async def install_reshade_for_heroic_game(self, game_path: str, dll_override: str = "d3d9", selected_executable_path: str = "") -> dict:
-        """Install ReShade for a selected Windows executable path by copying files and configuring ReShade.ini"""
-        try:
-            decky.logger.info(f"Installing ReShade for selected game path: {game_path}")
-            
-            # Verify ReShade is installed
-            marker_file = Path(self.main_path) / ".installed"
-            addon_marker = Path(self.main_path) / ".installed_addon"
-            if not marker_file.exists() and not addon_marker.exists():
-                return {"status": "error", "message": "ReShade is not installed. Please install ReShade first."}
-            
-            # Verify game path exists
-            if not os.path.exists(game_path):
-                return {"status": "error", "message": f"Game path not found: {game_path}"}
-            
-            validated_executable_path = ""
-            if selected_executable_path:
-                is_valid, validation_result = self._validate_selected_windows_executable_path(selected_executable_path)
-                if not is_valid:
-                    return {"status": "error", "message": validation_result}
-                validated_executable_path = validation_result
-
-            # Determine the target directory for ReShade installation
-            if validated_executable_path:
-                # Use the directory of the selected executable
-                exe_dir = os.path.dirname(validated_executable_path)
-                decky.logger.info(f"Using user-selected executable directory: {exe_dir}")
-            else:
-                # Find the actual executable directory using smart detection
-                exe_dir = self._find_heroic_game_executable_directory(game_path)
-                if not exe_dir:
-                    decky.logger.warning(f"Could not find executable directory, using provided path: {game_path}")
-                    exe_dir = game_path
-                else:
-                    decky.logger.info(f"Found executable directory: {exe_dir}")
-            
-            # Find architecture by checking for .exe files
-            arch = "64"  # Default to 64-bit
-            exe_found = False
-            
-            for file in os.listdir(exe_dir):
-                if file.lower().endswith(".exe"):
-                    # Skip known utility executables
-                    if any(skip in file.lower() for skip in ["unins", "launcher", "crash", "setup", "config", "redist"]):
-                        continue
-                        
-                    exe_found = True
-                    exe_path = os.path.join(exe_dir, file)
-                    try:
-                        # Check if 32-bit or 64-bit using the 'file' command
-                        # Create environment with required LD_LIBRARY_PATH fix for Decky v3.1.10+
-                        clean_env = os.environ.copy()
-                        clean_env["LD_LIBRARY_PATH"] = ""
-                        
-                        process = subprocess.run(
-                            ["file", exe_path],
-                            capture_output=True,
-                            text=True,
-                            env=clean_env
-                        )
-                        
-                        if "PE32 executable" in process.stdout and "PE32+" not in process.stdout:
-                            arch = "32"
-                            decky.logger.info(f"Found 32-bit executable: {exe_path}")
-                            break
-                        elif "PE32+ executable" in process.stdout or "x86-64" in process.stdout:
-                            decky.logger.info(f"Found 64-bit executable: {exe_path}")
-                    except Exception as e:
-                        decky.logger.error(f"Error checking EXE architecture: {str(e)}")
-            
-            decky.logger.info(f"Using architecture: {arch}-bit")
-            
-            # Source paths for DLLs
-            reshade_dll_src = os.path.join(self.main_path, "reshade/latest", f"ReShade{arch}.dll")
-            d3dcompiler_src = os.path.join(self.main_path, "reshade", f"d3dcompiler_47.dll.{arch}")
-            
-            if not os.path.exists(reshade_dll_src) or not os.path.exists(d3dcompiler_src):
-                return {"status": "error", "message": "ReShade DLL files not found. Please reinstall ReShade."}
-                
-            # Destination paths
-            reshade_dll_dst = os.path.join(exe_dir, f"{dll_override}.dll")
-            d3dcompiler_dst = os.path.join(exe_dir, "d3dcompiler_47.dll")
-            
-            # Copy files instead of creating symlinks
-            shutil.copy2(reshade_dll_src, reshade_dll_dst)
-            shutil.copy2(d3dcompiler_src, d3dcompiler_dst)
-            
-            # Set proper permissions for DLL files (read/write for all)
-            os.chmod(reshade_dll_dst, 0o666)
-            os.chmod(d3dcompiler_dst, 0o666)
-            
-            # Copy shader directory if exists
-            if os.path.exists(os.path.join(self.main_path, "ReShade_shaders")):
-                shaders_dst = os.path.join(exe_dir, "ReShade_shaders")
-                # Check if it already exists
-                if os.path.exists(shaders_dst):
-                    # Remove old link/directory
-                    if os.path.islink(shaders_dst):
-                        os.unlink(shaders_dst)
-                    else:
-                        shutil.rmtree(shaders_dst)
-                # Create the directory and copy files
-                shutil.copytree(os.path.join(self.main_path, "ReShade_shaders"), shaders_dst)
-            
-            # Fix ReShade.ini to use local paths instead of system paths
-            reshade_ini_src = os.path.join(self.main_path, "ReShade.ini")
-            reshade_ini_dst = os.path.join(exe_dir, "ReShade.ini")
-            
-            if os.path.exists(reshade_ini_src):
-                # Read the original file
-                with open(reshade_ini_src, 'r', encoding='utf-8') as f:
-                    ini_content = f.read()
-                    
-                # Update paths to use local directories instead of system paths
-                # This is critical for Wine/Proton compatibility
-                
-                # First, detect if we're using merged shaders
-                merged_path = False
-                if "ReShade_shaders\\Merged\\Shaders" in ini_content or "ReShade_shaders/Merged/Shaders" in ini_content:
-                    merged_path = True
-                    
-                # Replace system paths with relative game paths (convert to Windows format for Wine)
-                if merged_path:
-                    # For merged shader setup
-                    ini_content = re.sub(r'EffectSearchPaths=.*', r'EffectSearchPaths=.\\ReShade_shaders\\Merged\\Shaders', ini_content)
-                    ini_content = re.sub(r'TextureSearchPaths=.*', r'TextureSearchPaths=.\\ReShade_shaders\\Merged\\Textures', ini_content)
-                else:
-                    # For individual shader repositories
-                    ini_content = re.sub(r'EffectSearchPaths=.*', r'EffectSearchPaths=.\\ReShade_shaders', ini_content)
-                    ini_content = re.sub(r'TextureSearchPaths=.*', r'TextureSearchPaths=.\\ReShade_shaders', ini_content)
-                    
-                # Update the PresetPath to use the local directory
-                ini_content = re.sub(r'PresetPath=.*', r'PresetPath=.', ini_content)
-                
-                # Write the modified ini file with proper permissions
-                with open(reshade_ini_dst, 'w', encoding='utf-8') as f:
-                    f.write(ini_content)
-                
-                # Set proper permissions for ReShade.ini (read/write for all)
-                os.chmod(reshade_ini_dst, 0o666)
-                
-            else:
-                # If no ReShade.ini exists, create a basic one
-                with open(reshade_ini_dst, 'w', encoding='utf-8') as f:
-                    f.write("""[GENERAL]
-EffectSearchPaths=.\\ReShade_shaders
-TextureSearchPaths=.\\ReShade_shaders
-PresetPath=.
-PerformanceMode=0
-PreprocessorDefinitions=
-Effects=
-Techniques=
-
-[INPUT]
-KeyOverlay=36
-KeyNextPreset=0
-KeyPreviousPreset=0
-""")
-                # Set proper permissions (read/write for all)
-                os.chmod(reshade_ini_dst, 0o666)
-            
-            # Handle ReShadePreset.ini - preserve existing user settings
-            reshade_preset_dst = os.path.join(exe_dir, "ReShadePreset.ini")
-            
-            # Only create the file if it doesn't already exist (preserve existing user settings)
-            if not os.path.exists(reshade_preset_dst):
-                game_name = os.path.basename(game_path)
-                with open(reshade_preset_dst, 'w', encoding='utf-8') as f:
-                    f.write(f"""# ReShade Preset Configuration for {game_name}
-# This file will be automatically populated when you save presets in ReShade
-# Press HOME key in-game to open ReShade overlay
-# Go to Settings -> General -> "Reload all shaders" if shaders don't appear
-
-# Example preset configuration:
-# [Preset1]
-# Techniques=SMAA,Clarity,LumaSharpen
-# PreprocessorDefinitions=
-
-# Uncomment and modify the lines below to create a default preset:
-# [Default]
-# Techniques=
-# PreprocessorDefinitions=
-""")
-                
-                # Set proper permissions for ReShadePreset.ini (read/write for all)
-                os.chmod(reshade_preset_dst, 0o666)
-                decky.logger.info("Created new ReShadePreset.ini with proper permissions")
-            else:
-                # File exists, just ensure it has proper permissions
-                os.chmod(reshade_preset_dst, 0o666)
-                decky.logger.info("ReShadePreset.ini already exists, updated permissions only")
-            
-            # Create a README file to help users with the configuration
-            readme_path = os.path.join(exe_dir, "ReShade_README.txt")
-            
-            # Check if AutoHDR was actually installed
-            autohdr_installed = os.path.exists(os.path.join(exe_dir, f"AutoHDR.addon{arch}"))
-            autohdr_compatible = dll_override.lower() in ['dxgi', 'd3d11', 'd3d12']
-            
-            if autohdr_installed:
-                autohdr_status = f"- AutoHDR.addon{arch}: AutoHDR addon (DirectX 10/11/12 compatible)"
-            elif autohdr_compatible:
-                autohdr_status = f"- AutoHDR.addon{arch}: Not installed (AutoHDR addon file missing)"
-            else:
-                autohdr_status = f"- AutoHDR.addon{arch}: Not compatible with {dll_override} (requires DirectX 10/11/12)"
-            
-            with open(readme_path, 'w', encoding='utf-8') as f:
-                f.write(f"""ReShade for {os.path.basename(game_path)}
-------------------------------------
-Installed with LetMeReShadeAll
-
-DLL Override: {dll_override}
-Architecture: {arch}-bit
-Executable Directory: {exe_dir}
-{f'Selected Executable: {os.path.basename(validated_executable_path)}' if validated_executable_path else 'Auto-detected executable location'}
-
-Press HOME key in-game to open the ReShade overlay.
-
-If shaders are not visible:
-1. Open the ReShade overlay with HOME key
-2. Go to Settings tab
-3. Check paths for "Effect Search Paths" and "Texture Search Paths"
-4. They should point to the ReShade_shaders folder in this game directory
-5. If not, update them to: ".\\ReShade_shaders"
-
-Shader preset files (.ini) will be saved in this game directory.
-
-Files created:
-- ReShade.ini: Main ReShade configuration
-- ReShadePreset.ini: Preset configurations (auto-populated when you save presets)
-- {dll_override}.dll: ReShade DLL
-- d3dcompiler_47.dll: DirectX shader compiler
-- ReShade_shaders/: Shader files directory
-{autohdr_status}
-
-AutoHDR Compatibility:
-- Compatible APIs: DXGI, D3D11, D3D12 (DirectX 10/11/12)
-- Incompatible APIs: D3D9, D3D8, OpenGL32, DDraw, DInput8
-- Current API: {dll_override} {'(✅ AutoHDR Compatible)' if autohdr_compatible else '(❌ AutoHDR Incompatible)'}
-
-Note: If ReShadePreset.ini already existed, your previous settings were preserved.
-""")
-            
-            # Set proper permissions for README (read/write for all)
-            os.chmod(readme_path, 0o666)
-            
-            # Copy AutoHDR addon files if available AND compatible with the selected API
-            autohdr_compatible = dll_override.lower() in ['dxgi', 'd3d11', 'd3d12']
-            
-            if autohdr_compatible:
-                autohdr_addon_path = os.path.join(self.main_path, "AutoHDR_addons", f"AutoHDR.addon{arch}")
-                if os.path.exists(autohdr_addon_path):
-                    autohdr_dst = os.path.join(exe_dir, f"AutoHDR.addon{arch}")
-                    try:
-                        shutil.copy2(autohdr_addon_path, autohdr_dst)
-                        os.chmod(autohdr_dst, 0o666)
-                        decky.logger.info(f"AutoHDR addon copied successfully for {arch}-bit architecture (API: {dll_override})")
-                    except Exception as e:
-                        decky.logger.warning(f"Failed to copy AutoHDR addon: {str(e)}")
-                else:
-                    decky.logger.info(f"AutoHDR addon file not found: {autohdr_addon_path}")
-            else:
-                decky.logger.info(f"Skipping AutoHDR addon installation for API: {dll_override} (requires DirectX 10/11/12)")
-                # Remove any existing AutoHDR addon files if they exist from previous installations
-                for addon_arch in ['32', '64']:
-                    existing_addon = os.path.join(exe_dir, f"AutoHDR.addon{addon_arch}")
-                    if os.path.exists(existing_addon):
-                        decky.logger.info(f"Removing existing AutoHDR addon (incompatible with {dll_override})")
-                        os.remove(existing_addon)
-                
-            return {"status": "success", "output": f"ReShade installed successfully using {dll_override} override."}
-        except Exception as e:
-            decky.logger.error(f"Error installing ReShade for selected executable path: {str(e)}")
-            return {"status": "error", "message": str(e)}
-
     def _find_game_executable_directory(self, path: Path, game_name: str) -> tuple[Path, float]:
         """
         Unified function to find the game executable directory with smart detection
@@ -5832,46 +4500,9 @@ Note: If ReShadePreset.ini already existed, your previous settings were preserve
             decky.logger.error(f"Error in _find_game_executable_directory: {str(e)}")
             return path, 0
 
-    def _find_heroic_game_executable_directory(self, game_path: str) -> str:
-        """Find the directory containing the game's main executable using smart detection"""
-        try:
-            game_path = Path(game_path)
-            if not game_path.exists() or not game_path.is_dir():
-                return None
-                
-            # Get name of the game directory for smarter exe matching
-            game_name = game_path.name.lower().replace("_", " ").replace("-", " ")
-            
-            decky.logger.info(f"Finding executable directory for Heroic game: {game_name}")
-            
-            # Use the unified game executable detection function
-            best_dir, score = self._find_game_executable_directory(game_path, game_name)
-            
-            if best_dir and score > 0:
-                decky.logger.info(f"Found game executable directory: {best_dir} (score: {score:.2f})")
-                return str(best_dir)
-            
-            # If we couldn't find anything, check some common subdirectories
-            common_dirs = ["bin", "bin32", "bin64", "binaries", "game", "win64", "win32", "x64", "x86"]
-            for common in common_dirs:
-                test_path = game_path / common
-                if test_path.exists() and test_path.is_dir():
-                    exes = list(test_path.glob("*.exe"))
-                    if exes:
-                        decky.logger.info(f"Using common executable directory: {test_path}")
-                        return str(test_path)
-            
-            # If we still didn't find anything, just use the original path
-            decky.logger.info(f"No suitable executable directory found, using original path: {game_path}")
-            return str(game_path)
-        
-        except Exception as e:
-            decky.logger.error(f"Error finding game executable directory: {str(e)}")
-            return None
-
     def _get_steam_game_install_path(self, appid: str) -> str:
         shortcut = next(
-            (s for s in self._find_non_steam_shortcuts() if s["appid"] == str(appid) and s["kind"] == "exe"),
+            (s for s in self._find_non_steam_shortcuts() if s["appid"] == str(appid)),
             None,
         )
         if shortcut:
@@ -5924,192 +4555,6 @@ Note: If ReShadePreset.ini already existed, your previous settings were preserve
 
         decky.logger.info(f"No suitable executable directory found, using base path: {base_path}")
         return str(base_path)
-
-    async def uninstall_reshade_for_heroic_game(self, game_path: str) -> dict:
-        """Uninstall ReShade from a selected executable path while preserving user presets"""
-        try:
-            decky.logger.info(f"Uninstalling ReShade from selected game path: {game_path}")
-            
-            # Find the executable directory
-            exe_dir = self._find_heroic_game_executable_directory(game_path)
-            if not exe_dir:
-                decky.logger.warning(f"Could not find executable directory, using provided path: {game_path}")
-                exe_dir = game_path
-            
-            # Remove ReShade files (excluding ReShadePreset.ini to preserve user settings)
-            reshade_files = [
-                "d3d8.dll", "d3d9.dll", "d3d10.dll", "d3d11.dll", "d3d12.dll", 
-                "dxgi.dll", "opengl32.dll", "dinput8.dll", "ddraw.dll",
-                "d3dcompiler_47.dll", "ReShade.ini", "ReShade_README.txt",
-                "AutoHDR.addon32", "AutoHDR.addon64"
-                # Note: ReShadePreset.ini is intentionally excluded to preserve user settings
-            ]
-            
-            for file in reshade_files:
-                file_path = os.path.join(exe_dir, file)
-                if os.path.exists(file_path):
-                    os.remove(file_path)
-                    decky.logger.info(f"Removed {file_path}")
-            
-            # Remove ReShade_shaders directory if it exists
-            shaders_path = os.path.join(exe_dir, "ReShade_shaders")
-            if os.path.exists(shaders_path):
-                if os.path.islink(shaders_path):
-                    os.unlink(shaders_path)
-                else:
-                    shutil.rmtree(shaders_path)
-                decky.logger.info(f"Removed {shaders_path}")
-            
-            # Check if ReShadePreset.ini exists and inform user it's preserved
-            preset_path = os.path.join(exe_dir, "ReShadePreset.ini")
-            if os.path.exists(preset_path):
-                decky.logger.info(f"ReShadePreset.ini preserved at {preset_path}")
-                return {"status": "success", "output": "ReShade uninstalled successfully.\nYour shader presets (ReShadePreset.ini) have been preserved for future use."}
-            else:
-                return {"status": "success", "output": "ReShade uninstalled successfully."}
-                
-        except Exception as e:
-            decky.logger.error(f"Error uninstalling ReShade: {str(e)}")
-            return {"status": "error", "message": str(e)}
-
-    async def detect_heroic_game_api(self, game_path: str) -> dict:
-        """Detect the best API/DLL override for a Heroic game"""
-        try:
-            decky.logger.info(f"Detecting API for Heroic game at: {game_path}")
-            
-            # Verify game path exists
-            if not os.path.exists(game_path):
-                return {"status": "error", "message": f"Game path not found: {game_path}"}
-            
-            # Default API is dxgi (DirectX 10/11/12)
-            detected_api = "dxgi"
-            arch = "64"  # Default to 64-bit
-            
-            # Find all executable files
-            exe_files = []
-            for root, _, files in os.walk(game_path):
-                for file in files:
-                    if file.lower().endswith(".exe"):
-                        # Skip known utility executables
-                        if any(skip in file.lower() for skip in ["unins", "launcher", "crash", "setup", "config", "redist"]):
-                            continue
-                        
-                        exe_path = os.path.join(root, file)
-                        file_size = os.path.getsize(exe_path)
-                        
-                        # Larger files are more likely to be the main executable
-                        if file_size > 1024 * 1024:  # Files larger than 1MB
-                            exe_files.append((exe_path, file_size))
-            
-            # Sort by file size (descending)
-            exe_files.sort(key=lambda x: x[1], reverse=True)
-            
-            # Process the largest executable files first
-            for exe_path, _ in exe_files[:3]:  # Check the top 3 largest executables
-                decky.logger.info(f"Analyzing executable: {exe_path}")
-                
-                # Check architecture
-                try:
-                    # Create environment with required LD_LIBRARY_PATH fix for Decky v3.1.10+
-                    clean_env = os.environ.copy()
-                    clean_env["LD_LIBRARY_PATH"] = ""
-                    
-                    process = subprocess.run(
-                        ["file", exe_path],
-                        capture_output=True,
-                        text=True,
-                        env=clean_env
-                    )
-                    
-                    if "PE32 executable" in process.stdout and "PE32+" not in process.stdout:
-                        arch = "32"
-                        decky.logger.info(f"Detected 32-bit executable: {exe_path}")
-                    elif "PE32+ executable" in process.stdout or "x86-64" in process.stdout:
-                        arch = "64"
-                        decky.logger.info(f"Detected 64-bit executable: {exe_path}")
-                except Exception as e:
-                    decky.logger.error(f"Error checking architecture: {str(e)}")
-                
-                # Look for DLL files in the same directory to determine API
-                exe_dir = os.path.dirname(exe_path)
-                
-                # Check for specific DLLs to determine API
-                if os.path.exists(os.path.join(exe_dir, "d3d9.dll")):
-                    detected_api = "d3d9"
-                    decky.logger.info(f"Detected D3D9 API from d3d9.dll")
-                    break
-                elif os.path.exists(os.path.join(exe_dir, "d3d11.dll")):
-                    detected_api = "d3d11"
-                    decky.logger.info(f"Detected D3D11 API from d3d11.dll")
-                    break
-                elif os.path.exists(os.path.join(exe_dir, "d3d8.dll")):
-                    detected_api = "d3d8"
-                    decky.logger.info(f"Detected D3D8 API from d3d8.dll")
-                    break
-                elif os.path.exists(os.path.join(exe_dir, "opengl32.dll")):
-                    detected_api = "opengl32"
-                    decky.logger.info(f"Detected OpenGL API from opengl32.dll")
-                    break
-                elif os.path.exists(os.path.join(exe_dir, "dxgi.dll")):
-                    detected_api = "dxgi"
-                    decky.logger.info(f"Detected DXGI API from dxgi.dll")
-                    break
-                
-                # If no DLLs found, try to analyze the executable for imports
-                try:
-                    # Check imports using objdump (if available)
-                    # Create environment with required LD_LIBRARY_PATH fix for Decky v3.1.10+
-                    clean_env = os.environ.copy()
-                    clean_env["LD_LIBRARY_PATH"] = ""
-                    
-                    process = subprocess.run(
-                        ["objdump", "-p", exe_path],
-                        capture_output=True,
-                        text=True,
-                        env=clean_env
-                    )
-                    
-                    output = process.stdout.lower()
-                    
-                    # Check for DLL imports
-                    if "d3d9.dll" in output:
-                        detected_api = "d3d9"
-                        decky.logger.info(f"Detected D3D9 API from imports")
-                        break
-                    elif "d3d11.dll" in output:
-                        detected_api = "d3d11"
-                        decky.logger.info(f"Detected D3D11 API from imports")
-                        break
-                    elif "d3d8.dll" in output:
-                        detected_api = "d3d8"
-                        decky.logger.info(f"Detected D3D8 API from imports")
-                        break
-                    elif "opengl32.dll" in output:
-                        detected_api = "opengl32"
-                        decky.logger.info(f"Detected OpenGL API from imports")
-                        break
-                    elif "dxgi.dll" in output:
-                        detected_api = "dxgi"
-                        decky.logger.info(f"Detected DXGI API from imports")
-                        break
-                except Exception as e:
-                    decky.logger.error(f"Error analyzing imports: {str(e)}")
-            
-            # For 32-bit executables, default to d3d9 if not detected
-            if arch == "32" and detected_api == "dxgi":
-                detected_api = "d3d9"
-                decky.logger.info(f"Falling back to D3D9 for 32-bit executable")
-                
-            decky.logger.info(f"Final detection - API: {detected_api}, Architecture: {arch}")
-            
-            return {
-                "status": "success", 
-                "api": detected_api,
-                "architecture": arch
-            }
-        except Exception as e:
-            decky.logger.error(f"Error detecting API for Heroic game: {str(e)}")
-            return {"status": "error", "message": str(e)}
 
 
 
@@ -6602,14 +5047,46 @@ class _HelixSRMixin:
             raise RuntimeError(f"OptiScaler.ini not found in {directory}; can't point OptiScaler at HelixSR.")
         sub = directory / HELIXSR_GAME_SUBDIR
         marker = sub / HELIXSR_GAME_MARKER
+        replaced = None
         if sub.exists() and not marker.exists():
-            raise RuntimeError(
-                f"There's already a {HELIXSR_GAME_SUBDIR} folder next to OptiScaler.ini that this plugin didn't "
-                "create (HelixSR's own setup or another tool). Remove HelixSR with that tool first."
-            )
+            # Not this plugin's folder (or one an earlier patch left half made): it goes, this plugin's takes its place.
+            replaced = self._helixsr_foreign_folder(directory) or "files left by an earlier patch"
+            decky.logger.info(f"[HelixSR] replacing {sub} ({replaced})")
+            try:
+                if sub.is_dir() and not sub.is_symlink():
+                    shutil.rmtree(sub)
+                else:
+                    sub.unlink()
+            except OSError as exc:
+                raise RuntimeError(f"Could not remove the {HELIXSR_GAME_SUBDIR} folder already in {directory}: {exc}")
         previous = self._read_json_file(marker).get("previous") if marker.exists() else None
+        created = not sub.exists()
         sub.mkdir(exist_ok=True)
+        try:
+            message = self._helixsr_fill_game_folder(directory, dll, ini, sub, marker, previous)
+            if replaced:
+                message += f" The {HELIXSR_GAME_SUBDIR} folder already there ({replaced}) was replaced."
+            return message
+        except Exception:
+            if created:   # no half-made folder that would block the next patch
+                shutil.rmtree(sub, ignore_errors=True)
+            raise
 
+    def _helixsr_foreign_folder(self, directory: Path) -> str | None:
+        """Why the game's HelixSR folder isn't this plugin's (None when it only holds files this plugin puts there)."""
+        sub = Path(directory) / HELIXSR_GAME_SUBDIR
+        if (sub / "helixsr-install.json").exists():
+            return "HelixSR's own installer"
+        if (Path(directory) / "HelixSR-Scaler.files").exists():
+            return "HelixSR Scaler"
+        try:
+            others = sorted(p.name for p in sub.iterdir() if p.name not in HELIXSR_GAME_OWN_FILES)
+        except OSError as exc:
+            return f"it can't be read: {exc}"
+        return f"it holds {', '.join(others[:4])}{', ...' if len(others) > 4 else ''}" if others else None
+
+    def _helixsr_fill_game_folder(self, directory: Path, dll: Path, ini: Path, sub: Path, marker: Path,
+                                  previous: dict | None) -> str:
         for name in HELIXSR_GAME_OLD_NAMES:
             (sub / name).unlink(missing_ok=True)
         self._helixsr_copy_dll(dll, sub / HELIXSR_GAME_DLL)
@@ -6648,6 +5125,9 @@ class _HelixSRMixin:
             wanted[("FSR", "UpscalerIndex")] = "0"   # HelixSR is the first upscaler its DLL lists
         if previous is None:
             previous = {f"{s}/{k}": self._helixsr_ini_get(text, s, k) for (s, k) in wanted}
+            # a folder taken over can have OptiScaler.ini pointing into it already: that's not a value to put back
+            own = self._helixsr_win_path(sub).lower()
+            previous = {k: (None if v and v.strip().lower().startswith(own) else v) for k, v in previous.items()}
         for (section, key), value in wanted.items():
             text = self._helixsr_ini_set(text, section, key, value)
         ini.write_text(text, encoding="utf-8")
@@ -6712,7 +5192,19 @@ class _HelixSRMixin:
         sub = directory / HELIXSR_GAME_SUBDIR
         marker = sub / HELIXSR_GAME_MARKER
         if not marker.exists():
-            return False
+            # a folder an earlier patch left half made (only this plugin's files): its paths in OptiScaler.ini go too
+            if not sub.is_dir() or self._helixsr_foreign_folder(directory):
+                return False
+            ini = directory / "OptiScaler.ini"
+            if restore_ini and ini.exists():
+                text = ini.read_text(encoding="utf-8", errors="replace")
+                own = self._helixsr_win_path(sub).lower()
+                for key in ("FfxDx12Path", "FfxDx12SRPath"):
+                    if (self._helixsr_ini_get(text, "Libraries", key) or "").strip().lower().startswith(own):
+                        text = self._helixsr_ini_set(text, "Libraries", key, "auto")
+                ini.write_text(text, encoding="utf-8")
+            shutil.rmtree(sub, ignore_errors=True)
+            return True
         data = self._read_json_file(marker)
         ini = directory / "OptiScaler.ini"
         if restore_ini and ini.exists():
@@ -6845,6 +5337,15 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin):
     }
     RESHADE_SLOT_CANDIDATES = (
         "dxgi.dll", "d3d11.dll", "d3d12.dll", "d3d9.dll", "d3d8.dll", "ddraw.dll", "opengl32.dll", "dinput8.dll",
+    )
+    # What the ReShade side links into a game folder, and the files its install writes there
+    RESHADE_LINK_NAMES = (
+        "dxgi.dll", "d3d8.dll", "d3d9.dll", "d3d10.dll", "d3d11.dll", "d3d12.dll", "ddraw.dll", "dinput8.dll",
+        "opengl32.dll", "d3dcompiler_47.dll",
+    )
+    RESHADE_GAME_FILES = (
+        "ReShade.ini", "ReShadePreset.ini", "ReShade.log", "ReShade32.json", "ReShade64.json",
+        "ReShade_README.txt", "AutoHDR.addon32", "AutoHDR.addon64",
     )
 
     async def _main(self):
@@ -7044,6 +5545,66 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin):
             decky.logger.error(f"[JediReFrameShade] update_optiscaler failed: {exc}")
             return {"status": "error", "message": str(exc)}
 
+    # ── Plugin self-update (GitHub releases → Decky's installer) ─────────────
+    _plugin_update_cache = None   # (fetched_at, release)
+
+    def _plugin_installed_version(self) -> str:
+        version = str(getattr(decky, "DECKY_PLUGIN_VERSION", "") or "").strip()
+        if version:
+            return version
+        try:
+            return str(json.loads((Path(decky.DECKY_PLUGIN_DIR) / "package.json").read_text()).get("version") or "")
+        except Exception:
+            return ""
+
+    def _plugin_latest_release(self, use_cache: bool = True) -> dict | None:
+        """Newest published release (no drafts, no pre-releases like the binaries ones) that carries the plugin zip."""
+        cached = Plugin._plugin_update_cache
+        if use_cache and cached and time.time() - cached[0] < PLUGIN_UPDATE_CACHE_SECONDS:
+            return cached[1]
+        best = None
+        for release in self._request_json(PLUGIN_RELEASES_API):
+            if release.get("draft") or release.get("prerelease"):
+                continue
+            for asset in release.get("assets") or []:
+                match = PLUGIN_ZIP_RE.match(str(asset.get("name") or ""))
+                if not match:
+                    continue
+                version = match.group(1)
+                if best is None or self._parse_version_tuple(version) > self._parse_version_tuple(best["version"]):
+                    digest = str(asset.get("digest") or "")
+                    best = {
+                        "version": version,
+                        "tag": release.get("tag_name"),
+                        "url": asset.get("browser_download_url"),
+                        "size": asset.get("size"),
+                        "sha256": digest[7:] if digest.startswith("sha256:") else "",
+                        "notes": str(release.get("body") or "")[:1500],
+                    }
+        Plugin._plugin_update_cache = (time.time(), best)
+        return best
+
+    async def get_plugin_update_status(self, force: bool = False) -> dict:
+        installed = self._plugin_installed_version()
+        try:
+            latest = await asyncio.to_thread(self._plugin_latest_release, not force)
+        except Exception as exc:
+            decky.logger.warning(f"[JediReFrameShade] plugin update check failed: {exc}")
+            return {"status": "error", "installed_version": installed, "message": f"Could not reach GitHub: {exc}"}
+        if not latest:
+            return {"status": "success", "installed_version": installed, "latest_version": None, "update_available": False}
+        return {
+            "status": "success",
+            "plugin_name": getattr(decky, "DECKY_PLUGIN_NAME", "") or "Jedi-ReFrameShade4All",
+            "installed_version": installed,
+            "latest_version": latest["version"],
+            "update_available": self._is_update_available(installed, latest["version"]),
+            "url": latest["url"],
+            "sha256": latest["sha256"],
+            "size": latest["size"],
+            "notes": latest["notes"],
+        }
+
     # ── One-button "Patch All": install engines if needed + patch both mods ───
     async def get_engines_status(self) -> dict:
         fg = await self.check_fgmod_path()
@@ -7149,8 +5710,99 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin):
             decky.logger.error(f"[JediReFrameShade] patch_all_game failed for {appid}: {exc}")
             return {"status": "error", "message": str(exc)}
 
-    async def unpatch_all_game(self, appid) -> dict:
-        """Remove both mods from the chosen Steam game and restore launch options."""
+    # ── Full removal: every folder of the game, every file the mods put there ─────
+    def _game_mod_dirs(self, game: dict) -> tuple[list[Path], list[Path]]:
+        """Folders of the game holding OptiScaler / ReShade files. The patch target can change between
+        patches (and a marker can be lost), so a remove that looked at one folder left the others patched."""
+        root = Path(game["install_path"]) if game.get("install_path") else None
+        if not root or not root.is_dir():
+            return [], []
+        recursive = not (game.get("shortcut_exe") and self._is_unsafe_scan_root(root))
+        reshade_links = {*self.RESHADE_LINK_NAMES, *(f"{name}.b" for name in self.RESHADE_LINK_NAMES)}
+        opti_dirs, reshade_dirs = [], []
+        for dirpath, dirnames, filenames in os.walk(root):
+            directory = Path(dirpath)
+            names = set(filenames) | set(dirnames)
+            if names & {MARKER_FILENAME, "OptiScaler.ini", "D3D12_Optiscaler"}:
+                opti_dirs.append(directory)
+            if names & {*self.RESHADE_GAME_FILES, "ReShade_shaders"} or any(
+                self._is_reshade_link(directory / name) for name in names & reshade_links
+            ):
+                reshade_dirs.append(directory)
+            if not recursive:
+                break
+            dirnames[:] = [d for d in dirnames if d not in ("D3D12_Optiscaler", "ReShade_shaders", HELIXSR_GAME_SUBDIR)]
+        return opti_dirs, reshade_dirs
+
+    def _is_reshade_dll_copy(self, path: Path) -> bool:
+        """A ReShade DLL copied (not linked) into the game, as the old manual install did."""
+        try:
+            if path.is_symlink() or not path.is_file() or path.stat().st_size > 64 * 1024 * 1024:
+                return False
+            data = path.read_bytes()
+        except OSError:
+            return False
+        return "crosire".encode("utf-16-le") in data and "ReShade".encode("utf-16-le") in data
+
+    def _remove_reshade_from_dir(self, directory: Path) -> list[str]:
+        """ReShade's links (dangling ones and .b copies an older patch set aside too), its copies and every
+        file the install wrote, ReShadePreset.ini included. OptiScaler's files stay."""
+        removed = []
+        for name in self.RESHADE_LINK_NAMES:
+            for path in (directory / name, directory / f"{name}.b"):
+                if self._is_reshade_link(path) or (name != "d3dcompiler_47.dll" and self._is_reshade_dll_copy(path)):
+                    path.unlink()
+                    removed.append(path.name)
+        for name in self.RESHADE_GAME_FILES:
+            path = directory / name
+            if path.is_symlink() or path.is_file():
+                path.unlink()
+                removed.append(name)
+        shaders = directory / "ReShade_shaders"
+        if shaders.is_symlink() or shaders.is_file():
+            shaders.unlink()
+            removed.append(shaders.name)
+        elif shaders.is_dir():
+            shutil.rmtree(shaders)
+            removed.append(shaders.name)
+        decky.logger.info(f"[JediReFrameShade] ReShade removed from {directory}: {removed}")
+        return removed
+
+    def _marker_launch_options(self, opti_dirs: list[Path]) -> str:
+        """The launch options a game had before its first OptiScaler patch."""
+        for directory in opti_dirs:
+            marker = directory / MARKER_FILENAME
+            if marker.exists():
+                opts = str(self._read_marker(marker).get("original_launch_options") or "")
+                if not self._is_managed_launch_options(opts):
+                    return opts
+        return ""
+
+    def _strip_managed_launch_options(self, opts: str) -> str:
+        """The current launch options without this plugin's DLL overrides and SteamDeck=0."""
+        ours = {"d3dcompiler_47", *(Path(name).stem.lower() for name in (*VALID_DLL_NAMES, *self.RESHADE_LINK_NAMES))}
+
+        def keep_theirs(match):
+            entries = [e for e in match.group(1).strip('"').split(";") if e and e.split("=")[0].strip().lower() not in ours]
+            return f'WINEDLLOVERRIDES="{";".join(entries)}"' if entries else ""
+
+        text = re.sub(r'WINEDLLOVERRIDES=("[^"]*"|\S*)', keep_theirs, opts or "")
+        text = " ".join(re.sub(r"(?<!\S)SteamDeck=0(?!\S)", "", text).split())
+        return "" if text == "%command%" else text
+
+    def _restored_launch_options(self, current_launch_options: str, original_launch_options: str) -> str:
+        return self._strip_managed_launch_options(current_launch_options) or original_launch_options
+
+    def _unpatch_optiscaler_dirs(self, opti_dirs: list[Path]) -> list[str]:
+        errors = []
+        for directory in opti_dirs:
+            result = self._manual_unpatch_directory_impl(directory)
+            if result.get("status") != "success":
+                errors.append(str(result.get("message")))
+        return errors
+
+    async def unpatch_all_game(self, appid, current_launch_options="") -> dict:
+        """Remove both mods from every folder of the chosen game and give back the user's launch options."""
         try:
             game = self._game_record(str(appid))
             if not game:
@@ -7158,22 +5810,30 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin):
             if self._is_game_running(game):
                 return {"status": "error", "message": "Close the game before removing."}
 
-            target_dir, target_exe = self._guess_patch_target(game)
-            try:
-                if target_exe:
-                    await self.manage_game_reshade(str(appid), "uninstall", "dxgi", "", str(target_exe))
-                else:
-                    await self.manage_game_reshade(str(appid), "uninstall", "dxgi")
-            except Exception as exc:
-                decky.logger.warning(f"[JediReFrameShade] ReShade uninstall warning: {exc}")
+            opti_dirs, reshade_dirs = self._game_mod_dirs(game)
+            original_launch_options = self._marker_launch_options(opti_dirs)
+            errors = self._unpatch_optiscaler_dirs(opti_dirs)
+            # ReShade after OptiScaler: OptiScaler's unpatch puts back the files it had set aside
+            for directory in reshade_dirs:
+                try:
+                    self._remove_reshade_from_dir(directory)
+                except OSError as exc:
+                    errors.append(f"ReShade in {directory}: {exc}")
 
-            res = await self.unpatch_game(str(appid))
+            folders = {*opti_dirs, *reshade_dirs}
+            if not folders:
+                message = f"No OptiScaler or ReShade files found in {game['name']}."
+            else:
+                message = f"Removed ReShade + Frame Generation from {game['name']} ({len(folders)} folder{'s' if len(folders) > 1 else ''})."
+            if errors:
+                message += " Some files could not be removed: " + "; ".join(errors)
+            decky.logger.info(f"[JediReFrameShade] unpatch_all_game: appid={appid} opti={opti_dirs} reshade={reshade_dirs}")
             return {
                 "status": "success",
                 "appid": str(appid),
                 "name": game["name"],
-                "launch_options": res.get("launch_options", ""),
-                "message": f"Removed ReShade + Frame Generation from {game['name']}.",
+                "launch_options": self._restored_launch_options(current_launch_options, original_launch_options),
+                "message": message,
             }
         except Exception as exc:
             decky.logger.error(f"[JediReFrameShade] unpatch_all_game failed for {appid}: {exc}")
@@ -7200,10 +5860,10 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin):
         except Exception:
             return (install_root if install_root.exists() else None), None
 
-    async def remove_optiscaler_only(self, appid, selected_executable_path: str = "") -> dict:
-        """Remove Frame Generation from a Steam game and keep ReShade running.
+    async def remove_optiscaler_only(self, appid, selected_executable_path: str = "", current_launch_options: str = "") -> dict:
+        """Remove Frame Generation from every folder of a game and keep ReShade running.
 
-        The OptiScaler cleanup wipes every proxy slot (ReShade's graphics DLL included),
+        The OptiScaler cleanup puts back the game DLLs it had set aside (d3dcompiler_47 included),
         so ReShade is re-linked afterwards and the launch options are rebuilt for it alone.
         """
         try:
@@ -7216,11 +5876,12 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin):
             target_dir, target_exe = self._resolve_partial_removal_target(game, selected_executable_path)
             reshade_present = self._dir_has_reshade(target_dir)
             reshade_slot = self._detect_reshade_slot(target_dir) if reshade_present else None
-            was_patched = bool((await self.get_game_status(str(appid))).get("patched"))
-
-            res = await self.unpatch_game(str(appid))
-            if res.get("status") != "success":
-                return res
+            opti_dirs, _ = self._game_mod_dirs(game)
+            was_patched = bool(opti_dirs)
+            original_launch_options = self._marker_launch_options(opti_dirs)
+            errors = self._unpatch_optiscaler_dirs(opti_dirs)
+            if errors:
+                return {"status": "error", "message": "; ".join(errors)}
 
             # Nothing was actually removed → ReShade's links were never touched.
             reshade_kept = reshade_present and not was_patched
@@ -7246,7 +5907,7 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin):
                 launch_options = self._merge_launch_options([reshade_slot], include_d3dcompiler=True)
                 message = f"{removed_label} ReShade kept on {reshade_slot}."
             else:
-                launch_options = res.get("launch_options", "")
+                launch_options = self._restored_launch_options(current_launch_options, original_launch_options)
                 message = removed_label
                 if reshade_present:
                     message += f" ReShade could not be restored ({reshade_error}) — re-apply it."
@@ -7268,8 +5929,8 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin):
             decky.logger.error(f"[JediReFrameShade] remove_optiscaler_only failed for {appid}: {exc}")
             return {"status": "error", "message": str(exc)}
 
-    async def remove_reshade_only(self, appid, selected_executable_path: str = "") -> dict:
-        """Remove ReShade from a Steam game and keep Frame Generation patched, rebuilding
+    async def remove_reshade_only(self, appid, selected_executable_path: str = "", current_launch_options: str = "") -> dict:
+        """Remove ReShade from every folder of a game and keep Frame Generation patched, rebuilding
         the launch options for the OptiScaler slot alone."""
         try:
             game = self._game_record(str(appid))
@@ -7278,27 +5939,26 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin):
             if self._is_game_running(game):
                 return {"status": "error", "message": "Close the game before removing."}
 
-            target_dir, target_exe = self._resolve_partial_removal_target(game, selected_executable_path)
-            reshade_slot = self._detect_reshade_slot(target_dir) if self._dir_has_reshade(target_dir) else None
-
-            rr = await self.manage_game_reshade(
-                str(appid),
-                "uninstall",
-                (reshade_slot or "dxgi.dll").replace(".dll", ""),
-                "",
-                str(target_exe) if target_exe else "",
-            )
-            if rr.get("status") != "success":
-                return {"status": "error", "message": rr.get("message") or rr.get("output") or "ReShade removal failed."}
+            target_dir, _ = self._resolve_partial_removal_target(game, selected_executable_path)
+            _, reshade_dirs = self._game_mod_dirs(game)
+            errors = []
+            for directory in reshade_dirs:
+                try:
+                    self._remove_reshade_from_dir(directory)
+                except OSError as exc:
+                    errors.append(f"{directory}: {exc}")
+            if errors:
+                return {"status": "error", "message": "ReShade removal failed: " + "; ".join(errors)}
 
             opti = await self.get_game_status(str(appid))
             optiscaler_kept = bool(opti.get("patched")) and bool(opti.get("dll_name"))
+            removed_label = f"Removed ReShade from {game['name']}." if reshade_dirs else f"No ReShade files found in {game['name']}."
             if optiscaler_kept:
                 launch_options = self._merge_launch_options([opti["dll_name"]], include_d3dcompiler=False)
-                message = f"Removed ReShade from {game['name']}. Frame Generation kept on {opti['dll_name']}."
+                message = f"{removed_label} Frame Generation kept on {opti['dll_name']}."
             else:
-                launch_options = ""
-                message = f"Removed ReShade from {game['name']}."
+                launch_options = self._strip_managed_launch_options(current_launch_options)
+                message = removed_label
 
             decky.logger.info(
                 f"[JediReFrameShade] remove_reshade_only: appid={appid} dir={target_dir} optiscaler_kept={optiscaler_kept}"
@@ -7315,87 +5975,4 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin):
             }
         except Exception as exc:
             decky.logger.error(f"[JediReFrameShade] remove_reshade_only failed for {appid}: {exc}")
-            return {"status": "error", "message": str(exc)}
-
-    async def remove_optiscaler_only_manual(self, directory: str, selected_executable_path: str = "") -> dict:
-        """Non-Steam counterpart of remove_optiscaler_only: unpatch the folder and put
-        ReShade's links back if it was sharing the directory."""
-        try:
-            target_dir = Path(os.path.abspath(os.path.expanduser(directory)))
-            if not target_dir.is_dir():
-                return {"status": "error", "message": f"Directory not found: {directory}"}
-
-            reshade_present = self._dir_has_reshade(target_dir)
-            reshade_slot = self._detect_reshade_slot(target_dir) if reshade_present else None
-            was_patched = self._dir_has_optiscaler(target_dir)
-
-            res = self._manual_unpatch_directory_impl(target_dir)
-            if res.get("status") != "success":
-                return res
-
-            # Nothing was actually removed → ReShade's links were never touched.
-            reshade_kept = reshade_present and not was_patched
-            reshade_error = ""
-            if reshade_present and was_patched:
-                rr = await self.install_reshade_for_heroic_game(
-                    str(target_dir),
-                    reshade_slot.replace(".dll", ""),
-                    selected_executable_path or "",
-                )
-                reshade_kept = rr.get("status") == "success"
-                if not reshade_kept:
-                    reshade_error = str(rr.get("message") or rr.get("output") or "unknown error")
-
-            message = (
-                f"Frame Generation removed from {target_dir}."
-                if was_patched
-                else f"No Frame Generation patch found in {target_dir}."
-            )
-            if reshade_present and reshade_kept:
-                message += f" ReShade kept on {reshade_slot}."
-            elif reshade_present:
-                message += f" ReShade could not be restored ({reshade_error}) — re-apply it."
-
-            return {
-                "status": "success",
-                "target_dir": str(target_dir),
-                "reshade_kept": reshade_kept,
-                "reshade_slot": reshade_slot if reshade_kept else None,
-                "message": message,
-            }
-        except Exception as exc:
-            decky.logger.error(f"[JediReFrameShade] remove_optiscaler_only_manual failed for {directory}: {exc}")
-            return {"status": "error", "message": str(exc)}
-
-    async def remove_reshade_only_manual(self, directory: str) -> dict:
-        """Non-Steam counterpart of remove_reshade_only: drop ReShade and report the
-        OptiScaler slot that stays behind."""
-        try:
-            target_dir = Path(os.path.abspath(os.path.expanduser(directory)))
-            if not target_dir.is_dir():
-                return {"status": "error", "message": f"Directory not found: {directory}"}
-
-            rr = await self.uninstall_reshade_for_heroic_game(str(target_dir))
-            if rr.get("status") != "success":
-                return {"status": "error", "message": rr.get("message") or "ReShade removal failed."}
-
-            optiscaler_kept = self._dir_has_optiscaler(target_dir)
-            optiscaler_slot = None
-            marker = target_dir / MARKER_FILENAME
-            if optiscaler_kept and marker.exists():
-                optiscaler_slot = self._read_marker(marker).get("dll_name")
-
-            message = f"ReShade removed from {target_dir}."
-            if optiscaler_kept:
-                message += f" Frame Generation kept{f' on {optiscaler_slot}' if optiscaler_slot else ''}."
-
-            return {
-                "status": "success",
-                "target_dir": str(target_dir),
-                "optiscaler_kept": optiscaler_kept,
-                "optiscaler_slot": optiscaler_slot,
-                "message": message,
-            }
-        except Exception as exc:
-            decky.logger.error(f"[JediReFrameShade] remove_reshade_only_manual failed for {directory}: {exc}")
             return {"status": "error", "message": str(exc)}

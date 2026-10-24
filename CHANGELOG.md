@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.1.15
+
+### Added
+- **Plugin Update** at the bottom of the panel: it checks this plugin's newest GitHub release (`get_plugin_update_status`) and installs it through Decky's own installer, which asks to confirm, checks the zip against GitHub's SHA256 and reloads the plugin.
+
+### Changed
+- Shorter Patch All intro, and the second "Pick a game" line above the game list is gone.
+- The "This game still uses the runtime above. Press Patch All to switch it to HelixSR." warning is gone from the game status.
+
+### Removed
+- **Choose exe/folder path** (manual `.exe`/folder patching for non-Steam games), its file browser and every message pointing to it. Advanced controls now act on the game picked at the top. Non-Steam shortcuts that start a launcher (Heroic, Lutris, …) are no longer listed, since they can't be patched without that picker. Backend: `manual_patch_directory`, `manual_unpatch_directory`, `remove_optiscaler_only_manual`, `remove_reshade_only_manual`, `install_reshade_for_heroic_game`, `uninstall_reshade_for_heroic_game`, `detect_heroic_game_api`, `browse_filesystem_for_executable`, `get_sd_card_mount_path`, `validate_windows_executable_path`, `get_path_defaults`, `unpatch_game` and the Heroic helpers.
+
+### Fixed
+- **Remove All**, **Remove only OptiScaler** and **Remove only ReShade** left files behind:
+  - They only cleaned one folder: OptiScaler's first marker, and ReShade the folder the target detection guessed at removal time. Patches made to another target `.exe`, or a folder whose marker was lost, stayed patched. They now go through every folder of the game.
+  - A re-patch stashed ReShade's `d3dcompiler_47.dll` link as an "original" `d3dcompiler_47.dll.b`, and removing OptiScaler later put it back. OptiScaler's patch and unpatch now leave ReShade's links alone, and old `.b` copies of them are deleted.
+  - ReShade removal now also deletes `ReShadePreset.ini` (the install creates it), dangling links left after ReShade itself was uninstalled, and ReShade DLLs the old manual install copied instead of linking.
+  - Remove All handed back the launch options from the first patch even when you had changed them since. It now keeps your current ones minus this plugin's DLL overrides and `SteamDeck=0`.
+- OptiScaler's unpatch deleted the game's whole `plugins` folder. It now removes only `OptiPatcher.asi`, and the folder only if nothing else is in it.
+- Uninstalling OptiScaler also removes `.fgmod-staging-*` / `.fgmod-backup-*` folders left by interrupted installs.
+
+## 1.1.14
+
+### Fixed
+- Patching with HelixSR failed with "There's already a HelixSR folder next to OptiScaler.ini that this plugin didn't create". A `HelixSR/` folder already in the game (left half made by an earlier patch, or made by another tool) is now replaced by the plugin's own, and the patch message says what was there. The plugin made the folder first and its record of it (`jedi-helixsr.json`) last, so a patch that stopped half way left such a folder: a patch that fails now removes the folder it made. Switching runtime or unpatching also removes a half-made folder, with OptiScaler.ini's paths into it set back to auto.
+
 ## 1.1.13
 
 ### Added

@@ -99,10 +99,8 @@ const runUninstallFGMod = callable("run_uninstall_fgmod");
 const checkFGModPath$1 = callable("check_fgmod_path");
 callable("list_installed_games");
 const logError$5 = callable("log_error");
-const runManualPatch$1 = callable("manual_patch_directory");
 const patchGame = callable("patch_game");
-const removeOptiScalerOnlySteam = callable("remove_optiscaler_only");
-const removeOptiScalerOnlyManual = callable("remove_optiscaler_only_manual");
+const removeOptiScalerOnly = callable("remove_optiscaler_only");
 
 /**
  * Utility for creating a timer that automatically clears after specified timeout
@@ -131,7 +129,7 @@ const safeAsyncOperation = async (operation, errorContext) => {
 };
 
 // Helpers shared by the OptiScaler/ReShade sections for reading and writing Steam
-// launch options and for copying launch commands to the clipboard (non-Steam games).
+// launch options.
 /** Read the current launch options for a Steam app id. */
 function getLaunchOptions$1(appId) {
     return new Promise((resolve) => {
@@ -163,96 +161,6 @@ function getLaunchOptions$1(appId) {
 /** Write launch options for a Steam app id. */
 function setLaunchOptions(appId, options) {
     SteamClient.Apps.SetAppLaunchOptions(appId, options);
-}
-const dllBase = (slot) => slot.replace(/\.dll$/i, "");
-/**
- * Build the launch command used for non-Steam games, applying the chosen proxy
- * DLL slots. `OptiScaler.asi` needs no WINEDLLOVERRIDES entry.
- */
-function buildLaunchCommand(slots, includeD3dcompiler = false) {
-    const parts = [];
-    const seen = new Set();
-    if (includeD3dcompiler) {
-        parts.push("d3dcompiler_47=n");
-        seen.add("d3dcompiler_47");
-    }
-    for (const slot of slots) {
-        if (!slot || slot === "OptiScaler.asi")
-            continue;
-        const base = dllBase(slot);
-        if (base && !seen.has(base)) {
-            parts.push(`${base}=n,b`);
-            seen.add(base);
-        }
-    }
-    const overrides = parts.length ? `WINEDLLOVERRIDES="${parts.join(";")}" ` : "";
-    return `${overrides}SteamDeck=0 %command%`;
-}
-/**
- * Try the clipboard copy several times before giving up. Some failures are
- * transient (clipboard momentarily busy / focus not settled), so a couple of
- * quick retries meaningfully improves the automatic-copy success rate.
- */
-async function copyWithRetry(text, attempts = 4, delayMs = 150) {
-    for (let i = 0; i < attempts; i += 1) {
-        if (await copyTextToClipboard(text))
-            return true;
-        if (i < attempts - 1) {
-            await new Promise((resolve) => setTimeout(resolve, delayMs));
-        }
-    }
-    return false;
-}
-/**
- * Attempt the automatic copy (with retry). On final failure raise a toast so the
- * user knows to use the manual "Copy launch options" fallback button. Returns
- * whether the automatic copy ultimately succeeded.
- */
-async function autoCopyLaunchCommand(text) {
-    const ok = await copyWithRetry(text);
-    if (!ok) {
-        toaster.toast({
-            title: "Couldn't copy launch options",
-            body: 'Press "Copy launch options" to copy it and paste into your launcher.',
-        });
-    }
-    return ok;
-}
-/**
- * Copy text to the clipboard using the input-simulation trick that works in
- * Steam gaming mode, falling back to the async clipboard API.
- */
-async function copyTextToClipboard(text) {
-    try {
-        const tempInput = document.createElement("input");
-        tempInput.value = text;
-        tempInput.style.position = "absolute";
-        tempInput.style.left = "-9999px";
-        document.body.appendChild(tempInput);
-        tempInput.focus();
-        tempInput.select();
-        let copied = false;
-        try {
-            copied = document.execCommand("copy");
-        }
-        catch {
-            copied = false;
-        }
-        if (!copied) {
-            try {
-                await navigator.clipboard.writeText(text);
-                copied = true;
-            }
-            catch {
-                copied = false;
-            }
-        }
-        document.body.removeChild(tempInput);
-        return copied;
-    }
-    catch {
-        return false;
-    }
 }
 
 // Shared constants for the application
@@ -311,56 +219,14 @@ function UninstallButton({ pathExists, uninstalling, onUninstallClick }) {
                 } }, uninstalling ? MESSAGES.uninstalling : MESSAGES.uninstallButton))));
 }
 
-// THIS FILE IS AUTO GENERATED
-function FaCheck (props) {
-  return GenIcon({"tag":"svg","attr":{"viewBox":"0 0 512 512"},"child":[{"tag":"path","attr":{"d":"M173.898 439.404l-166.4-166.4c-9.997-9.997-9.997-26.206 0-36.204l36.203-36.204c9.997-9.998 26.207-9.998 36.204 0L192 312.69 432.095 72.596c9.997-9.997 26.207-9.997 36.204 0l36.203 36.204c9.997 9.997 9.997 26.206 0 36.204l-294.4 294.401c-9.998 9.997-26.207 9.997-36.204-.001z"},"child":[]}]})(props);
-}function FaClipboard (props) {
-  return GenIcon({"tag":"svg","attr":{"viewBox":"0 0 384 512"},"child":[{"tag":"path","attr":{"d":"M384 112v352c0 26.51-21.49 48-48 48H48c-26.51 0-48-21.49-48-48V112c0-26.51 21.49-48 48-48h80c0-35.29 28.71-64 64-64s64 28.71 64 64h80c26.51 0 48 21.49 48 48zM192 40c-13.255 0-24 10.745-24 24s10.745 24 24 24 24-10.745 24-24-10.745-24-24-24m96 114v-20a6 6 0 0 0-6-6H102a6 6 0 0 0-6 6v20a6 6 0 0 0 6 6h180a6 6 0 0 0 6-6z"},"child":[]}]})(props);
-}
-
-/**
- * Reliable "copy launch command" button. The copy runs synchronously inside the
- * click handler (a genuine user gesture) before any await, which is the only way
- * clipboard writes succeed in Steam's gaming-mode CEF — auto-copying after an
- * await silently fails because the transient user-activation is already gone.
- */
-function CopyLaunchButton({ command, label = "Copy launch options" }) {
-    const [copied, setCopied] = SP_REACT.useState(false);
-    SP_REACT.useEffect(() => {
-        if (!copied)
-            return undefined;
-        const timer = setTimeout(() => setCopied(false), 3000);
-        return () => clearTimeout(timer);
-    }, [copied]);
-    if (!command)
-        return null;
-    const handleCopy = () => {
-        // Fire the copy first, within the user gesture; update feedback after.
-        void copyTextToClipboard(command).then((ok) => setCopied(ok));
-    };
-    return (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-        window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleCopy },
-            window.SP_REACT.createElement("div", { style: { display: "flex", alignItems: "center", gap: "8px" } },
-                copied ? window.SP_REACT.createElement(FaCheck, { style: { color: "#4CAF50" } }) : window.SP_REACT.createElement(FaClipboard, null),
-                window.SP_REACT.createElement("div", { style: { color: copied ? "#4CAF50" : "inherit", fontWeight: copied ? "bold" : "normal" } }, copied ? "Copied to clipboard" : label)))));
-}
-
-const folderForExe$1 = (exePath) => {
-    const idx = exePath.lastIndexOf("/");
-    return idx > 0 ? exePath.slice(0, idx) : exePath;
-};
 function OptiScalerControls({ pathExists, setPathExists, fgmodInfo, fsr4Variant = DEFAULT_FSR4_VARIANT, appid = "", targetExePath = "", }) {
     const [installing, setInstalling] = SP_REACT.useState(false);
     const [uninstalling, setUninstalling] = SP_REACT.useState(false);
     const [applying, setApplying] = SP_REACT.useState(false);
     const [removingOnly, setRemovingOnly] = SP_REACT.useState(false);
     const [result, setResult] = SP_REACT.useState("");
-    const [launchCmd, setLaunchCmd] = SP_REACT.useState("");
-    const [copyFailed, setCopyFailed] = SP_REACT.useState(false);
     const [dllName, setDllName] = SP_REACT.useState(DEFAULT_PROXY_DLL);
     const [updateStatus, setUpdateStatus] = SP_REACT.useState(null);
-    const steamMode = Boolean(appid);
-    const targetFolder = targetExePath ? folderForExe$1(targetExePath) : "";
     const refreshUpdateStatus = async () => {
         try {
             setUpdateStatus(await getOptiScalerUpdateStatus());
@@ -399,51 +265,27 @@ function OptiScalerControls({ pathExists, setPathExists, fgmodInfo, fsr4Variant 
         }
     };
     const handleApplyOnlyOpti = async () => {
+        if (!appid)
+            return;
         try {
             setApplying(true);
-            setLaunchCmd("");
-            setCopyFailed(false);
-            if (steamMode) {
-                setResult("Applying OptiScaler to the selected Steam game…");
-                const current = await getLaunchOptions$1(parseInt(appid, 10));
-                const r = await patchGame(appid, dllName, current, fsr4Variant, targetExePath || "");
-                if (r.status === "success") {
-                    if (r.launch_options) {
-                        try {
-                            setLaunchOptions(parseInt(appid, 10), r.launch_options);
-                        }
-                        catch (e) {
-                            console.error(e);
-                        }
+            setResult("Applying OptiScaler to the selected game…");
+            const current = await getLaunchOptions$1(parseInt(appid, 10));
+            const r = await patchGame(appid, dllName, current, fsr4Variant, targetExePath || "");
+            if (r.status === "success") {
+                if (r.launch_options) {
+                    try {
+                        setLaunchOptions(parseInt(appid, 10), r.launch_options);
                     }
-                    setResult(`✅ ${r.message || "OptiScaler applied."}` +
-                        (r.launch_options ? `\n\nLaunch options set automatically:\n${r.launch_options}` : ""));
+                    catch (e) {
+                        console.error(e);
+                    }
                 }
-                else {
-                    setResult(`❌ ${r.message || "Failed"}`);
-                }
+                setResult(`✅ ${r.message || "OptiScaler applied."}` +
+                    (r.launch_options ? `\n\nLaunch options set automatically:\n${r.launch_options}` : ""));
             }
             else {
-                if (!targetFolder) {
-                    setResult('Choose a game .exe in "Choose exe/folder path" above first.');
-                    return;
-                }
-                setResult("Applying OptiScaler to the selected folder…");
-                const r = await runManualPatch$1(targetFolder, dllName, fsr4Variant);
-                if (r.status === "success") {
-                    const cmd = buildLaunchCommand([dllName]);
-                    setLaunchCmd(cmd);
-                    const copied = await autoCopyLaunchCommand(cmd);
-                    setCopyFailed(!copied);
-                    setResult(`✅ ${r.message || r.output || "OptiScaler applied."}\n\n` +
-                        `Launch command:\n${cmd}\n\n` +
-                        (copied
-                            ? "Launch options copied automatically — paste them into your launcher."
-                            : '⚠️ Could not copy automatically. Press "Copy launch options" below.'));
-                }
-                else {
-                    setResult(`❌ ${r.message || "Failed"}`);
-                }
+                setResult(`❌ ${r.message || "Failed"}`);
             }
         }
         catch (e) {
@@ -457,56 +299,27 @@ function OptiScalerControls({ pathExists, setPathExists, fgmodInfo, fsr4Variant 
     // Takes OptiScaler out of the chosen game while leaving ReShade patched: the
     // backend re-links ReShade afterwards and hands back the remaining overrides.
     const handleRemoveOnlyOpti = async () => {
+        if (!appid)
+            return;
         try {
             setRemovingOnly(true);
-            setLaunchCmd("");
-            setCopyFailed(false);
-            if (steamMode) {
-                setResult("Removing OptiScaler from the selected Steam game…");
-                const r = await removeOptiScalerOnlySteam(appid, targetExePath || "");
-                if (r.status === "success") {
-                    try {
-                        setLaunchOptions(parseInt(appid, 10), r.launch_options || "");
-                    }
-                    catch (e) {
-                        console.error(e);
-                    }
-                    setResult(`✅ ${r.message || "OptiScaler removed."}` +
-                        (r.launch_options
-                            ? `\n\nLaunch options updated automatically:\n${r.launch_options}`
-                            : "\n\nLaunch options cleared."));
+            setResult("Removing OptiScaler from the selected game…");
+            const current = await getLaunchOptions$1(parseInt(appid, 10));
+            const r = await removeOptiScalerOnly(appid, targetExePath || "", current);
+            if (r.status === "success") {
+                try {
+                    setLaunchOptions(parseInt(appid, 10), r.launch_options || "");
                 }
-                else {
-                    setResult(`❌ ${r.message || "Failed"}`);
+                catch (e) {
+                    console.error(e);
                 }
+                setResult(`✅ ${r.message || "OptiScaler removed."}` +
+                    (r.launch_options
+                        ? `\n\nLaunch options updated automatically:\n${r.launch_options}`
+                        : "\n\nLaunch options cleared."));
             }
             else {
-                if (!targetFolder) {
-                    setResult('Choose a game .exe in "Choose exe/folder path" above first.');
-                    return;
-                }
-                setResult("Removing OptiScaler from the selected folder…");
-                const r = await removeOptiScalerOnlyManual(targetFolder, targetExePath || "");
-                if (r.status === "success") {
-                    if (r.reshade_kept && r.reshade_slot) {
-                        const cmd = buildLaunchCommand([r.reshade_slot], true);
-                        setLaunchCmd(cmd);
-                        const copied = await autoCopyLaunchCommand(cmd);
-                        setCopyFailed(!copied);
-                        setResult(`✅ ${r.message || "OptiScaler removed."}\n\n` +
-                            `Launch command (ReShade only):\n${cmd}\n\n` +
-                            (copied
-                                ? "Launch options copied automatically — paste them into your launcher."
-                                : '⚠️ Could not copy automatically. Press "Copy launch options" below.'));
-                    }
-                    else {
-                        setResult(`✅ ${r.message || "OptiScaler removed."}\n\n` +
-                            "Remember to clear the launch command from your launcher.");
-                    }
-                }
-                else {
-                    setResult(`❌ ${r.message || "Failed"}`);
-                }
+                setResult(`❌ ${r.message || "Failed"}`);
             }
         }
         catch (e) {
@@ -557,14 +370,14 @@ function OptiScalerControls({ pathExists, setPathExists, fgmodInfo, fsr4Variant 
         pathExists === true && (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.DropdownItem, { layout: "below", label: "Proxy DLL name", description: PROXY_DLL_OPTIONS.find((o) => o.value === dllName)?.hint, menuLabel: "Proxy DLL name", selectedOption: dllName, rgOptions: PROXY_DLL_OPTIONS.map((o) => ({ data: o.value, label: o.label })), onChange: (option) => setDllName(String(option.data)) })),
-            steamMode && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", opacity: 0.7, wordBreak: "break-all" } }, targetExePath ? `Target: ${targetExePath}` : "Target: automatic detection"))),
-            window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleApplyOnlyOpti, disabled: applying || removingOnly || (!steamMode && !targetFolder) }, applying ? "Applying…" : "Apply only OptiScaler")),
-            window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleRemoveOnlyOpti, disabled: applying || removingOnly || (!steamMode && !targetFolder) }, removingOnly ? "Removing…" : "🗑️ Remove only OptiScaler")),
-            !steamMode && !targetFolder && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", opacity: 0.7 } }, "Choose a game .exe in \"Choose exe/folder path\" above first."))))),
+            appid ? (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
+                window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+                    window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", opacity: 0.7, wordBreak: "break-all" } }, targetExePath ? `Target: ${targetExePath}` : "Target: automatic detection")),
+                window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+                    window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleApplyOnlyOpti, disabled: applying || removingOnly }, applying ? "Applying…" : "Apply only OptiScaler")),
+                window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+                    window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleRemoveOnlyOpti, disabled: applying || removingOnly }, removingOnly ? "Removing…" : "🗑️ Remove only OptiScaler")))) : (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+                window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", opacity: 0.7 } }, "Pick a game above to apply or remove it."))))),
         window.SP_REACT.createElement(InstructionCard, { pathExists: pathExists }),
         result && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement("div", { style: {
@@ -574,7 +387,6 @@ function OptiScalerControls({ pathExists, setPathExists, fgmodInfo, fsr4Variant 
                     borderRadius: "4px",
                     whiteSpace: "pre-wrap",
                 } }, result))),
-        copyFailed && window.SP_REACT.createElement(CopyLaunchButton, { command: launchCmd }),
         window.SP_REACT.createElement(UninstallButton, { pathExists: pathExists, uninstalling: uninstalling, onUninstallClick: handleUninstallClick })));
 }
 
@@ -795,9 +607,7 @@ function selectSteamTargetCandidate(target, executablePath) {
     };
 }
 function gameOptionLabel(game) {
-    if (!game.non_steam)
-        return game.name;
-    return game.needs_manual_exe ? `${game.name} · non-Steam launcher (manual)` : `${game.name} · non-Steam`;
+    return game.non_steam ? `${game.name} · non-Steam` : game.name;
 }
 function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid, detectedTarget, setDetectedTarget, }) {
     const [games, setGames] = SP_REACT.useState([]);
@@ -907,7 +717,8 @@ function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid
         try {
             setBusy(true);
             setResult("Removing both mods…");
-            const r = await unpatchAllGame(appid);
+            const current = await getLaunchOptions(parseInt(appid, 10));
+            const r = await unpatchAllGame(appid, current);
             if (r.status === "success") {
                 try {
                     SteamClient.Apps.SetAppLaunchOptions(parseInt(appid, 10), r.launch_options || "");
@@ -915,7 +726,8 @@ function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid
                 catch (e) {
                     await logError$4(`SetAppLaunchOptions(remove): ${String(e)}`);
                 }
-                setResult(`✅ ${r.message || "Removed"}`);
+                setResult(`✅ ${r.message || "Removed"}` +
+                    (r.launch_options ? `\n\nLaunch options restored:\n${r.launch_options}` : "\n\nLaunch options cleared."));
             }
             else {
                 setResult(`❌ ${r.message || "Failed"}`);
@@ -933,28 +745,16 @@ function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid
     return (window.SP_REACT.createElement(DFL.PanelSection, { title: "\uD83C\uDFAE Game \u2014 Patch All" },
         window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement("div", { style: { fontSize: "0.9em", opacity: 0.85 } },
-                "Pick a game (Steam or non-Steam shortcut) and press ",
+                "Pick a game and press ",
                 window.SP_REACT.createElement("b", null, "Patch All"),
-                ". It installs OptiScaler (Frame Generation) and ReShade if needed, applies both to the game, and sets the launch options for you.")),
+                ": OptiScaler + ReShade, launch options included.")),
         engines && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement("div", { style: { fontSize: "0.82em", opacity: 0.7 } },
                 engines.optiscaler_installed ? `🟢 OptiScaler ${engines.optiscaler_version || ""}` : "⚪ OptiScaler not installed",
                 "  •  ",
                 engines.reshade_installed ? `🟢 ReShade ${engines.reshade_version || ""}` : "⚪ ReShade not installed"))),
         window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement("div", { style: { fontSize: "0.82em", opacity: 0.7 } }, "Pick a game (Steam or non-Steam shortcut)")),
-        window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement(DFL.DropdownItem, { rgOptions: games.map((g) => ({ data: g.appid, label: gameOptionLabel(g) })), selectedOption: appid, onChange: (o) => {
-                    const picked = games.find((g) => g.appid === o.data);
-                    if (picked?.needs_manual_exe) {
-                        // Launcher shortcuts (Heroic, Lutris, ...) do not point at the game .exe:
-                        // stay in manual mode so "Choose exe/folder path" is available.
-                        setAppid("");
-                        setDetectedTarget(null);
-                        setStatus(null);
-                        setResult(`ℹ️ "${picked.name}" is a non-Steam shortcut that starts a launcher, not the game .exe.\n\nEnable Advanced controls and use "Choose exe/folder path" to pick the game executable.`);
-                        return;
-                    }
                     setAppid(o.data);
                     setDetectedTarget(null);
                     setResult("");
@@ -972,7 +772,6 @@ function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid
                     "ReShade: ",
                     status.reshade_present ? `on (${status.reshade_slot})` : "off"),
                 status.both_active && window.SP_REACT.createElement("div", { style: { color: "green", marginTop: "2px" } }, "\u2705 Both active and coexisting"),
-                fsr4Variant === "helixsr" && status.optiscaler_patched && status.optiscaler_variant !== "helixsr" && (window.SP_REACT.createElement("div", { style: { color: "#ffb84d", marginTop: "4px" } }, "\u26a0\ufe0f This game still uses the runtime above. Press Patch All to switch it to HelixSR.")),
                 status.helixsr && window.SP_REACT.createElement(HelixSRGameStatus, { info: status.helixsr })))),
         status && appid && status.helixsr && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: () => void loadStatus(appid), disabled: busy }, "\ud83d\udd04 Check HelixSR again"))),
@@ -1275,11 +1074,8 @@ const saveAutoHdrPreference = callable("save_autohdr_preference");
 const loadAutoHdrPreference = callable("load_autohdr_preference");
 const loadInstalledConfiguration = callable("load_installed_configuration");
 const manageGameReShade = callable("manage_game_reshade");
-const installReShadeForManualExe$1 = callable("install_reshade_for_heroic_game");
-const detectGameApi$1 = callable("detect_heroic_game_api");
 const getCombinedGameStatus = callable("get_combined_game_status");
-const removeReShadeOnlySteam = callable("remove_reshade_only");
-const removeReShadeOnlyManual = callable("remove_reshade_only_manual");
+const removeReShadeOnly = callable("remove_reshade_only");
 const RESHADE_DLL_OPTIONS = [
     { data: "auto", label: "Automatic (Detect API)" },
     { data: "dxgi", label: "DXGI (DirectX 10/11/12)" },
@@ -1309,10 +1105,6 @@ const buildSteamLaunchOptions = (reshadeApi, optiscalerSlot) => {
     });
     return `WINEDLLOVERRIDES="${parts.join(";")}" SteamDeck=0 %command%`;
 };
-const folderForExe = (exePath) => {
-    const idx = exePath.lastIndexOf("/");
-    return idx > 0 ? exePath.slice(0, idx) : exePath;
-};
 function ReShadeInstallerSection({ appid, targetExePath = "" }) {
     const [installing, setInstalling] = SP_REACT.useState(false);
     const [uninstalling, setUninstalling] = SP_REACT.useState(false);
@@ -1321,8 +1113,6 @@ function ReShadeInstallerSection({ appid, targetExePath = "" }) {
     const [installResult, setInstallResult] = SP_REACT.useState(null);
     const [uninstallResult, setUninstallResult] = SP_REACT.useState(null);
     const [steamGameResult, setSteamGameResult] = SP_REACT.useState(null);
-    const [launchCmd, setLaunchCmd] = SP_REACT.useState("");
-    const [copyFailed, setCopyFailed] = SP_REACT.useState(false);
     const [pathExists, setPathExists] = SP_REACT.useState(null);
     const [addonEnabled, setAddonEnabled] = SP_REACT.useState(false);
     const [autoHdrEnabled, setAutoHdrEnabled] = SP_REACT.useState(false);
@@ -1583,14 +1373,14 @@ function ReShadeInstallerSection({ appid, targetExePath = "" }) {
         if (!appid) {
             setSteamGameResult({
                 status: "error",
-                message: 'Pick a game in "Steam Game - Patch All" above first.'
+                message: "Pick a game above first."
             });
             return;
         }
         if (!pathExists) {
             setSteamGameResult({
                 status: "error",
-                message: "Install ReShade first before applying it to a Steam game."
+                message: "Install ReShade first before applying it to a game."
             });
             return;
         }
@@ -1598,7 +1388,7 @@ function ReShadeInstallerSection({ appid, targetExePath = "" }) {
             setApplyingToSteamGame(true);
             setSteamGameResult({
                 status: "success",
-                message: "Applying ReShade to selected Steam game..."
+                message: "Applying ReShade to the selected game..."
             });
             const result = await manageGameReShade(appid, "install", selectedSteamGameApi, "", targetExePath || "");
             if (result.status !== "success") {
@@ -1642,133 +1432,36 @@ function ReShadeInstallerSection({ appid, targetExePath = "" }) {
             setApplyingToSteamGame(false);
         }
     };
-    const handleApplyOnlyReShadeNonSteam = async () => {
-        if (!targetExePath) {
-            setSteamGameResult({
-                status: "error",
-                message: 'Choose a game .exe in "Choose exe/folder path" above first.'
-            });
-            return;
-        }
-        if (!pathExists) {
-            setSteamGameResult({
-                status: "error",
-                message: "Install ReShade first before applying it to a game."
-            });
-            return;
-        }
-        try {
-            setApplyingToSteamGame(true);
-            setLaunchCmd("");
-            setCopyFailed(false);
-            const folder = folderForExe(targetExePath);
-            let resolvedApi = selectedSteamGameApi;
-            if (resolvedApi === "auto") {
-                setSteamGameResult({ status: "success", message: "Detecting best ReShade API…" });
-                const detection = await detectGameApi$1(folder);
-                resolvedApi = detection.status === "success" && detection.api ? detection.api : "dxgi";
-            }
-            setSteamGameResult({ status: "success", message: `Applying ReShade (${resolvedApi.toUpperCase()})…` });
-            const result = await installReShadeForManualExe$1(folder, resolvedApi, targetExePath);
-            if (result.status !== "success") {
-                setSteamGameResult({
-                    status: "error",
-                    message: result.message || result.output || "Failed to apply ReShade."
-                });
-                return;
-            }
-            const launchCommand = buildLaunchCommand([resolvedApi], true);
-            setLaunchCmd(launchCommand);
-            const copied = await autoCopyLaunchCommand(launchCommand);
-            setCopyFailed(!copied);
-            setSteamGameResult({
-                status: "success",
-                output: `ReShade applied with ${resolvedApi.toUpperCase()}.\n` +
-                    `Launch command:\n${launchCommand}\n\n` +
-                    (copied
-                        ? "Launch options copied automatically — paste them into your launcher."
-                        : '⚠️ Could not copy automatically. Press "Copy launch options" below.')
-            });
-        }
-        catch (e) {
-            setSteamGameResult({ status: "error", message: String(e) });
-            await logError$2(`ReShadeInstallerSection -> applyOnlyReShadeNonSteam: ${String(e)}`);
-        }
-        finally {
-            setApplyingToSteamGame(false);
-        }
-    };
     // Drops ReShade from the chosen game and keeps OptiScaler patched: the backend
     // reports the slot that stays behind so the overrides can be rebuilt for it.
     const handleRemoveOnlyReShade = async () => {
-        const steamTarget = Boolean(appid);
-        if (!steamTarget && !targetExePath) {
-            setSteamGameResult({
-                status: "error",
-                message: 'Choose a game .exe in "Choose exe/folder path" above first.'
-            });
+        if (!appid)
             return;
-        }
         try {
             setRemovingFromGame(true);
-            setLaunchCmd("");
-            setCopyFailed(false);
             setSteamGameResult({ status: "success", message: "Removing ReShade…" });
-            if (steamTarget) {
-                const result = await removeReShadeOnlySteam(appid, targetExePath || "");
-                if (result.status !== "success") {
-                    setSteamGameResult({
-                        status: "error",
-                        message: result.message || result.output || "Failed to remove ReShade."
-                    });
-                    return;
-                }
-                try {
-                    SteamClient.Apps.SetAppLaunchOptions(parseInt(appid, 10), result.launch_options || "");
-                }
-                catch (e) {
-                    await logError$2(`ReShadeInstallerSection -> SetAppLaunchOptions: ${String(e)}`);
-                }
+            const current = await getLaunchOptions$1(parseInt(appid, 10));
+            const result = await removeReShadeOnly(appid, targetExePath || "", current);
+            if (result.status !== "success") {
                 setSteamGameResult({
-                    status: "success",
-                    output: `${result.message || "ReShade removed."}\n` +
-                        (result.launch_options
-                            ? `Launch options updated automatically:\n${result.launch_options}`
-                            : "Launch options cleared.")
+                    status: "error",
+                    message: result.message || result.output || "Failed to remove ReShade."
                 });
+                return;
             }
-            else {
-                const folder = folderForExe(targetExePath);
-                const result = await removeReShadeOnlyManual(folder);
-                if (result.status !== "success") {
-                    setSteamGameResult({
-                        status: "error",
-                        message: result.message || result.output || "Failed to remove ReShade."
-                    });
-                    return;
-                }
-                if (result.optiscaler_kept && result.optiscaler_slot) {
-                    const launchCommand = buildLaunchCommand([result.optiscaler_slot]);
-                    setLaunchCmd(launchCommand);
-                    const copied = await autoCopyLaunchCommand(launchCommand);
-                    setCopyFailed(!copied);
-                    setSteamGameResult({
-                        status: "success",
-                        output: `${result.message || "ReShade removed."}\n` +
-                            `Launch command (OptiScaler only):\n${launchCommand}\n\n` +
-                            (copied
-                                ? "Launch options copied automatically — paste them into your launcher."
-                                : '⚠️ Could not copy automatically. Press "Copy launch options" below.')
-                    });
-                }
-                else {
-                    setSteamGameResult({
-                        status: "success",
-                        output: `${result.message || "ReShade removed."}\n` +
-                            "Remember to clear the launch command from your launcher."
-                    });
-                }
+            try {
+                SteamClient.Apps.SetAppLaunchOptions(parseInt(appid, 10), result.launch_options || "");
             }
+            catch (e) {
+                await logError$2(`ReShadeInstallerSection -> SetAppLaunchOptions: ${String(e)}`);
+            }
+            setSteamGameResult({
+                status: "success",
+                output: `${result.message || "ReShade removed."}\n` +
+                    (result.launch_options
+                        ? `Launch options updated automatically:\n${result.launch_options}`
+                        : "Launch options cleared.")
+            });
         }
         catch (e) {
             setSteamGameResult({ status: "error", message: String(e) });
@@ -1947,9 +1640,6 @@ function ReShadeInstallerSection({ appid, targetExePath = "" }) {
                 " packages)",
                 window.SP_REACT.createElement("div", { style: { fontSize: "0.8em", opacity: 0.8, marginTop: "2px" } }, "Will be used automatically for installations"))));
     };
-    // A Steam game chosen at the top targets that game; otherwise we patch the
-    // manually chosen non-Steam .exe.
-    const steamMode = Boolean(appid);
     const shouldShowInstallButton = pathExists === false ||
         configChanged ||
         Boolean(pathExists && updateStatus?.update_available);
@@ -1973,30 +1663,20 @@ function ReShadeInstallerSection({ appid, targetExePath = "" }) {
             window.SP_REACT.createElement(DFL.ToggleField, { label: "Enable Addon Support", description: pathExists ? "Changes require reinstallation" : "Install ReShade with addon support", checked: showingAddonDialog ? pendingAddonState : addonEnabled, onChange: handleAddonToggle, disabled: showingAddonDialog })),
         addonEnabled && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement(DFL.ToggleField, { label: "Include AutoHDR Components", description: "For Steam Deck OLED HDR gaming (DX10/11/12 only)", checked: autoHdrEnabled, onChange: handleAutoHdrToggle }))),
-        pathExists === true && steamMode && (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
+        pathExists === true && appid && (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.DropdownItem, { rgOptions: RESHADE_DLL_OPTIONS, selectedOption: selectedSteamGameApi, onChange: (option) => {
                         setSelectedSteamGameApi(option.data);
                         setSteamGameResult(null);
-                    }, strDefaultLabel: "Steam game ReShade API" })),
+                    }, strDefaultLabel: "Game ReShade API" })),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", opacity: 0.7, wordBreak: "break-all" } }, targetExePath ? `Target: ${targetExePath}` : "Target: automatic detection")),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleApplyReShadeToSteamGame, disabled: applyingToSteamGame || removingFromGame || !appid }, applyingToSteamGame ? "Applying ReShade..." : "Apply only ReShade")),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleRemoveOnlyReShade, disabled: applyingToSteamGame || removingFromGame || !appid }, removingFromGame ? "Removing ReShade..." : "🗑️ Remove only ReShade")))),
-        pathExists === true && !steamMode && (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
-            window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.DropdownItem, { label: "Proxy DLL name", menuLabel: "Proxy DLL name", rgOptions: RESHADE_DLL_OPTIONS, selectedOption: selectedSteamGameApi, onChange: (option) => {
-                        setSelectedSteamGameApi(option.data);
-                        setSteamGameResult(null);
-                    }, strDefaultLabel: "Proxy DLL name" })),
-            window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleApplyOnlyReShadeNonSteam, disabled: applyingToSteamGame || removingFromGame || !targetExePath }, applyingToSteamGame ? "Applying ReShade..." : "Apply only ReShade")),
-            window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleRemoveOnlyReShade, disabled: applyingToSteamGame || removingFromGame || !targetExePath }, removingFromGame ? "Removing ReShade..." : "🗑️ Remove only ReShade")),
-            !targetExePath && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", opacity: 0.7 } }, "Choose a game .exe in \"Choose exe/folder path\" above first."))))),
+        pathExists === true && !appid && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+            window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", opacity: 0.7 } }, "Pick a game above to apply or remove it."))),
         pathExists === true && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement("div", { style: STYLES.instructionCard },
                 "Press HOME key in-game to access the ReShade overlay.",
@@ -2036,449 +1716,73 @@ function ReShadeInstallerSection({ appid, targetExePath = "" }) {
                     whiteSpace: "pre-wrap"
                 } }, steamGameResult.status === "success"
                 ? `✅ ${steamGameResult.output || steamGameResult.message || "Operation completed successfully!"}`
-                : `❌ Error: ${steamGameResult.message || "Operation failed"}`))),
-        !steamMode && copyFailed && window.SP_REACT.createElement(CopyLaunchButton, { command: launchCmd })));
+                : `❌ Error: ${steamGameResult.message || "Operation failed"}`)))));
 }
 
-const browseFilesystemForExecutable = callable("browse_filesystem_for_executable");
-const getSdCardMountPath = callable("get_sd_card_mount_path");
-const logError$1 = callable("log_error");
-const DEFAULT_QUICK_PATHS = [
-    { label: "Home", path: "/home/deck" },
-    { label: "Common", path: "/home/deck/.steam/steam/steamapps/common" },
-    { label: "SD Card", path: "/run/media" }
-];
-const getButtonStyle = (isFocused, isSelected = false) => ({
-    border: isSelected
-        ? "1px solid rgba(116, 226, 138, 0.95)"
-        : isFocused
-            ? "1px solid rgba(255, 255, 255, 0.95)"
-            : "1px solid rgba(255,255,255,0.12)",
-    backgroundColor: isSelected
-        ? "rgba(76, 175, 80, 0.22)"
-        : isFocused
-            ? "rgba(255, 255, 255, 0.18)"
-            : "rgba(255,255,255,0.04)",
-    boxShadow: isFocused
-        ? "0 0 0 2px rgba(255, 255, 255, 0.12), inset 0 0 0 1px rgba(255, 255, 255, 0.06)"
-        : "none",
-    transform: isFocused ? "scale(1.01)" : "scale(1)",
-    transition: "background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease"
-});
-const ExecutablePathBrowserModal = ({ initialPath = "/home/deck", onConfirm, onCancel, closeModal }) => {
-    const [currentPath, setCurrentPath] = SP_REACT.useState(initialPath);
-    const [parentPath, setParentPath] = SP_REACT.useState(null);
-    const [entries, setEntries] = SP_REACT.useState([]);
-    const [quickPaths, setQuickPaths] = SP_REACT.useState(DEFAULT_QUICK_PATHS);
-    const [selectedPath, setSelectedPath] = SP_REACT.useState("");
-    const [focusedItemKey, setFocusedItemKey] = SP_REACT.useState(null);
-    const [loading, setLoading] = SP_REACT.useState(true);
-    const [error, setError] = SP_REACT.useState("");
-    const parentButtonRef = SP_REACT.useRef(null);
-    const entryButtonRefs = SP_REACT.useRef([]);
+const getPluginUpdateStatus = callable("get_plugin_update_status");
+// Plugin self-update: compares this plugin with its newest GitHub release and hands the
+// release zip to Decky's own installer, which asks to confirm, installs it and reloads the plugin.
+function PluginUpdateSection() {
+    const [info, setInfo] = SP_REACT.useState(null);
+    const [checking, setChecking] = SP_REACT.useState(false);
+    const [message, setMessage] = SP_REACT.useState("");
+    const refresh = async (force = false) => {
+        try {
+            setChecking(true);
+            setInfo(await getPluginUpdateStatus(force));
+        }
+        catch (e) {
+            await logError$4(`PluginUpdateSection -> status: ${String(e)}`);
+        }
+        finally {
+            setChecking(false);
+        }
+    };
     SP_REACT.useEffect(() => {
-        void loadDirectory(currentPath, true);
-    }, [currentPath]);
-    SP_REACT.useEffect(() => {
-        void loadSdCardPath();
+        void refresh();
     }, []);
-    SP_REACT.useEffect(() => {
-        if (loading || !!error) {
-            return;
-        }
-        const focusTimer = window.setTimeout(() => {
-            const firstEntryButton = entryButtonRefs.current.find(Boolean) || null;
-            const focusTarget = parentButtonRef.current || firstEntryButton;
-            focusTarget?.focus();
-        }, 60);
-        return () => {
-            window.clearTimeout(focusTimer);
-        };
-    }, [loading, error, currentPath, parentPath, entries.length]);
-    const loadDirectory = async (path, includeHidden) => {
-        try {
-            setLoading(true);
-            setError("");
-            const response = await browseFilesystemForExecutable(path, includeHidden);
-            if (response.status !== "success" || !response.current_path || !response.entries) {
-                setError(response.message || "Failed to load directory contents.");
-                return;
-            }
-            setCurrentPath(response.current_path);
-            setParentPath(response.parent_path || null);
-            setEntries(response.entries);
-            if (selectedPath && !selectedPath.startsWith(`${response.current_path}/`) && selectedPath !== response.current_path) {
-                setSelectedPath("");
-            }
-        }
-        catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            setError(`Error loading directory: ${message}`);
-            await logError$1(`ExecutablePathBrowserModal -> loadDirectory: ${message}`);
-        }
-        finally {
-            setLoading(false);
-        }
-    };
-    const loadSdCardPath = async () => {
-        try {
-            const response = await getSdCardMountPath();
-            if (response.status !== "success" || !response.path) {
-                return;
-            }
-            setQuickPaths((previousQuickPaths) => (previousQuickPaths.map((quickPath) => (quickPath.label === "SD Card"
-                ? { ...quickPath, path: response.path }
-                : quickPath))));
-        }
-        catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            await logError$1(`ExecutablePathBrowserModal -> loadSdCardPath: ${message}`);
-        }
-    };
-    const handleConfirm = () => {
-        if (!selectedPath) {
-            return;
-        }
-        onConfirm(selectedPath);
-        if (closeModal) {
-            closeModal();
-        }
-    };
-    const handleCancel = () => {
-        onCancel();
-        if (closeModal) {
-            closeModal();
-        }
-    };
-    const handleItemFocus = (event) => {
-        event.currentTarget.scrollIntoView({
-            block: "center",
-            inline: "nearest"
-        });
-    };
-    const handleButtonFocus = (focusKey) => {
-        setFocusedItemKey(focusKey);
-    };
-    const handleButtonBlur = (focusKey) => {
-        setFocusedItemKey((currentFocusKey) => (currentFocusKey === focusKey ? null : currentFocusKey));
-    };
-    const renderDescription = () => {
-        return (window.SP_REACT.createElement("div", { style: { textAlign: "left", maxHeight: "60vh", overflowY: "auto", paddingRight: "8px", paddingBottom: "8px" } },
-            window.SP_REACT.createElement("div", { style: {
-                    marginBottom: "12px",
-                    padding: "8px",
-                    borderRadius: "4px",
-                    backgroundColor: "rgba(255,255,255,0.05)",
-                    border: "1px solid rgba(255,255,255,0.12)",
-                    fontSize: "0.85em",
-                    wordBreak: "break-all"
-                } },
-                "Current path: ",
-                currentPath),
-            window.SP_REACT.createElement("div", { style: { marginBottom: "12px" } },
-                window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", fontWeight: "bold", marginBottom: "6px" } }, "Quick locations"),
-                window.SP_REACT.createElement("div", { style: {
-                        display: "flex",
-                        gap: "6px",
-                        width: "100%"
-                    } }, quickPaths.map((quickPath) => (window.SP_REACT.createElement("div", { key: `${quickPath.label}:${quickPath.path}`, style: { flex: "1 1 0", minWidth: 0, display: "flex" }, onFocusCapture: (event) => {
-                        handleItemFocus(event);
-                        handleButtonFocus(`quick:${quickPath.path}`);
-                    }, onBlurCapture: () => handleButtonBlur(`quick:${quickPath.path}`) },
-                    window.SP_REACT.createElement(DFL.DialogButton, { onClick: () => {
-                            setSelectedPath("");
-                            setCurrentPath(quickPath.path);
-                        }, style: {
-                            width: "100%",
-                            boxSizing: "border-box",
-                            display: "flex",
-                            justifyContent: "center",
-                            alignItems: "center",
-                            padding: "6px 10px",
-                            borderRadius: "4px",
-                            ...getButtonStyle(focusedItemKey === `quick:${quickPath.path}`),
-                            color: "white",
-                            fontSize: "0.8em",
-                            cursor: "pointer",
-                            minHeight: "38px"
-                        } }, quickPath.label)))))),
-            error ? (window.SP_REACT.createElement("div", { style: {
-                    padding: "10px",
-                    borderRadius: "4px",
-                    backgroundColor: "#ff6b6b",
-                    color: "white",
-                    fontSize: "0.85em"
-                } }, error)) : loading ? (window.SP_REACT.createElement("div", { style: { padding: "20px", textAlign: "center" } }, "Loading entries...")) : (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
-                window.SP_REACT.createElement("div", { style: {
-                        maxHeight: "36vh",
-                        overflowY: "auto",
-                        borderRadius: "4px",
-                        border: "1px solid rgba(255,255,255,0.08)",
-                        padding: "4px 4px 16px 4px",
-                        scrollBehavior: "smooth",
-                        scrollPaddingBottom: "72px"
-                    } },
-                    window.SP_REACT.createElement("div", { style: { paddingBottom: "8px" } },
-                        parentPath && (window.SP_REACT.createElement("div", { onFocusCapture: (event) => {
-                                handleItemFocus(event);
-                                handleButtonFocus(`parent:${parentPath}`);
-                            }, onBlurCapture: () => handleButtonBlur(`parent:${parentPath}`) },
-                            window.SP_REACT.createElement(DFL.DialogButton, { ref: (element) => {
-                                    parentButtonRef.current = element;
-                                }, onClick: () => {
-                                    setSelectedPath("");
-                                    setCurrentPath(parentPath);
-                                }, style: {
-                                    width: "100%",
-                                    textAlign: "left",
-                                    padding: "10px",
-                                    marginBottom: "8px",
-                                    borderRadius: "4px",
-                                    ...getButtonStyle(focusedItemKey === `parent:${parentPath}`),
-                                    color: "white",
-                                    cursor: "pointer",
-                                    minHeight: "42px"
-                                } }, ".. Parent Directory"))),
-                        entries.length === 0 ? (window.SP_REACT.createElement("div", { style: { padding: "12px", opacity: 0.8, fontSize: "0.85em" } }, "No folders or `.exe` files found here.")) : (entries.map((entry, index) => {
-                            const isSelected = selectedPath === entry.path;
-                            const focusKey = `entry:${entry.path}`;
-                            return (window.SP_REACT.createElement("div", { key: entry.path, onFocusCapture: (event) => {
-                                    handleItemFocus(event);
-                                    handleButtonFocus(focusKey);
-                                }, onBlurCapture: () => handleButtonBlur(focusKey) },
-                                window.SP_REACT.createElement(DFL.DialogButton, { ref: (element) => {
-                                        entryButtonRefs.current[index] = element;
-                                    }, onClick: () => {
-                                        if (entry.is_dir) {
-                                            setSelectedPath("");
-                                            setCurrentPath(entry.path);
-                                            return;
-                                        }
-                                        setSelectedPath(entry.path);
-                                    }, style: {
-                                        width: "100%",
-                                        textAlign: "left",
-                                        padding: "10px",
-                                        marginBottom: "8px",
-                                        borderRadius: "4px",
-                                        ...getButtonStyle(focusedItemKey === focusKey, isSelected),
-                                        color: "white",
-                                        cursor: "pointer",
-                                        minHeight: "56px"
-                                    } },
-                                    window.SP_REACT.createElement("div", { style: { fontSize: "0.9em", fontWeight: "bold", marginBottom: "3px" } },
-                                        entry.is_dir ? "📁" : "🎮",
-                                        " ",
-                                        entry.name),
-                                    window.SP_REACT.createElement("div", { style: { fontSize: "0.75em", opacity: 0.75, wordBreak: "break-all" } }, entry.path),
-                                    window.SP_REACT.createElement("div", { style: { fontSize: "0.72em", opacity: 0.6, marginTop: "3px" } },
-                                        entry.is_dir ? "Folder" : "Windows executable",
-                                        entry.is_symlink ? " • Symlink" : "",
-                                        entry.is_hidden ? " • Hidden" : ""))));
-                        })))),
-                selectedPath && (window.SP_REACT.createElement("div", { style: {
-                        marginTop: "12px",
-                        padding: "10px",
-                        borderRadius: "4px",
-                        backgroundColor: "rgba(76, 175, 80, 0.14)",
-                        border: "1px solid rgba(76, 175, 80, 0.35)",
-                        fontSize: "0.82em",
-                        wordBreak: "break-all"
-                    } },
-                    "Selected executable: ",
-                    selectedPath))))));
-    };
-    return (window.SP_REACT.createElement(DFL.ConfirmModal, { strTitle: "Choose exe path", strDescription: renderDescription(), strOKButtonText: "Use Selected exe", strCancelButtonText: "Cancel", onOK: handleConfirm, onCancel: handleCancel, bOKDisabled: loading || !!error || !selectedPath }));
-};
-
-const checkFGModPath = callable("check_fgmod_path");
-const runInstallFGMod = callable("run_install_fgmod");
-const runManualPatch = callable("manual_patch_directory");
-const runManualUnpatch = callable("manual_unpatch_directory");
-const checkReShadePath = callable("check_reshade_path");
-const runInstallReShade = callable("run_install_reshade");
-const installReShadeForManualExe = callable("install_reshade_for_heroic_game");
-const uninstallReShadeForManualExe = callable("uninstall_reshade_for_heroic_game");
-const detectGameApi = callable("detect_heroic_game_api");
-const logError = callable("log_error");
-const getDirectoryForPath = (path) => {
-    const separatorIndex = path.lastIndexOf("/");
-    return separatorIndex > 0 ? path.slice(0, separatorIndex) : path;
-};
-const getFilenameForPath = (path) => path.split("/").pop() || "Unknown.exe";
-const ChooseExePathSection = ({ exePath, setExePath, fsr4Variant }) => {
-    const [applyingBoth, setApplyingBoth] = SP_REACT.useState(false);
-    const [removingBoth, setRemovingBoth] = SP_REACT.useState(false);
-    const [launchCmd, setLaunchCmd] = SP_REACT.useState("");
-    const [copyFailed, setCopyFailed] = SP_REACT.useState(false);
-    const [result, setResult] = SP_REACT.useState("");
-    const handleChooseExecutablePath = async () => {
-        try {
-            const startPath = exePath ? getDirectoryForPath(exePath) : "/home/deck";
-            const modalResult = DFL.showModal(window.SP_REACT.createElement(ExecutablePathBrowserModal, { initialPath: startPath, onConfirm: (path) => {
-                    // Picking the .exe automatically stores its folder as the OptiScaler target.
-                    setExePath(path);
-                    setResult("");
-                }, onCancel: () => {
-                    // Modal closes through closeModal.
-                }, closeModal: () => modalResult.Close() }));
-        }
-        catch (error) {
-            setResult(`Error choosing executable: ${error instanceof Error ? error.message : String(error)}`);
-            await logError(`ChooseExePathSection -> handleChooseExecutablePath: ${String(error)}`);
-        }
-    };
-    const handleApplyBoth = async () => {
-        if (!exePath) {
-            setResult("Please choose a game .exe first.");
+    const handleUpdate = async () => {
+        const backend = window.DeckyBackend;
+        if (!backend?.call) {
+            setMessage(`❌ This Decky Loader can't install it from here. In Decky's settings, install the plugin from URL:\n${info.url}`);
             return;
         }
         try {
-            setApplyingBoth(true);
-            setLaunchCmd("");
-            setCopyFailed(false);
-            const executableDirectory = getDirectoryForPath(exePath);
-            const selectedFilename = getFilenameForPath(exePath);
-            // 1. Make sure both engines are installed.
-            setResult("Checking engines…");
-            const fg = await checkFGModPath();
-            if (!fg.exists) {
-                setResult("Installing OptiScaler engine…");
-                const fgInstall = await runInstallFGMod(fsr4Variant);
-                if (fgInstall.status !== "success") {
-                    setResult(`❌ Failed to install OptiScaler: ${fgInstall.message || "Unknown error"}`);
-                    return;
-                }
-            }
-            const rs = await checkReShadePath();
-            if (!rs.exists) {
-                setResult("Installing ReShade engine…");
-                const rsInstall = await runInstallReShade(false, false, []);
-                if (rsInstall.status !== "success") {
-                    setResult(`❌ Failed to install ReShade: ${rsInstall.message || "Unknown error"}`);
-                    return;
-                }
-            }
-            // 2. Frame Generation on winmm.dll (coexists with ReShade on the graphics DLL).
-            setResult(`Applying Frame Generation to ${selectedFilename}…`);
-            const patch = await runManualPatch(executableDirectory, "winmm.dll", fsr4Variant);
-            if (patch.status !== "success") {
-                setResult(`❌ Failed to apply Frame Generation: ${patch.message || "Unknown error"}`);
-                return;
-            }
-            // 3. ReShade with the best detected API for this executable.
-            setResult("Detecting best ReShade API…");
-            const detection = await detectGameApi(executableDirectory);
-            const reshadeApi = detection.status === "success" && detection.api ? detection.api : "dxgi";
-            setResult(`Applying ReShade (${reshadeApi.toUpperCase()}) to ${selectedFilename}…`);
-            const reshade = await installReShadeForManualExe(executableDirectory, reshadeApi, exePath);
-            if (reshade.status !== "success") {
-                setResult(`❌ Failed to apply ReShade: ${reshade.message || "Unknown error"}`);
-                return;
-            }
-            // 4. Build the combined launch command for non-Steam launchers and copy it.
-            const cmd = buildLaunchCommand([reshadeApi, "winmm.dll"], true);
-            setLaunchCmd(cmd);
-            const copied = await autoCopyLaunchCommand(cmd);
-            setCopyFailed(!copied);
-            setResult(`✅ FrameGen (winmm) + ReShade (${reshadeApi.toUpperCase()}) applied to ${selectedFilename}.\n\n` +
-                `Launch command:\n${cmd}\n\n` +
-                (copied
-                    ? "Launch options copied automatically — paste them into your launcher.\n"
-                    : '⚠️ Could not copy automatically. Press "Copy launch options" below.\n') +
-                "Press HOME in-game for the ReShade overlay or INSERT for OptiScaler.");
+            setMessage("Confirm in Decky's prompt. The plugin reloads once the update is installed.");
+            await backend.call("utilities/install_plugin", info.url, info.plugin_name || manifest.name, info.latest_version, info.sha256 || "", 2);
         }
-        catch (error) {
-            setResult(`Error: ${error instanceof Error ? error.message : String(error)}`);
-            await logError(`ChooseExePathSection -> handleApplyBoth: ${String(error)}`);
-        }
-        finally {
-            setApplyingBoth(false);
+        catch (e) {
+            setMessage(`❌ ${String(e)}`);
+            await logError$4(`PluginUpdateSection -> install: ${String(e)}`);
         }
     };
-    const handleRemoveBoth = async () => {
-        if (!exePath) {
-            setResult("Please choose a game .exe first.");
-            return;
-        }
-        try {
-            setRemovingBoth(true);
-            setLaunchCmd("");
-            setCopyFailed(false);
-            const executableDirectory = getDirectoryForPath(exePath);
-            const selectedFilename = getFilenameForPath(exePath);
-            setResult(`Removing FrameGen + ReShade from ${selectedFilename}…`);
-            const unpatch = await runManualUnpatch(executableDirectory);
-            const reshadeRemove = await uninstallReShadeForManualExe(executableDirectory);
-            const okOpti = unpatch.status === "success";
-            const okReshade = reshadeRemove.status === "success";
-            if (okOpti && okReshade) {
-                setResult(`✅ Frame Generation + ReShade removed from ${selectedFilename}.\n\n` +
-                    "Remember to clear the launch command from your launcher.");
-            }
-            else {
-                setResult("⚠️ Partial removal:\n" +
-                    `• Frame Generation: ${okOpti ? "removed" : unpatch.message || "failed"}\n` +
-                    `• ReShade: ${okReshade ? "removed" : reshadeRemove.message || "failed"}`);
-            }
-        }
-        catch (error) {
-            setResult(`Error: ${error instanceof Error ? error.message : String(error)}`);
-            await logError(`ChooseExePathSection -> handleRemoveBoth: ${String(error)}`);
-        }
-        finally {
-            setRemovingBoth(false);
-        }
-    };
-    return (window.SP_REACT.createElement(DFL.PanelSection, { title: "Choose exe/folder path" },
+    const statusLine = !info
+        ? "Checking for updates…"
+        : info.status !== "success"
+            ? `⚠️ ${info.message || "Could not check for updates."}`
+            : info.update_available
+                ? `🟡 v${info.installed_version} installed — v${info.latest_version} available`
+                : `🟢 v${info.installed_version || "?"} installed (latest)`;
+    const size = info?.size ? ` (${Math.round(info.size / 1048576)} MB)` : "";
+    return (window.SP_REACT.createElement(DFL.PanelSection, { title: "Plugin Update" },
         window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement("div", { style: { fontSize: "0.9em", opacity: 0.8 } },
-                "Patch any Windows game executable manually. This is ideal for non-Steam launchers and custom setups.",
-                " ",
-                "Browse to the game folder first, then pick the `.exe`.")),
+            window.SP_REACT.createElement("div", { style: { fontSize: "0.85em" } }, statusLine)),
+        info?.update_available && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+            window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleUpdate }, `⬆️ Update to v${info.latest_version}${size}`))),
         window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleChooseExecutablePath }, "\uD83D\uDCC1 Choose exe/folder path")),
-        exePath && (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
-            window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement("div", { style: {
-                        padding: "8px",
-                        backgroundColor: "rgba(255, 255, 255, 0.05)",
-                        borderRadius: "4px",
-                        border: "1px solid rgba(255, 255, 255, 0.1)",
-                        fontSize: "0.85em"
-                    } },
-                    window.SP_REACT.createElement("div", { style: { fontWeight: "bold", marginBottom: "4px" } },
-                        "Selected: ",
-                        getFilenameForPath(exePath)),
-                    window.SP_REACT.createElement("div", { style: { opacity: 0.75, wordBreak: "break-all" } },
-                        "Path: ",
-                        exePath))),
-            window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleApplyBoth, disabled: applyingBoth || removingBoth }, applyingBoth ? "Applying…" : "Apply both (FrameGen + ReShade)")),
-            window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleRemoveBoth, disabled: applyingBoth || removingBoth }, removingBoth ? "Removing…" : "🗑️ Remove All")))),
-        result && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement("div", { style: {
-                    padding: "12px",
-                    marginTop: "16px",
-                    backgroundColor: "var(--decky-selected-ui-bg)",
-                    borderRadius: "4px",
-                    whiteSpace: "pre-wrap"
-                } }, result))),
-        copyFailed && window.SP_REACT.createElement(CopyLaunchButton, { command: launchCmd })));
-};
-
+            window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: () => void refresh(true), disabled: checking }, checking ? "Checking…" : "🔄 Check for updates")),
+        message && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+            window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", whiteSpace: "pre-wrap", wordBreak: "break-all", opacity: 0.85 } }, message)))));
+}
 function MainContent() {
     const [pathExists, setPathExists] = SP_REACT.useState(null);
     const [fgmodInfo, setFgmodInfo] = SP_REACT.useState(null);
     const [advanced, setAdvanced] = SP_REACT.useState(false);
     // FSR4 runtime is chosen once in the top section and shared with the advanced OptiScaler controls.
     const [fsr4Variant, setFsr4Variant] = SP_REACT.useState(DEFAULT_FSR4_VARIANT);
-    // The Steam game is also picked once at the top and reused by the advanced sections.
+    // The game is also picked once at the top and reused by the advanced sections.
     const [selectedAppid, setSelectedAppid] = SP_REACT.useState("");
     const [detectedSteamTarget, setDetectedSteamTarget] = SP_REACT.useState(null);
-    // Non-Steam target executable picked in the advanced "Choose exe/folder path" section.
-    const [exePath, setExePath] = SP_REACT.useState("");
     SP_REACT.useEffect(() => {
         const checkPath = async () => {
             const result = await safeAsyncOperation(async () => await checkFGModPath$1(), 'MainContent -> checkPath');
@@ -2491,19 +1795,16 @@ function MainContent() {
         const intervalId = setInterval(checkPath, TIMEOUTS.pathCheck);
         return () => clearInterval(intervalId);
     }, []);
-    // A Steam game chosen at the top switches the advanced area into "Steam" mode;
-    // otherwise the advanced area targets a manually chosen .exe (non-Steam games).
-    const steamMode = Boolean(selectedAppid);
-    const sharedTargetExePath = steamMode ? (detectedSteamTarget?.target_executable || "") : exePath;
+    const sharedTargetExePath = detectedSteamTarget?.target_executable || "";
     return (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
         window.SP_REACT.createElement(SteamGameCombinedSection, { fsr4Variant: fsr4Variant, setFsr4Variant: setFsr4Variant, appid: selectedAppid, setAppid: setSelectedAppid, detectedTarget: detectedSteamTarget, setDetectedTarget: setDetectedSteamTarget }),
         window.SP_REACT.createElement(DFL.PanelSection, null,
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.ToggleField, { label: steamMode ? "Steam Controls" : "Advanced controls", description: "Per-engine install, proxy DLL, ReShade shaders/AutoHDR, and manual patching.", checked: advanced, onChange: setAdvanced }))),
+                window.SP_REACT.createElement(DFL.ToggleField, { label: "Advanced controls", description: "Per-engine install, proxy DLL, ReShade shaders/AutoHDR.", checked: advanced, onChange: setAdvanced }))),
         advanced && (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
-            !steamMode && (window.SP_REACT.createElement(ChooseExePathSection, { exePath: exePath, setExePath: setExePath, fsr4Variant: fsr4Variant })),
             window.SP_REACT.createElement(OptiScalerControls, { pathExists: pathExists, setPathExists: setPathExists, fgmodInfo: fgmodInfo, fsr4Variant: fsr4Variant, appid: selectedAppid, targetExePath: sharedTargetExePath }),
-            window.SP_REACT.createElement(ReShadeInstallerSection, { appid: selectedAppid, targetExePath: sharedTargetExePath })))));
+            window.SP_REACT.createElement(ReShadeInstallerSection, { appid: selectedAppid, targetExePath: sharedTargetExePath }))),
+        window.SP_REACT.createElement(PluginUpdateSection, null)));
 }
 var index = definePlugin(() => ({
     name: "Jedi ReFrameShade4All",
