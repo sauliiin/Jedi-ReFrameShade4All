@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.16
+
+### Added
+- **Proton-CachyOS FSR4** toggle above the upscaler runtime picker. It checks which Proton Steam uses for the game (`CompatToolMapping` in `config/config.vdf`, else the global default) and, when it is Proton-CachyOS, adds `FSR4_UPGRADE=1` to the launch options (turning it off removes only that). Nothing is downloaded or installed. Patch All keeps `FSR4_UPGRADE=1` in the launch options it sets while the toggle is on. Backend: `get_cachyos_fsr4_status`.
+
+### Fixed
+- **Plugin Update** did nothing when pressed: Decky's install prompt opens in the main window and never showed from the Quick Access menu. The plugin now updates itself (`install_plugin_update`): it downloads the release zip, checks it against GitHub's SHA256, fetches missing remote binaries into `bin/` (each checked against its SHA256), checks every changed file can be written before writing any (`main.py` last), then asks Decky to reload it.
+
 ## 1.1.15
 
 ### Added

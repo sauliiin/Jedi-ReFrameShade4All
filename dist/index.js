@@ -396,6 +396,16 @@ const getCombinedGameStatus$1 = callable("get_combined_game_status");
 const resolveSteamReShadeTargetForPatchAll = callable("resolve_steam_reshade_target");
 const patchAllGame = callable("patch_all_game");
 const unpatchAllGame = callable("unpatch_all_game");
+const getCachyosFsr4Status = callable("get_cachyos_fsr4_status");
+// Adds/removes FSR4_UPGRADE=1 (Proton-CachyOS) while keeping the rest of the launch options.
+function withFsr4Upgrade(opts, enabled) {
+    const rest = (opts || "").replace(/(^|\s)FSR4_UPGRADE=\S*/g, " ").trim().replace(/\s+/g, " ");
+    if (!enabled)
+        return rest === "%command%" ? "" : rest;
+    if (!rest)
+        return "FSR4_UPGRADE=1 %command%";
+    return rest.includes("%command%") ? `FSR4_UPGRADE=1 ${rest}` : `FSR4_UPGRADE=1 %command% ${rest}`;
+}
 const logError$4 = callable("log_error");
 const FSR4_OPTIONS = [
     { data: "rdna23-int8", label: "4.0.2c | RDNA2/3 Compatibility (recommended)", hint: "Bundled FSR4 INT8 4.0.2c runtime. Safest choice for Steam Deck and other RDNA2/3 GPUs." },
@@ -617,6 +627,34 @@ function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid
     const [busy, setBusy] = SP_REACT.useState(false);
     const [detectingTarget, setDetectingTarget] = SP_REACT.useState(false);
     const [result, setResult] = SP_REACT.useState("");
+    const [cachyos, setCachyos] = SP_REACT.useState(null);
+    const [fsr4Upgrade, setFsr4Upgrade] = SP_REACT.useState(false);
+    const loadCachyos = async (id) => {
+        setCachyos(null);
+        try {
+            const [r, current] = await Promise.all([getCachyosFsr4Status(id), getLaunchOptions(parseInt(id, 10))]);
+            setCachyos(r);
+            setFsr4Upgrade(/(^|\s)FSR4_UPGRADE=1(\s|$)/.test(current));
+        }
+        catch (e) {
+            await logError$4(`SteamGameCombinedSection -> cachyos: ${String(e)}`);
+        }
+    };
+    const handleFsr4UpgradeToggle = async (enabled) => {
+        if (!appid)
+            return;
+        try {
+            const current = await getLaunchOptions(parseInt(appid, 10));
+            const next = withFsr4Upgrade(current, enabled);
+            SteamClient.Apps.SetAppLaunchOptions(parseInt(appid, 10), next);
+            setFsr4Upgrade(enabled);
+            setResult(`✅ Launch options: ${next || "(empty)"}`);
+        }
+        catch (e) {
+            setResult(`❌ ${String(e)}`);
+            await logError$4(`SteamGameCombinedSection -> fsr4Upgrade: ${String(e)}`);
+        }
+    };
     const refreshEngines = async () => {
         try {
             setEngines(await getEnginesStatus());
@@ -685,6 +723,8 @@ function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid
             const current = await getLaunchOptions(parseInt(appid, 10));
             const r = await patchAllGame(appid, fsr4Variant, addon, current, detectedTarget?.target_executable || "");
             if (r.status === "success") {
+                if (r.launch_options && fsr4Upgrade)
+                    r.launch_options = withFsr4Upgrade(r.launch_options, true);
                 if (r.launch_options) {
                     try {
                         SteamClient.Apps.SetAppLaunchOptions(parseInt(appid, 10), r.launch_options);
@@ -759,6 +799,7 @@ function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid
                     setDetectedTarget(null);
                     setResult("");
                     void loadStatus(o.data);
+                    void loadCachyos(o.data);
                 }, strDefaultLabel: "Select a game..." })),
         status && appid && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", padding: "8px", backgroundColor: "rgba(255,255,255,0.05)", borderRadius: "4px" } },
@@ -776,6 +817,12 @@ function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid
         status && appid && status.helixsr && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: () => void loadStatus(appid), disabled: busy }, "\ud83d\udd04 Check HelixSR again"))),
         appid && (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
+            window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+                window.SP_REACT.createElement(DFL.ToggleField, { label: "Proton-CachyOS FSR4", description: !cachyos
+                        ? "Checking the game's Proton…"
+                        : cachyos.supported
+                            ? `Adds FSR4_UPGRADE=1 to launch options (${cachyos.tool_label}).`
+                            : `Needs Proton-CachyOS set for this game${cachyos.tool_label ? ` (now: ${cachyos.tool_label})` : ""}.`, checked: fsr4Upgrade, disabled: busy || !cachyos || (!cachyos.supported && !fsr4Upgrade), onChange: (v) => void handleFsr4UpgradeToggle(v) })),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.DropdownItem, { label: "Upscaler runtime (FSR4 / HelixSR)", description: FSR4_OPTIONS.find((o) => o.data === fsr4Variant)?.hint, rgOptions: FSR4_OPTIONS, selectedOption: fsr4Variant, onChange: (o) => setFsr4Variant(o.data), strDefaultLabel: "Upscaler runtime" })),
             fsr4Variant === "helixsr" && window.SP_REACT.createElement(HelixSRPanel, null),
@@ -1720,11 +1767,13 @@ function ReShadeInstallerSection({ appid, targetExePath = "" }) {
 }
 
 const getPluginUpdateStatus = callable("get_plugin_update_status");
-// Plugin self-update: compares this plugin with its newest GitHub release and hands the
-// release zip to Decky's own installer, which asks to confirm, installs it and reloads the plugin.
+const installPluginUpdate = callable("install_plugin_update");
+// Plugin self-update: compares this plugin with its newest GitHub release; the backend writes the
+// release over the plugin and Decky reloads it. (Decky's own install prompt didn't show from the Quick Access menu.)
 function PluginUpdateSection() {
     const [info, setInfo] = SP_REACT.useState(null);
     const [checking, setChecking] = SP_REACT.useState(false);
+    const [updating, setUpdating] = SP_REACT.useState(false);
     const [message, setMessage] = SP_REACT.useState("");
     const refresh = async (force = false) => {
         try {
@@ -1742,18 +1791,29 @@ function PluginUpdateSection() {
         void refresh();
     }, []);
     const handleUpdate = async () => {
-        const backend = window.DeckyBackend;
-        if (!backend?.call) {
-            setMessage(`❌ This Decky Loader can't install it from here. In Decky's settings, install the plugin from URL:\n${info.url}`);
-            return;
-        }
         try {
-            setMessage("Confirm in Decky's prompt. The plugin reloads once the update is installed.");
-            await backend.call("utilities/install_plugin", info.url, info.plugin_name || manifest.name, info.latest_version, info.sha256 || "", 2);
+            setUpdating(true);
+            setMessage(`Downloading v${info.latest_version}… this can take a few minutes.`);
+            const r = await installPluginUpdate();
+            if (r.status !== "success") {
+                setMessage(`❌ ${r.message || "Update failed."}\n\nOr install it in Decky's settings from URL:\n${info.url}`);
+                return;
+            }
+            setMessage(`✅ v${r.version} installed. Reloading the plugin…`);
+            try {
+                await window.DeckyBackend.call("loader/reload_plugin", r.plugin_name || manifest.name);
+            }
+            catch (e) {
+                setMessage(`✅ v${r.version} installed. Restart the Steam Deck (or Decky) to load it.`);
+                await logError$4(`PluginUpdateSection -> reload: ${String(e)}`);
+            }
         }
         catch (e) {
             setMessage(`❌ ${String(e)}`);
             await logError$4(`PluginUpdateSection -> install: ${String(e)}`);
+        }
+        finally {
+            setUpdating(false);
         }
     };
     const statusLine = !info
@@ -1768,9 +1828,9 @@ function PluginUpdateSection() {
         window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement("div", { style: { fontSize: "0.85em" } }, statusLine)),
         info?.update_available && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleUpdate }, `⬆️ Update to v${info.latest_version}${size}`))),
+            window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleUpdate, disabled: updating }, updating ? "Updating…" : `⬆️ Update to v${info.latest_version}${size}`))),
         window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: () => void refresh(true), disabled: checking }, checking ? "Checking…" : "🔄 Check for updates")),
+            window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: () => void refresh(true), disabled: checking || updating }, checking ? "Checking…" : "🔄 Check for updates")),
         message && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", whiteSpace: "pre-wrap", wordBreak: "break-all", opacity: 0.85 } }, message)))));
 }

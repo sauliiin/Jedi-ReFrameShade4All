@@ -5454,6 +5454,73 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin):
             decky.logger.warning(f"[JediReFrameShade] manual merge failed: {exc}")
         return result
 
+    # ── Proton-CachyOS FSR4_UPGRADE: only checks the game's compat tool, never downloads it ──
+    def _vdf_block(self, text: str, key: str) -> str:
+        """Body of the first `"key" { ... }` block in a VDF text (braces balanced)."""
+        match = re.search(r'"' + re.escape(key) + r'"\s*\{', text, re.IGNORECASE)
+        if not match:
+            return ""
+        depth, start = 1, match.end()
+        for i in range(start, len(text)):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start:i]
+        return ""
+
+    def _compat_tool_for_app(self, appid: str) -> str:
+        """Internal name of the compat tool Steam uses for appid (per-game mapping, else the global default)."""
+        for steam_root in self._steam_root_candidates():
+            config = steam_root / "config" / "config.vdf"
+            if not config.is_file():
+                continue
+            try:
+                mapping = self._vdf_block(config.read_text(encoding="utf-8", errors="replace"), "CompatToolMapping")
+            except OSError:
+                continue
+            if not mapping:
+                continue
+            for key in (str(appid), "0"):
+                name = re.search(r'"' + re.escape(key) + r'"\s*\{[^{}]*?"name"\s*"([^"]*)"', mapping)
+                if name and name.group(1):
+                    return name.group(1)
+        return ""
+
+    def _compat_tool_label(self, tool_name: str) -> str:
+        """display_name of a custom compat tool (compatibilitytools.d), or "" when it isn't installed there."""
+        dirs = [root / "compatibilitytools.d" for root in self._steam_root_candidates()]
+        dirs.append(Path("/usr/share/steam/compatibilitytools.d"))
+        for base in dirs:
+            if not base.is_dir():
+                continue
+            for vdf in base.glob("*/compatibilitytool.vdf"):
+                try:
+                    text = vdf.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                if not re.search(r'"' + re.escape(tool_name) + r'"\s*\{', text):
+                    continue
+                label = re.search(r'"display_name"\s*"([^"]*)"', text)
+                return label.group(1) if label else vdf.parent.name
+        return ""
+
+    async def get_cachyos_fsr4_status(self, appid) -> dict:
+        try:
+            tool = self._compat_tool_for_app(str(appid))
+            label = self._compat_tool_label(tool) if tool else ""
+            supported = "cachyos" in f"{tool} {label}".lower().replace("-", "").replace("_", "")
+            return {
+                "status": "success",
+                "supported": supported,
+                "tool_name": tool,
+                "tool_label": label or tool,
+            }
+        except Exception as exc:
+            decky.logger.warning(f"[JediReFrameShade] cachyos status failed for {appid}: {exc}")
+            return {"status": "error", "supported": False, "message": str(exc)}
+
     async def get_combined_game_status(self, appid) -> dict:
         opti = await self.get_game_status(str(appid))
         directory = None
@@ -5604,6 +5671,83 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin):
             "size": latest["size"],
             "notes": latest["notes"],
         }
+
+    def _apply_plugin_update(self, latest: dict) -> list[str]:
+        """Write the release zip over this plugin. Decky owns the plugin folder itself (only files already
+        in it can be replaced), so nothing is written until every file is known to be writable, the zip
+        matches GitHub's SHA256 and the new package.json's remote binaries are in bin/."""
+        if not latest.get("sha256"):
+            raise RuntimeError("GitHub gave no SHA256 for the release zip.")
+        plugin_dir = Path(decky.DECKY_PLUGIN_DIR)
+        with tempfile.TemporaryDirectory(prefix="jedi-update-") as tmp:
+            archive = Path(tmp) / "plugin.zip"
+            self._download_file(latest["url"], archive)
+            if self._file_sha256(archive) != latest["sha256"]:
+                raise RuntimeError("The downloaded zip doesn't match GitHub's SHA256.")
+            with zipfile.ZipFile(archive) as zf:
+                files = {}
+                for info in zf.infolist():
+                    parts = Path(info.filename).parts[1:]   # drop the zip's top folder
+                    if info.is_dir() or not parts:
+                        continue
+                    if ".." in parts or Path(info.filename).is_absolute():
+                        raise RuntimeError(f"Unsafe path in the zip: {info.filename}")
+                    data = zf.read(info)
+                    target = plugin_dir.joinpath(*parts)
+                    if target.is_file() and self._file_sha256(target) == hashlib.sha256(data).hexdigest():
+                        continue
+                    files[target] = data
+            blocked = [
+                str(path.relative_to(plugin_dir)) for path in files
+                if not (os.access(path, os.W_OK) if path.exists() else os.access(self._existing_parent(path), os.W_OK))
+            ]
+            if blocked:
+                raise RuntimeError("Can't write " + ", ".join(blocked) + ". Install the update from Decky's settings instead.")
+            package = json.loads(files.get(plugin_dir / "package.json") or (plugin_dir / "package.json").read_bytes())
+            self._fetch_remote_binaries(plugin_dir / "bin", package.get("remote_binary") or [])
+            # main.py last: if anything fails before it, the plugin that runs is still the old one.
+            for path in sorted(files, key=lambda p: (p == plugin_dir / "main.py", p == plugin_dir / "dist" / "index.js")):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(files[path])
+            return [str(path.relative_to(plugin_dir)) for path in files]
+
+    def _existing_parent(self, path: Path) -> Path:
+        while not path.exists():
+            path = path.parent
+        return path
+
+    def _fetch_remote_binaries(self, bin_dir: Path, binaries: list) -> None:
+        """What Decky's installer does after unzipping: every remote binary in bin/, checked against its SHA256."""
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        for binary in binaries:
+            target = bin_dir / binary["name"]
+            if target.is_file() and self._file_sha256(target) == binary["sha256hash"]:
+                continue
+            part = bin_dir / f".{binary['name']}.part"
+            try:
+                self._download_file(binary["url"], part)
+                if self._file_sha256(part) != binary["sha256hash"]:
+                    raise RuntimeError(f"{binary['name']} doesn't match its SHA256.")
+                os.replace(part, target)
+            finally:
+                part.unlink(missing_ok=True)
+
+    async def install_plugin_update(self) -> dict:
+        installed = self._plugin_installed_version()
+        try:
+            latest = await asyncio.to_thread(self._plugin_latest_release, False)
+            if not latest or not self._is_update_available(installed, latest["version"]):
+                return {"status": "error", "message": "No newer release to install."}
+            changed = await asyncio.to_thread(self._apply_plugin_update, latest)
+            decky.logger.info(f"[JediReFrameShade] plugin updated {installed} -> {latest['version']}: {changed}")
+            return {
+                "status": "success",
+                "plugin_name": getattr(decky, "DECKY_PLUGIN_NAME", "") or "Jedi-ReFrameShade4All",
+                "version": latest["version"],
+            }
+        except Exception as exc:
+            decky.logger.error(f"[JediReFrameShade] plugin update failed: {exc}")
+            return {"status": "error", "message": str(exc)}
 
     # ── One-button "Patch All": install engines if needed + patch both mods ───
     async def get_engines_status(self) -> dict:
