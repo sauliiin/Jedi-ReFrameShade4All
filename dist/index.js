@@ -731,9 +731,9 @@ function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid
             const current = await getLaunchOptions(parseInt(appid, 10));
             const r = await patchAllGame(appid, fsr4Variant, addon, current, detectedTarget?.target_executable || "");
             if (r.status === "success") {
-                if (r.launch_options && fsr4Upgrade)
+                if (r.launch_options && cachyos?.supported && fsr4Upgrade)
                     r.launch_options = withLaunchEnv(r.launch_options, FSR4_UPGRADE_ENV, true);
-                if (r.launch_options && fsr4Indicator)
+                if (r.launch_options && cachyos?.supported && fsr4Indicator)
                     r.launch_options = withLaunchEnv(r.launch_options, FSR4_INDICATOR_ENV, true);
                 if (r.launch_options) {
                     try {
@@ -827,16 +827,11 @@ function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid
         status && appid && status.helixsr && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: () => void loadStatus(appid), disabled: busy }, "\ud83d\udd04 Check HelixSR again"))),
         appid && (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
-            window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.ToggleField, { label: "Proton-CachyOS FSR4", description: !cachyos
-                        ? "Checking the game's Proton…"
-                        : cachyos.supported
-                            ? `Adds FSR4_UPGRADE=1 to launch options (${cachyos.tool_label}).`
-                            : `Needs Proton-CachyOS set for this game${cachyos.tool_label ? ` (now: ${cachyos.tool_label})` : ""}.`, checked: fsr4Upgrade, disabled: busy || !cachyos || (!cachyos.supported && !fsr4Upgrade), onChange: (v) => void handleLaunchEnvToggle(FSR4_UPGRADE_ENV, v, setFsr4Upgrade) })),
-            window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.ToggleField, { label: "Show FSR watermark", description: cachyos && !cachyos.supported
-                        ? "Needs Proton-CachyOS set for this game."
-                        : "Adds PROTON_FSR4_INDICATOR=1: AMD's FSR watermark, top left, when FSR4 runs.", checked: fsr4Indicator, disabled: busy || !cachyos || (!cachyos.supported && !fsr4Indicator), onChange: (v) => void handleLaunchEnvToggle(FSR4_INDICATOR_ENV, v, setFsr4Indicator) })),
+            // Only for games Steam runs with Proton-CachyOS.
+            cachyos?.supported && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+                window.SP_REACT.createElement(DFL.ToggleField, { label: "Proton-CachyOS FSR4", description: `Adds FSR4_UPGRADE=1 to launch options (${cachyos.tool_label}).`, checked: fsr4Upgrade, disabled: busy, onChange: (v) => void handleLaunchEnvToggle(FSR4_UPGRADE_ENV, v, setFsr4Upgrade) }))),
+            cachyos?.supported && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+                window.SP_REACT.createElement(DFL.ToggleField, { label: "Show FSR watermark", description: "Adds PROTON_FSR4_INDICATOR=1: AMD's FSR watermark, top left, when FSR4 runs.", checked: fsr4Indicator, disabled: busy, onChange: (v) => void handleLaunchEnvToggle(FSR4_INDICATOR_ENV, v, setFsr4Indicator) }))),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.DropdownItem, { label: "Upscaler runtime (FSR4 / HelixSR)", description: FSR4_OPTIONS.find((o) => o.data === fsr4Variant)?.hint, rgOptions: FSR4_OPTIONS, selectedOption: fsr4Variant, onChange: (o) => setFsr4Variant(o.data), strDefaultLabel: "Upscaler runtime" })),
             fsr4Variant === "helixsr" && window.SP_REACT.createElement(HelixSRPanel, null),

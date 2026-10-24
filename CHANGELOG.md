@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.18
+
+### Changed
+- The **Proton-CachyOS FSR4** and **Show FSR watermark** toggles only show for games Steam runs with Proton-CachyOS. They used to show disabled, with a "Needs Proton-CachyOS" note, for every other game. Patch All only keeps `FSR4_UPGRADE=1` / `PROTON_FSR4_INDICATOR=1` for Proton-CachyOS games.
+
 ## 1.1.17
 
 ### Added
