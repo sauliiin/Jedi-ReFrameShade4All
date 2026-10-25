@@ -250,6 +250,58 @@ HELIXSR_DIRNAME = "fgmod-helixsr"
 HELIXSR_META_FILENAME = ".jedi-helixsr.json"
 HELIXSR_GAME_SUBDIR = "HelixSR"
 HELIXSR_GAME_MARKER = "jedi-helixsr.json"
+
+# Proton-CachyOS takes an absolute file path in PROTON_FSR4_UPGRADE and copies that amdxcffx64.dll
+# into the prefix's system32 instead of downloading one. The Lite DLL is kept here for it.
+PROTON_FSR4_LITE_DIRNAME = "fgmod-proton-fsr4"
+
+# Releases up to cachyos-11.0-20261015 predate that (protonfixes ef718b0): they take the path as a version
+# name, find none and download 4.1.1. The plugin installs a copy of the newest release into
+# compatibilitytools.d with protonfixes/upscalers.py patched to take the path.
+PROTON_CACHYOS_RELEASES_API = "https://api.github.com/repos/CachyOS/proton-cachyos/releases?per_page=10"
+PROTON_CACHYOS_ASSET_RE = re.compile(r"^(proton-cachyos-[A-Za-z0-9._-]+-x86_64)\.tar\.xz$")
+PROTON_LITE_SUFFIX = "-jedi-fsr4lite"
+PROTON_LITE_MARKER = "# Jedi-ReFrameShade4All: local dll"
+PROTON_LITE_UPSCALER_PATCHES = (
+    (
+        "def __get_dll_manifest(upscaler: str, version: str = 'default') -> dict:\n"
+        "    dlls = __get_manifest()[upscaler]\n",
+        "def __get_dll_manifest(upscaler: str, version: str = 'default') -> dict:\n"
+        f"    {PROTON_LITE_MARKER}: an absolute file path as the version uses that file.\n"
+        "    local = Path(version)\n"
+        "    if local.is_absolute() and local.is_file():\n"
+        "        with local.open('rb') as local_fd:\n"
+        "            local_md5 = hashlib.md5(local_fd.read()).hexdigest().upper()\n"
+        "        return {\n"
+        "            'version': f'local-{local_md5}',\n"
+        "            'download_url': str(local),\n"
+        "            'file_description': upscaler,\n"
+        "            'is_dev_file': False,\n"
+        "            'is_bundle': False,\n"
+        "            'md5_hash': local_md5,\n"
+        "            'zip_md5_hash': local_md5,\n"
+        "        }\n"
+        "    dlls = __get_manifest()[upscaler]\n",
+    ),
+    (
+        "def __download_extract_zip(item: dict, cache: Path, dst: Path) -> None:\n",
+        "def __download_extract_zip(item: dict, cache: Path, dst: Path) -> None:\n"
+        f"    {PROTON_LITE_MARKER}: copied as is.\n"
+        "    if Path(item['download_url']).is_absolute():\n"
+        "        dst.parent.mkdir(parents=True, exist_ok=True)\n"
+        "        with Path(item['download_url']).open('rb') as src_fd, dst.open('wb') as dst_fd:\n"
+        "            dst_fd.write(src_fd.read())\n"
+        "        return\n",
+    ),
+    (
+        "    if 'fsr4' in upscaler_replace:\n"
+        "        pass\n",
+        "    if 'fsr4' in upscaler_replace:\n"
+        f"        {PROTON_LITE_MARKER}: turns FSR4_UPGRADE on, as newer releases do.\n"
+        "        if Path(fsr4_version).is_absolute():\n"
+        "            env.setdefault('FSR4_UPGRADE', '1')\n",
+    ),
+)
 HELIXSR_DLL_FFX = "amd_fidelityfx_dx12.dll"   # up to 1.4 and from 1.7: an FSR 3.1 replacement
 HELIXSR_DLL_NGX = "nvngx.dll"                 # 1.5/1.6 (withdrawn): a DLSS replacement, not supported here
 HELIXSR_OUT_SUBDIR = "HelixSR-fsrfg"          # 2.0+: HelixSR's DLL (and what the setup builds) is in this folder
@@ -5488,8 +5540,8 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin):
                     return name.group(1)
         return ""
 
-    def _compat_tool_label(self, tool_name: str) -> str:
-        """display_name of a custom compat tool (compatibilitytools.d), or "" when it isn't installed there."""
+    def _compat_tool_vdf(self, tool_name: str) -> tuple[Path, str] | None:
+        """(compatibilitytool.vdf, its text) of a custom compat tool, or None when it isn't installed there."""
         dirs = [root / "compatibilitytools.d" for root in self._steam_root_candidates()]
         dirs.append(Path("/usr/share/steam/compatibilitytools.d"))
         for base in dirs:
@@ -5500,26 +5552,200 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin):
                     text = vdf.read_text(encoding="utf-8", errors="replace")
                 except OSError:
                     continue
-                if not re.search(r'"' + re.escape(tool_name) + r'"\s*\{', text):
-                    continue
-                label = re.search(r'"display_name"\s*"([^"]*)"', text)
-                return label.group(1) if label else vdf.parent.name
-        return ""
+                # Proton-CachyOS puts a `// Internal name of this tool` comment before the brace.
+                if re.search(r'"' + re.escape(tool_name) + r'"\s*(?://[^\n]*\s*)?\{', text):
+                    return vdf, text
+        return None
+
+    def _compat_tool_label(self, tool_name: str) -> str:
+        """display_name of a custom compat tool (compatibilitytools.d), or "" when it isn't installed there."""
+        found = self._compat_tool_vdf(tool_name)
+        if not found:
+            return ""
+        label = re.search(r'"display_name"\s*"([^"]*)"', found[1])
+        return label.group(1) if label else found[0].parent.name
+
+    def _proton_takes_dll_path(self, tool_dir: Path) -> bool:
+        """True when this Proton's protonfixes copies a DLL given by path in PROTON_FSR4_UPGRADE."""
+        try:
+            text = (tool_dir / "protonfixes" / "upscalers.py").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return False
+        return "__get_dll_manifest_from_path" in text or PROTON_LITE_MARKER in text
+
+    def _proton_lite_installs(self) -> list[Path]:
+        found = []
+        for root in self._steam_root_candidates():
+            base = root / "compatibilitytools.d"
+            if base.is_dir():
+                found += [d for d in base.iterdir() if d.is_dir() and d.name.endswith(PROTON_LITE_SUFFIX)]
+        return sorted({d.resolve(): d for d in found}.values())
 
     async def get_cachyos_fsr4_status(self, appid) -> dict:
         try:
             tool = self._compat_tool_for_app(str(appid))
+            found = self._compat_tool_vdf(tool) if tool else None
             label = self._compat_tool_label(tool) if tool else ""
             supported = "cachyos" in f"{tool} {label}".lower().replace("-", "").replace("_", "")
+            lite = self._proton_lite_installs()
+            previous = self._read_json_file(self._proton_lite_previous_file()).get(str(appid))
             return {
                 "status": "success",
                 "supported": supported,
                 "tool_name": tool,
                 "tool_label": label or tool,
+                "takes_dll_path": bool(found) and self._proton_takes_dll_path(found[0].parent),
+                "lite_tool_name": lite[-1].name if lite else None,
+                "lite_proton": self._compat_tool_label(lite[-1].name) or lite[-1].name if lite else None,
+                "previous_tool": previous if isinstance(previous, str) else None,
             }
         except Exception as exc:
             decky.logger.warning(f"[JediReFrameShade] cachyos status failed for {appid}: {exc}")
             return {"status": "error", "supported": False, "message": str(exc)}
+
+    async def prepare_cachyos_fsr4_lite(self) -> dict:
+        """Copy the FSR 4.1.2 Lite amdxcffx64.dll to ~/fgmod-proton-fsr4 for PROTON_FSR4_UPGRADE=<path>."""
+        try:
+            name = FSR4_LITE_412_ASSET["name"]
+            src = self._ensure_runtime_binaries([name]) / name
+            if not src.is_file():
+                return {"status": "error", "message": f"Required bundled asset missing: {name}"}
+            self._verify_bundled_asset(src, FSR4_LITE_412_ASSET["sha256"], name)
+            dst_dir = Path(decky.HOME) / PROTON_FSR4_LITE_DIRNAME
+            dst = dst_dir / name
+            if not (dst.is_file() and self._file_sha256(dst).lower() == FSR4_LITE_412_ASSET["sha256"]):
+                dst_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+                self._verify_bundled_asset(dst, FSR4_LITE_412_ASSET["sha256"], name)
+            return {"status": "success", "path": str(dst), "version": FSR4_LITE_412_ASSET["version"]}
+        except Exception as exc:
+            decky.logger.error(f"[JediReFrameShade] prepare_cachyos_fsr4_lite failed: {exc}")
+            return {"status": "error", "message": str(exc)}
+
+    def _proton_cachyos_latest_release(self) -> dict:
+        """Newest published Proton-CachyOS release with an x86_64 tarball and its .sha512sum."""
+        releases = self._request_json(PROTON_CACHYOS_RELEASES_API)
+        if not isinstance(releases, list):
+            raise RuntimeError("Unexpected GitHub releases response")
+        for release in releases:
+            if release.get("draft") or release.get("prerelease"):
+                continue
+            assets = {a.get("name"): a for a in release.get("assets") or []}
+            for name, asset in assets.items():
+                match = PROTON_CACHYOS_ASSET_RE.match(name or "")
+                checksum = assets.get(f"{match.group(1)}.sha512sum") if match else None
+                if match and checksum:
+                    return {
+                        "tag": release.get("tag_name") or match.group(1),
+                        "base": match.group(1),
+                        "url": asset["browser_download_url"],
+                        "size": asset.get("size"),
+                        "sha512_url": checksum["browser_download_url"],
+                    }
+        raise RuntimeError("No Proton-CachyOS release with an x86_64 tarball found on GitHub.")
+
+    def _patch_proton_upscalers(self, tool_dir: Path) -> str:
+        """Makes this Proton's protonfixes take a DLL path. "native" when it already does."""
+        if self._proton_takes_dll_path(tool_dir):
+            return "native"
+        path = tool_dir / "protonfixes" / "upscalers.py"
+        text = path.read_text(encoding="utf-8")
+        for old, new in PROTON_LITE_UPSCALER_PATCHES:
+            if text.count(old) != 1:
+                raise RuntimeError(
+                    "This Proton-CachyOS release's protonfixes changed in a way the plugin hasn't been checked against."
+                )
+            text = text.replace(old, new)
+        path.write_text(text, encoding="utf-8")
+        for cached in (tool_dir / "protonfixes" / "__pycache__").glob("upscalers.*.pyc"):
+            cached.unlink(missing_ok=True)
+        return "patched"
+
+    def _install_proton_lite(self) -> dict:
+        release = self._proton_cachyos_latest_release()
+        roots = [r for r in self._steam_root_candidates() if r.is_dir()]
+        if not roots:
+            raise RuntimeError("Steam folder not found.")
+        base = roots[0] / "compatibilitytools.d"
+        base.mkdir(parents=True, exist_ok=True)
+        name = release["base"] + PROTON_LITE_SUFFIX
+        staging = base / f".{name}.staging"
+        shutil.rmtree(staging, ignore_errors=True)
+        staging.mkdir()
+        try:
+            tarball = staging / f"{release['base']}.tar.xz"
+            decky.logger.info(f"[ProtonLite] downloading {release['tag']} from {release['url']}")
+            self._download_file(release["url"], tarball)
+            if release.get("size") and tarball.stat().st_size != int(release["size"]):
+                raise RuntimeError("Proton-CachyOS download incomplete. Try again.")
+            sums = staging / "sha512sum"
+            self._download_file(release["sha512_url"], sums)
+            expected = sums.read_text(errors="replace").split()[0].lower()
+            digest = hashlib.sha512()
+            with open(tarball, "rb") as fd:
+                for chunk in iter(lambda: fd.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            if digest.hexdigest() != expected:
+                raise RuntimeError("The Proton-CachyOS download doesn't match its SHA512 checksum, so it wasn't used. Try again.")
+            result = subprocess.run(
+                ["tar", "-xJf", str(tarball), "-C", str(staging), "--no-same-owner"],
+                capture_output=True, text=True, check=False,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"Could not extract Proton-CachyOS: {result.stderr.strip() or result.returncode}")
+            tarball.unlink()
+            tool_dir = staging / release["base"]
+            vdf = tool_dir / "compatibilitytool.vdf"
+            if not vdf.is_file():
+                raise RuntimeError("compatibilitytool.vdf not found in the Proton-CachyOS tarball.")
+            patch = self._patch_proton_upscalers(tool_dir)
+            # Its own internal name and label, so it sits next to the stock Proton-CachyOS in Steam.
+            label = release["base"].replace("proton-cachyos-", "Proton-CachyOS ") + " (FSR4 Lite)"
+            text = vdf.read_text(encoding="utf-8", errors="replace")
+            text = re.sub(r'"' + re.escape(release["base"]) + r'"(\s*(?://[^\n]*)?\s*\{)', f'"{name}"\\1', text, count=1)
+            text = re.sub(r'"display_name"\s*"[^"]*"', f'"display_name" "{label}"', text, count=1)
+            if f'"{name}"' not in text:
+                raise RuntimeError("Unexpected compatibilitytool.vdf in the Proton-CachyOS tarball.")
+            vdf.write_text(text, encoding="utf-8")
+            for old in self._proton_lite_installs():
+                shutil.rmtree(old, ignore_errors=True)
+            tool_dir.rename(base / name)
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+        decky.logger.info(f"[ProtonLite] installed {name} ({patch})")
+        return {"status": "success", "tool_name": name, "tool_label": label, "patch": patch}
+
+    async def install_proton_lite(self) -> dict:
+        try:
+            return await asyncio.to_thread(self._install_proton_lite)
+        except Exception as exc:
+            decky.logger.error(f"[ProtonLite] install failed: {exc}")
+            return {"status": "error", "message": str(exc)}
+
+    def _proton_lite_previous_file(self) -> Path:
+        return Path(decky.HOME) / PROTON_FSR4_LITE_DIRNAME / "previous_compat_tools.json"
+
+    async def remember_compat_tool(self, appid, tool_name: str) -> dict:
+        """Keeps the Proton a game had before the Lite toggle switched it, so turning it off puts it back."""
+        try:
+            path = self._proton_lite_previous_file()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            previous = self._read_json_file(path)
+            previous[str(appid)] = str(tool_name or "")
+            self._write_json_file(path, previous)
+            return {"status": "success"}
+        except Exception as exc:
+            decky.logger.error(f"[ProtonLite] remember_compat_tool failed: {exc}")
+            return {"status": "error", "message": str(exc)}
+
+    async def uninstall_proton_lite(self) -> dict:
+        try:
+            for old in self._proton_lite_installs():
+                shutil.rmtree(old)
+            return {"status": "success"}
+        except Exception as exc:
+            decky.logger.error(f"[ProtonLite] uninstall failed: {exc}")
+            return {"status": "error", "message": str(exc)}
 
     async def get_combined_game_status(self, appid) -> dict:
         opti = await self.get_game_status(str(appid))

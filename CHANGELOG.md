@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.1.20
+
+### Added
+- **Proton FSR4 → 4.1.2 Lite** toggle (experimental), between **Proton-CachyOS FSR4** and **Show FSR watermark**, for games Steam runs with Proton-CachyOS: FSR 4.1.2 Lite (`FSR4L-i8`) without OptiScaler. Released Proton-CachyOS (up to `cachyos-11.0-20261015`) ignores a DLL path in `PROTON_FSR4_UPGRADE` and uses 4.1.1, so the toggle installs the newest Proton-CachyOS release (x86_64 tarball, SHA-512 checked) into `compatibilitytools.d` as **Proton-CachyOS … (FSR4 Lite)**, with `protonfixes/upscalers.py` patched to copy the given DLL into the prefix. It installs it only when it isn't there yet. It then sets that Proton for the game (`SteamClient.Apps.SpecifyCompatTool`), copies the bundled FSR 4.1.2 Lite `amdxcffx64.dll` (2.4.0.4370, SHA-256 checked) to `~/fgmod-proton-fsr4/` and adds `FSR4_UPGRADE=1 PROTON_FSR4_UPGRADE=<that path>` to the launch options. The watermark stays its own toggle.
+- A dialog asks to check the game's Proton in **Properties → Compatibility** once the toggle has set it. Steam lists a new Proton only after a restart: the first time the dialog offers **Restart Steam**, and the plugin sets the Proton (and shows the dialog) the next time the game is opened in the panel.
+- Turning the toggle off removes both variables and puts back the game's previous Proton. **Remove Lite Proton** deletes the copy. Patch All keeps the variables while the toggle is on. Backend: `prepare_cachyos_fsr4_lite`, `install_proton_lite`, `uninstall_proton_lite`, `remember_compat_tool`.
+
+### Changed
+- Shorter descriptions for the Proton-CachyOS toggles.
+
+### Fixed
+- The Proton-CachyOS name next to the FSR4 toggle showed the tool's internal name: its `compatibilitytool.vdf` has a comment between the name and the brace, which the lookup didn't allow.
+
 ## 1.1.19
 
 ### Changed

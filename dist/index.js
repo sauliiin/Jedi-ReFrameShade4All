@@ -397,20 +397,60 @@ const resolveSteamReShadeTargetForPatchAll = callable("resolve_steam_reshade_tar
 const patchAllGame = callable("patch_all_game");
 const unpatchAllGame = callable("unpatch_all_game");
 const getCachyosFsr4Status = callable("get_cachyos_fsr4_status");
+const prepareCachyosFsr4Lite = callable("prepare_cachyos_fsr4_lite");
+const installProtonLite = callable("install_proton_lite");
+const uninstallProtonLite = callable("uninstall_proton_lite");
+const rememberCompatTool = callable("remember_compat_tool");
+// Sets the patched Proton-CachyOS for the game once Steam lists it (Steam picks up new tools on restart).
+async function selectLiteProton(appid, status) {
+    if (!status?.lite_tool_name)
+        return null;
+    if (status.tool_name === status.lite_tool_name)
+        return status;
+    const tools = await SteamClient.Apps.GetAvailableCompatTools(parseInt(appid, 10));
+    if (!(tools || []).some((t) => t.strToolName === status.lite_tool_name))
+        return null;
+    await rememberCompatTool(appid, status.tool_name || "");
+    SteamClient.Apps.SpecifyCompatTool(parseInt(appid, 10), status.lite_tool_name);
+    return { ...status, previous_tool: status.tool_name || "", tool_name: status.lite_tool_name, tool_label: status.lite_proton, takes_dll_path: true };
+}
+// Asks the user to check the game's Proton: with any other Proton the Lite DLL isn't loaded.
+function showLiteProtonModal(status) {
+    if (status?.takes_dll_path) {
+        DFL.showModal(window.SP_REACT.createElement(DFL.ConfirmModal, { strTitle: "Check the Proton", strDescription: `Confirm "${status.tool_label}" is selected in the game's Properties → Compatibility.`, strOKButtonText: "Done", bAlertDialog: true }));
+        return;
+    }
+    DFL.showModal(window.SP_REACT.createElement(DFL.ConfirmModal, { strTitle: "Restart Steam", strDescription: `"${status?.lite_proton}" installed. Restart Steam, then reopen this game here.`, strOKButtonText: "Restart Steam", strCancelButtonText: "Later", onOK: () => SteamClient.User.StartRestart(false) }));
+}
 // Proton-CachyOS variables the toggles add as NAME=1.
 const FSR4_UPGRADE_ENV = "FSR4_UPGRADE";
 const FSR4_INDICATOR_ENV = "PROTON_FSR4_INDICATOR";
-// Adds/removes NAME=1 while keeping the rest of the launch options.
-function withLaunchEnv(opts, name, enabled) {
+// Set to the Lite DLL's absolute path: the plugin's patched Proton-CachyOS copies that file into the prefix.
+const PROTON_FSR4_UPGRADE_ENV = "PROTON_FSR4_UPGRADE";
+const FSR4_LITE_DIR = "/fgmod-proton-fsr4/";
+// Adds/removes NAME=value while keeping the rest of the launch options.
+function withLaunchEnv(opts, name, enabled, value = "1") {
     const rest = (opts || "").replace(new RegExp(`(^|\\s)${name}=\\S*`, "g"), " ").trim().replace(/\s+/g, " ");
     if (!enabled)
         return rest === "%command%" ? "" : rest;
     if (!rest)
-        return `${name}=1 %command%`;
-    return rest.includes("%command%") ? `${name}=1 ${rest}` : `${name}=1 %command% ${rest}`;
+        return `${name}=${value} %command%`;
+    return rest.includes("%command%") ? `${name}=${value} ${rest}` : `${name}=${value} %command% ${rest}`;
 }
 function hasLaunchEnv(opts, name) {
     return new RegExp(`(^|\\s)${name}=1(\\s|$)`).test(opts || "");
+}
+// The Lite DLL path in PROTON_FSR4_UPGRADE, or "" when the launch options don't point at it.
+function fsr4LitePathIn(opts) {
+    const m = (opts || "").match(new RegExp(`(?:^|\\s)${PROTON_FSR4_UPGRADE_ENV}=(\\S+)`));
+    return m && m[1].includes(FSR4_LITE_DIR) ? m[1] : "";
+}
+// FSR4_UPGRADE=1 PROTON_FSR4_UPGRADE=<Lite DLL>; "" removes both.
+function withProtonFsr4(opts, dll) {
+    const rest = withLaunchEnv(withLaunchEnv(opts, FSR4_UPGRADE_ENV, false), PROTON_FSR4_UPGRADE_ENV, false);
+    if (!dll)
+        return rest;
+    return withLaunchEnv(withLaunchEnv(rest, PROTON_FSR4_UPGRADE_ENV, true, dll), FSR4_UPGRADE_ENV, true);
 }
 const logError$4 = callable("log_error");
 const FSR4_OPTIONS = [
@@ -636,24 +676,108 @@ function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid
     const [cachyos, setCachyos] = SP_REACT.useState(null);
     const [fsr4Upgrade, setFsr4Upgrade] = SP_REACT.useState(false);
     const [fsr4Indicator, setFsr4Indicator] = SP_REACT.useState(false);
+    const [fsr4LitePath, setFsr4LitePath] = SP_REACT.useState("");
     const loadCachyos = async (id) => {
         setCachyos(null);
         try {
             const [r, current] = await Promise.all([getCachyosFsr4Status(id), getLaunchOptions(parseInt(id, 10))]);
-            setCachyos(r);
+            const litePath = fsr4LitePathIn(current);
+            // Lite on but the game's Proton ignores the DLL path: finish switching it once Steam lists the patched one.
+            const selected = r.supported && litePath && !r.takes_dll_path
+                ? await selectLiteProton(id, r).catch((e) => logError$4(`SteamGameCombinedSection -> selectLiteProton: ${String(e)}`).then(() => null))
+                : null;
+            setCachyos(selected || r);
+            // Switched now that Steam lists the patched Proton (after a restart): ask to check it.
+            if (selected && selected.tool_name !== r.tool_name)
+                showLiteProtonModal(selected);
             setFsr4Upgrade(hasLaunchEnv(current, FSR4_UPGRADE_ENV));
             setFsr4Indicator(hasLaunchEnv(current, FSR4_INDICATOR_ENV));
+            setFsr4LitePath(litePath);
         }
         catch (e) {
             await logError$4(`SteamGameCombinedSection -> cachyos: ${String(e)}`);
         }
     };
-    const handleLaunchEnvToggle = async (name, enabled, setChecked) => {
+    const applyProtonFsr4 = async (dll) => {
+        const current = await getLaunchOptions(parseInt(appid, 10));
+        const next = withProtonFsr4(current, dll);
+        SteamClient.Apps.SetAppLaunchOptions(parseInt(appid, 10), next);
+        setFsr4Upgrade(!!dll);
+        setFsr4LitePath(dll);
+        return next;
+    };
+    // On: the game on a Proton-CachyOS that takes the Lite DLL (the plugin's patched copy, installed only when
+    // missing) and FSR4_UPGRADE=1 PROTON_FSR4_UPGRADE=<Lite DLL> in its launch options. The watermark stays its
+    // own toggle. Off: both variables go and the game's previous Proton comes back.
+    const handleFsr4LiteToggle = async (enabled) => {
+        if (!appid)
+            return;
+        try {
+            setBusy(true);
+            if (!enabled) {
+                const next = await applyProtonFsr4("");
+                setResult(`✅ Launch options: ${next || "(empty)"}`);
+                if (cachyos?.lite_tool_name && cachyos.tool_name === cachyos.lite_tool_name && cachyos.previous_tool !== null && cachyos.previous_tool !== undefined) {
+                    SteamClient.Apps.SpecifyCompatTool(parseInt(appid, 10), cachyos.previous_tool);
+                    setCachyos({ ...cachyos, tool_name: cachyos.previous_tool, tool_label: cachyos.previous_tool || "Steam default", takes_dll_path: false });
+                    setResult("✅ FSR 4.1.2 Lite off.");
+                }
+                return;
+            }
+            const r = await prepareCachyosFsr4Lite();
+            if (r.status !== "success" || !r.path) {
+                setResult(`❌ ${r.message || "Could not prepare the FSR 4.1.2 Lite DLL."}`);
+                return;
+            }
+            let status = cachyos;
+            if (!status?.takes_dll_path) {
+                if (!status?.lite_tool_name) {
+                    setResult("Installing the Lite Proton (~330 MB)…");
+                    const inst = await installProtonLite();
+                    if (inst.status !== "success") {
+                        setResult(`❌ ${inst.message || "Could not install the patched Proton-CachyOS."}`);
+                        return;
+                    }
+                    status = await getCachyosFsr4Status(appid);
+                }
+                status = (await selectLiteProton(appid, status)) || status;
+            }
+            const next = await applyProtonFsr4(r.path);
+            setCachyos(status);
+            setResult(status.takes_dll_path
+                ? `✅ FSR 4.1.2 Lite on.\n\n${next}`
+                : `✅ Lite Proton installed. Restart Steam to finish.\n\n${next}`);
+            showLiteProtonModal(status);
+        }
+        catch (e) {
+            setResult(`❌ ${String(e)}`);
+            await logError$4(`SteamGameCombinedSection -> fsr4Lite: ${String(e)}`);
+        }
+        finally {
+            setBusy(false);
+        }
+    };
+    const handleUninstallProtonLite = async () => {
+        try {
+            setBusy(true);
+            const r = await uninstallProtonLite();
+            setResult(r.status === "success" ? "✅ Lite Proton removed." : `❌ ${r.message || "Remove failed."}`);
+            await loadCachyos(appid);
+        }
+        catch (e) {
+            setResult(`❌ ${String(e)}`);
+            await logError$4(`SteamGameCombinedSection -> uninstallProtonLite: ${String(e)}`);
+        }
+        finally {
+            setBusy(false);
+        }
+    };
+    const handleLaunchEnvToggle = async (name, enabled, setChecked, value = "1") => {
         if (!appid)
             return;
         try {
             const current = await getLaunchOptions(parseInt(appid, 10));
-            const next = withLaunchEnv(current, name, enabled);
+            const next = withLaunchEnv(current, name, enabled, value);
             SteamClient.Apps.SetAppLaunchOptions(parseInt(appid, 10), next);
             setChecked(enabled);
             setResult(`✅ Launch options: ${next || "(empty)"}`);
@@ -733,6 +857,8 @@ function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid
             if (r.status === "success") {
                 if (r.launch_options && cachyos?.supported && fsr4Upgrade)
                     r.launch_options = withLaunchEnv(r.launch_options, FSR4_UPGRADE_ENV, true);
+                if (r.launch_options && cachyos?.supported && fsr4LitePath)
+                    r.launch_options = withProtonFsr4(r.launch_options, fsr4LitePath);
                 if (r.launch_options && cachyos?.supported && fsr4Indicator)
                     r.launch_options = withLaunchEnv(r.launch_options, FSR4_INDICATOR_ENV, true);
                 if (r.launch_options) {
@@ -829,9 +955,18 @@ function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid
         appid && (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
             // Only for games Steam runs with Proton-CachyOS.
             cachyos?.supported && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.ToggleField, { label: "Proton-CachyOS FSR4", description: `Turns on Proton-CachyOS's FSR4 upgrade for this game (${cachyos.tool_label}): adds FSR4_UPGRADE=1 to the launch options.`, checked: fsr4Upgrade, disabled: busy, onChange: (v) => void handleLaunchEnvToggle(FSR4_UPGRADE_ENV, v, setFsr4Upgrade) }))),
+                window.SP_REACT.createElement(DFL.ToggleField, { label: "Proton-CachyOS FSR4", description: `Turns on FSR4 (${cachyos.tool_label}).`, checked: fsr4Upgrade, disabled: busy, onChange: (v) => void handleLaunchEnvToggle(FSR4_UPGRADE_ENV, v, setFsr4Upgrade) }))),
             cachyos?.supported && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.ToggleField, { label: "Show FSR watermark", description: "Adds PROTON_FSR4_INDICATOR=1: AMD's FSR watermark, top left, when FSR4 runs.", checked: fsr4Indicator, disabled: busy, onChange: (v) => void handleLaunchEnvToggle(FSR4_INDICATOR_ENV, v, setFsr4Indicator) }))),
+                window.SP_REACT.createElement(DFL.ToggleField, { label: "Proton FSR4 → 4.1.2 Lite", description: "FSR 4.1.2 Lite via its own Proton-CachyOS. FSR 3.1, DX12 games.", checked: !!fsr4LitePath, disabled: busy, onChange: (v) => void handleFsr4LiteToggle(v) }))),
+            // The patched Proton is installed but Steam doesn't list it yet: it needs a restart.
+            cachyos?.supported && fsr4LitePath && !cachyos.takes_dll_path && cachyos.lite_tool_name && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+                window.SP_REACT.createElement("div", { style: { fontSize: "0.82em", color: "#ffb84d" } }, "⚠️ Restart Steam, then reopen this game here."))),
+            cachyos?.supported && fsr4LitePath && !cachyos.takes_dll_path && cachyos.lite_tool_name && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: () => SteamClient.User.StartRestart(false), disabled: busy }, "🔄 Restart Steam"))),
+            cachyos?.lite_tool_name && !fsr4LitePath && cachyos.tool_name !== cachyos.lite_tool_name && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleUninstallProtonLite, disabled: busy }, "🗑️ Remove Lite Proton"))),
+            cachyos?.supported && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+                window.SP_REACT.createElement(DFL.ToggleField, { label: "Show FSR watermark", description: "Shows which FSR runs, top left.", checked: fsr4Indicator, disabled: busy, onChange: (v) => void handleLaunchEnvToggle(FSR4_INDICATOR_ENV, v, setFsr4Indicator) }))),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.DropdownItem, { label: "Upscaler runtime (FSR4 / HelixSR)", description: FSR4_OPTIONS.find((o) => o.data === fsr4Variant)?.hint, rgOptions: FSR4_OPTIONS, selectedOption: fsr4Variant, onChange: (o) => setFsr4Variant(o.data), strDefaultLabel: "Upscaler runtime" })),
             fsr4Variant === "helixsr" && window.SP_REACT.createElement(HelixSRPanel, null),
