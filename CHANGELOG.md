@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.21
+
+### Fixed
+- **Proton-CachyOS FSR4**, **Proton FSR4 → 4.1.2 Lite** and **Show FSR watermark** could all disappear. They only showed when the game's Proton read from `config.vdf` was Proton-CachyOS, and they waited for the Lite Proton switch, which could hang. The panel now reads the game's Proton from Steam itself (`strCompatToolName`), shows the toggles before trying the switch, and gives the switch 3 seconds.
+- The Lite toggle shows for every game, since it brings its own Proton. FSR4 and the watermark also show while their variable is set, so they can be turned off.
+- **Proton FSR4 → 4.1.2 Lite** never downloads the Lite Proton again once it is installed: the backend reuses the existing copy (`install_proton_lite`).
+
 ## 1.1.20
 
 ### Added

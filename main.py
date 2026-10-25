@@ -5662,6 +5662,11 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin):
         return "patched"
 
     def _install_proton_lite(self) -> dict:
+        # Installed once: an existing copy is reused, never downloaded again.
+        installed = self._proton_lite_installs()
+        if installed and self._proton_takes_dll_path(installed[-1]):
+            name = installed[-1].name
+            return {"status": "success", "tool_name": name, "tool_label": self._compat_tool_label(name) or name, "patch": "existing"}
         release = self._proton_cachyos_latest_release()
         roots = [r for r in self._steam_root_candidates() if r.is_dir()]
         if not roots:
