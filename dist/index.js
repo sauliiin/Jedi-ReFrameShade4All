@@ -829,7 +829,7 @@ function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid
         appid && (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
             // Only for games Steam runs with Proton-CachyOS.
             cachyos?.supported && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.ToggleField, { label: "Proton-CachyOS FSR4", description: `Adds FSR4_UPGRADE=1 to launch options (${cachyos.tool_label}).`, checked: fsr4Upgrade, disabled: busy, onChange: (v) => void handleLaunchEnvToggle(FSR4_UPGRADE_ENV, v, setFsr4Upgrade) }))),
+                window.SP_REACT.createElement(DFL.ToggleField, { label: "Proton-CachyOS FSR4", description: `Turns on Proton-CachyOS's FSR4 upgrade for this game (${cachyos.tool_label}): adds FSR4_UPGRADE=1 to the launch options.`, checked: fsr4Upgrade, disabled: busy, onChange: (v) => void handleLaunchEnvToggle(FSR4_UPGRADE_ENV, v, setFsr4Upgrade) }))),
             cachyos?.supported && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.ToggleField, { label: "Show FSR watermark", description: "Adds PROTON_FSR4_INDICATOR=1: AMD's FSR watermark, top left, when FSR4 runs.", checked: fsr4Indicator, disabled: busy, onChange: (v) => void handleLaunchEnvToggle(FSR4_INDICATOR_ENV, v, setFsr4Indicator) }))),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,

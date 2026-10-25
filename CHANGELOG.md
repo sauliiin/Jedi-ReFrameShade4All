@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.19
+
+### Changed
+- Clearer description for the **Proton-CachyOS FSR4** toggle: it says the toggle turns on Proton-CachyOS's FSR4 upgrade for the game. It still only adds `FSR4_UPGRADE=1`.
+
 ## 1.1.18
 
 ### Changed
