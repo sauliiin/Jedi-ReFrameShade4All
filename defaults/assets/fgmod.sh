@@ -188,8 +188,9 @@ case "$selected_fsr4_variant" in
     variant_ini_overrides+=("FSR.Fsr4ForceModel=2")
     variant_ini_overrides+=("Plugins.LoadCustomAmdxc64OnRdna2=true")
     ;;
-  lite-412-i8)
+  lite-412-i8|deck-all)
     # FSR 4.1.2 Lite (FSR4L-i8): OptiScaler 10 injector + AMD's 26.10.1 driver FSR (DX12 and Vulkan).
+    # deck-all's extra upscalers (custom/) are only set up by the plugin's patch; here it is the Lite runtime.
     # OptiScaler 10 reads FGInput=nukems as no FG; NvngxFG + Nukems is the same DLSSG replacement.
     variant_dir="$fgmod_path/fsr4-lite-412-i8"
     fsr4_upscaler_src="$variant_dir/amd_fidelityfx_upscaler_dx12.dll"
@@ -214,7 +215,7 @@ esac
 logger -t fgmod "Using FSR4 variant: $selected_fsr4_variant (source: $fsr4_upscaler_src)"
 
 # A game leaving lite-412-i8 for an OptiScaler 0.9.4 variant gets its 0.9.4 settings back
-if [[ "$selected_fsr4_variant" != "lite-412-i8" ]] \
+if [[ "$selected_fsr4_variant" != "lite-412-i8" && "$selected_fsr4_variant" != "deck-all" ]] \
   && grep -qi '^Fsr4GpuSupport=4' "$exe_folder_path/OptiScaler.ini" 2>/dev/null \
   && grep -qi '^Fsr4Model=3' "$exe_folder_path/OptiScaler.ini" 2>/dev/null; then
   variant_ini_overrides+=("FSR.Fsr4GpuSupport=auto" "FSR.Fsr4Model=auto" "FSR.UpscalerIndex=auto")

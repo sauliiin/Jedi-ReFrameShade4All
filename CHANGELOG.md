@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.1.23
+
+### Changed
+- **One upscaler setup for every game**: the **Upscaler runtime** picker is gone. Patch All gives the game OptiScaler 10 (master `de2626f`) and three upscalers to pick from in OptiScaler's menu (Insert):
+  - **FSR 4**: FSR 4.1.2 (`amdxcffx64.dll` 2.4.0.4370). It starts on the Lite model; its **FSR4 Model** combo also has the full INT8 and the RDNA2 INT8 models.
+  - **FSR 4.0.2c**: the bundled 4.0.2c upscaler, in `custom/FSR 4.0.2c/ffx/`.
+  - **HLX DLSS**: when HelixSR 3.x is installed, in `custom/HLX DLSS/dlss/`.
+- FSR 4 is the selected upscaler after patching. The HelixSR panel always shows; after installing or updating HelixSR, press Patch All again.
+- Games patched with an older runtime keep it until they are patched again. Unpatching removes the `custom/` folders. Backend: variant `deck-all`.
+
+### Removed
+- **Detect target .exe** and the **Target executable** picker. Patch All and the advanced controls always find the game's `.exe` themselves.
+
+### Fixed
+- Turning on **Proton FSR4 → 4.1.2 Lite** also turned on **Proton-CachyOS FSR4**. Lite now only adds `PROTON_FSR4_UPGRADE=<Lite DLL>` (the Lite Proton turns `FSR4_UPGRADE` on by itself), so the two toggles are independent. Games where Lite is on lose the `FSR4_UPGRADE=1` the old toggle added the next time they are opened in the panel.
+
 ## 1.1.22
 
 ### Fixed

@@ -187,7 +187,8 @@ const PROXY_DLL_OPTIONS = [
     { value: "OptiScaler.asi", label: "OptiScaler.asi", hint: "For ASI loaders. Requires an ASI loader already installed in the game." },
 ];
 const DEFAULT_PROXY_DLL = "dxgi.dll";
-const DEFAULT_FSR4_VARIANT = "rdna23-int8";
+// 4.0.2c, 4.1.2 Lite and HLX DLSS in one game, picked in OptiScaler's menu.
+const DEFAULT_FSR4_VARIANT = "deck-all";
 // Common timeout values
 const TIMEOUTS = {
     resultDisplay: 5000, // 5 seconds
@@ -393,7 +394,6 @@ function OptiScalerControls({ pathExists, setPathExists, fgmodInfo, fsr4Variant 
 const listInstalledGames = callable("list_installed_games");
 const getEnginesStatus = callable("get_engines_status");
 const getCombinedGameStatus$1 = callable("get_combined_game_status");
-const resolveSteamReShadeTargetForPatchAll = callable("resolve_steam_reshade_target");
 const patchAllGame = callable("patch_all_game");
 const unpatchAllGame = callable("unpatch_all_game");
 const getCachyosFsr4Status = callable("get_cachyos_fsr4_status");
@@ -469,7 +469,8 @@ function showLiteProtonModal(status) {
 // Proton-CachyOS variables the toggles add as NAME=1.
 const FSR4_UPGRADE_ENV = "FSR4_UPGRADE";
 const FSR4_INDICATOR_ENV = "PROTON_FSR4_INDICATOR";
-// Set to the Lite DLL's absolute path: the plugin's patched Proton-CachyOS copies that file into the prefix.
+// Set to the Lite DLL's absolute path: the plugin's patched Proton-CachyOS copies that file into the prefix
+// and turns FSR4_UPGRADE on itself, so the Lite toggle never touches FSR4_UPGRADE.
 const PROTON_FSR4_UPGRADE_ENV = "PROTON_FSR4_UPGRADE";
 const FSR4_LITE_DIR = "/fgmod-proton-fsr4/";
 // Adds/removes NAME=value while keeping the rest of the launch options.
@@ -489,22 +490,11 @@ function fsr4LitePathIn(opts) {
     const m = (opts || "").match(new RegExp(`(?:^|\\s)${PROTON_FSR4_UPGRADE_ENV}=(\\S+)`));
     return m && m[1].includes(FSR4_LITE_DIR) ? m[1] : "";
 }
-// FSR4_UPGRADE=1 PROTON_FSR4_UPGRADE=<Lite DLL>; "" removes both.
+// PROTON_FSR4_UPGRADE=<Lite DLL>; "" removes it.
 function withProtonFsr4(opts, dll) {
-    const rest = withLaunchEnv(withLaunchEnv(opts, FSR4_UPGRADE_ENV, false), PROTON_FSR4_UPGRADE_ENV, false);
-    if (!dll)
-        return rest;
-    return withLaunchEnv(withLaunchEnv(rest, PROTON_FSR4_UPGRADE_ENV, true, dll), FSR4_UPGRADE_ENV, true);
+    return withLaunchEnv(opts, PROTON_FSR4_UPGRADE_ENV, !!dll, dll);
 }
 const logError$4 = callable("log_error");
-const FSR4_OPTIONS = [
-    { data: "rdna23-int8", label: "4.0.2c | RDNA2/3 Compatibility (recommended)", hint: "Bundled FSR4 INT8 4.0.2c runtime. Safest choice for Steam Deck and other RDNA2/3 GPUs." },
-    { data: "rdna4-native", label: "4.1.1 | FFX 2.3 SDK (RDNA3 dGPU / RDNA4)", hint: "OptiScaler 0.9.4's bundled FSR 4.1.1 upscaler. Official support: RDNA4 (FP8) and RDNA3 desktop GPUs (INT8)." },
-    { data: "rdna34-official-411", label: "4.1.1 | Driver Override (RDNA3/4)", hint: "FSR 4.1.1 SDK upscaler plus a separate 4.1.1 amdxcffx64.dll driver override. Fallback for RDNA3/4." },
-    { data: "rdna2-valve-411-pre10", label: "4.1.1 | Valve RDNA2 Compatibility", hint: "FSR 4.1.1 on RDNA2 via Valve amdxcffx64.dll + amdxc64.dll, the pre10 injector and RDNA2 INI overrides. Experimental." },
-    { data: "lite-412-i8", label: "4.1.2 Lite | FSR4L-i8 (Steam Deck / APUs)", hint: "AMD's FSR 4.1.2 INT8 Lite model (from Adrenalin 26.10.1), made for APUs: lighter than the full INT8 model. Uses an OptiScaler 10 injector (built from master 2128299c) with Fsr4GpuSupport=4 / Fsr4Model=3. Experimental." },
-    { data: "helixsr", label: "HelixSR | DLSS Model E on AMD (experimental)", hint: "NVIDIA's DLSS Model E network as D3D12 compute shaders (lonewolf0622/HelixSR). DX12 only. Built once on this device; FSR4 4.0.2c stays selectable in OptiScaler's menu." },
-];
 // What the game's HelixSR folder and helixsr.log say (helixsr.log appears once OptiScaler loads HelixSR).
 function HelixSRGameStatus({ info }) {
     const lines = [];
@@ -521,7 +511,9 @@ function HelixSRGameStatus({ info }) {
         lines.push({ color: undefined, text: `HelixSR ${info.version || ""} was loaded but hasn't upscaled yet. In OptiScaler (Insert), pick "HLX DLSS" (3.x) or "FSR HelixSR" (2.0) as the upscaler.` });
     }
     else {
-        lines.push({ color: undefined, text: `HelixSR ${info.version || ""} is set up but hasn't been loaded yet. Start the game and select DLSS as its upscaler.` });
+        lines.push({ color: undefined, text: info.selectable
+                ? `HelixSR ${info.version || ""} is set up. In OptiScaler (Insert), pick "HLX DLSS".`
+                : `HelixSR ${info.version || ""} is set up but hasn't been loaded yet. Start the game and select DLSS as its upscaler.` });
     }
     if (info.log_time) {
         lines.push({ color: undefined, text: `helixsr.log: ${info.log_time}` });
@@ -643,7 +635,7 @@ function HelixSRPanel() {
         building && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleCancel }, "Cancel HelixSR build"))),
         window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement("div", { style: { fontSize: "0.8em", opacity: 0.6 } }, "In-game: select DLSS (best input), or FSR/XeSS, as the game's upscaler. After a HelixSR update, press Patch All again to refresh the game.")),
+            window.SP_REACT.createElement("div", { style: { fontSize: "0.8em", opacity: 0.6 } }, "After installing or updating HelixSR, press Patch All again. In-game: pick HLX DLSS in OptiScaler (Insert).")),
         message && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", whiteSpace: "pre-wrap", opacity: 0.85 } }, message)))));
 }
@@ -674,48 +666,15 @@ function getLaunchOptions(appId) {
         }
     });
 }
-function getDirectoryForExePath(exePath) {
-    const idx = String(exePath || "").lastIndexOf("/");
-    return idx > 0 ? exePath.slice(0, idx) : exePath;
-}
-function getSteamTargetCandidates(target) {
-    return Array.isArray(target?.candidates) ? target.candidates : [];
-}
-function formatSteamTargetCandidate(candidate, index) {
-    const rel = candidate.relative_path || candidate.filename || candidate.path || "Unknown executable";
-    const tag = index === 0 || candidate.selected ? "Recommended" : `Candidate ${index + 1}`;
-    const reason = candidate.reason ? ` - ${candidate.reason}` : "";
-    return `${tag}: ${rel}${reason}`;
-}
-function steamTargetOptions(target) {
-    return getSteamTargetCandidates(target).map((candidate, index) => ({
-        data: candidate.path,
-        label: formatSteamTargetCandidate(candidate, index),
-    }));
-}
-function selectSteamTargetCandidate(target, executablePath) {
-    const candidates = getSteamTargetCandidates(target);
-    const candidate = candidates.find((item) => item.path === executablePath);
-    return {
-        ...target,
-        target_executable: executablePath,
-        target_dir: candidate?.directory_path || getDirectoryForExePath(executablePath),
-        candidates: candidates.map((item) => ({
-            ...item,
-            selected: item.path === executablePath,
-        })),
-    };
-}
 function gameOptionLabel(game) {
     return game.non_steam ? `${game.name} · non-Steam` : game.name;
 }
-function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid, detectedTarget, setDetectedTarget, }) {
+function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, }) {
     const [games, setGames] = SP_REACT.useState([]);
     const [engines, setEngines] = SP_REACT.useState(null);
     const [status, setStatus] = SP_REACT.useState(null);
     const [addon, setAddon] = SP_REACT.useState(true);
     const [busy, setBusy] = SP_REACT.useState(false);
-    const [detectingTarget, setDetectingTarget] = SP_REACT.useState(false);
     const [result, setResult] = SP_REACT.useState("");
     const [cachyos, setCachyos] = SP_REACT.useState(null);
     const [fsr4Upgrade, setFsr4Upgrade] = SP_REACT.useState(false);
@@ -731,8 +690,13 @@ function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid
     const loadCachyos = async (id) => {
         setCachyos(null);
         try {
-            const [r, current] = await Promise.all([getLiteStatus(id), getLaunchOptions(parseInt(id, 10)).catch(() => "")]);
+            let [r, current] = await Promise.all([getLiteStatus(id), getLaunchOptions(parseInt(id, 10)).catch(() => "")]);
             const litePath = fsr4LitePathIn(current);
+            // Up to 1.1.22 the Lite toggle also added FSR4_UPGRADE=1, which turned the FSR4 toggle on with it.
+            if (litePath && hasLaunchEnv(current, FSR4_UPGRADE_ENV)) {
+                current = withLaunchEnv(current, FSR4_UPGRADE_ENV, false);
+                SteamClient.Apps.SetAppLaunchOptions(parseInt(id, 10), current);
+            }
             // The toggles show first, so nothing below can hide them.
             setCachyos(r);
             setFsr4Upgrade(hasLaunchEnv(current, FSR4_UPGRADE_ENV));
@@ -758,13 +722,12 @@ function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid
         const current = await getLaunchOptions(parseInt(appid, 10));
         const next = withProtonFsr4(current, dll);
         SteamClient.Apps.SetAppLaunchOptions(parseInt(appid, 10), next);
-        setFsr4Upgrade(!!dll);
         setFsr4LitePath(dll);
         return next;
     };
     // On: the game on a Proton-CachyOS that takes the Lite DLL (the plugin's patched copy, installed only when
-    // missing) and FSR4_UPGRADE=1 PROTON_FSR4_UPGRADE=<Lite DLL> in its launch options. The watermark stays its
-    // own toggle. Off: both variables go and the game's previous Proton comes back.
+    // missing) and PROTON_FSR4_UPGRADE=<Lite DLL> in its launch options. FSR4 and the watermark stay their own
+    // toggles. Off: the variable goes and the game's previous Proton comes back.
     const handleFsr4LiteToggle = async (enabled) => {
         if (!appid)
             return;
@@ -873,34 +836,6 @@ function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid
         })();
         void refreshEngines();
     }, []);
-    const handleDetectTarget = async () => {
-        if (!appid) {
-            setResult("Select a game first.");
-            return;
-        }
-        try {
-            setDetectingTarget(true);
-            setResult("Detecting executable candidates...");
-            const r = await resolveSteamReShadeTargetForPatchAll(appid);
-            if (r.status !== "success") {
-                setDetectedTarget(null);
-                setResult(`❌ ${r.message || r.output || "Failed to detect target."}`);
-                return;
-            }
-            setDetectedTarget(r);
-            const candidates = getSteamTargetCandidates(r);
-            const target = r.target_executable || r.target_dir || "Unknown target";
-            setResult(`Detected ${candidates.length || 1} target candidate${candidates.length === 1 ? "" : "s"}.\nSelected: ${target}`);
-        }
-        catch (e) {
-            setDetectedTarget(null);
-            setResult(`❌ ${String(e)}`);
-            await logError$4(`SteamGameCombinedSection -> detectTarget: ${String(e)}`);
-        }
-        finally {
-            setDetectingTarget(false);
-        }
-    };
     const handlePatchAll = async () => {
         if (!appid) {
             setResult("Select a game first.");
@@ -910,7 +845,7 @@ function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid
             setBusy(true);
             setResult("Patching… installing OptiScaler/ReShade if needed — this can take a while.");
             const current = await getLaunchOptions(parseInt(appid, 10));
-            const r = await patchAllGame(appid, fsr4Variant, addon, current, detectedTarget?.target_executable || "");
+            const r = await patchAllGame(appid, fsr4Variant, addon, current, "");
             if (r.status === "success") {
                 if (r.launch_options && fsr4Upgrade)
                     r.launch_options = withLaunchEnv(r.launch_options, FSR4_UPGRADE_ENV, true);
@@ -989,7 +924,6 @@ function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid
         window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement(DFL.DropdownItem, { rgOptions: games.map((g) => ({ data: g.appid, label: gameOptionLabel(g) })), selectedOption: appid, onChange: (o) => {
                     setAppid(o.data);
-                    setDetectedTarget(null);
                     setResult("");
                     void loadStatus(o.data);
                     void loadCachyos(o.data);
@@ -1025,18 +959,9 @@ function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid
                 window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleUninstallProtonLite, disabled: busy }, "🗑️ Remove Lite Proton"))),
             (cachyos?.supported || fsr4Indicator) && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.ToggleField, { label: "Show FSR watermark", description: "Shows which FSR runs, top left.", checked: fsr4Indicator, disabled: busy, onChange: (v) => void handleLaunchEnvToggle(FSR4_INDICATOR_ENV, v, setFsr4Indicator) }))),
-            window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.DropdownItem, { label: "Upscaler runtime (FSR4 / HelixSR)", description: FSR4_OPTIONS.find((o) => o.data === fsr4Variant)?.hint, rgOptions: FSR4_OPTIONS, selectedOption: fsr4Variant, onChange: (o) => setFsr4Variant(o.data), strDefaultLabel: "Upscaler runtime" })),
-            fsr4Variant === "helixsr" && window.SP_REACT.createElement(HelixSRPanel, null),
+            window.SP_REACT.createElement(HelixSRPanel, null),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.ToggleField, { label: "ReShade add-ons", description: "Enables add-on support (avoid in anti-cheat online games).", checked: addon, onChange: setAddon })),
-            window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleDetectTarget, disabled: busy || detectingTarget }, detectingTarget ? "Detecting target..." : "Detect target .exe")),
-            getSteamTargetCandidates(detectedTarget).length > 0 && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.DropdownItem, { label: "Target executable", menuLabel: "Target executable", rgOptions: steamTargetOptions(detectedTarget), selectedOption: detectedTarget?.target_executable || "", onChange: (option) => {
-                        setDetectedTarget(selectSteamTargetCandidate(detectedTarget, option.data));
-                        setResult("");
-                    }, strDefaultLabel: "Target executable" }))),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handlePatchAll, disabled: busy }, busy ? "Working…" : "🚀 Patch All (FrameGen + ReShade)")),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
@@ -2040,11 +1965,10 @@ function MainContent() {
     const [pathExists, setPathExists] = SP_REACT.useState(null);
     const [fgmodInfo, setFgmodInfo] = SP_REACT.useState(null);
     const [advanced, setAdvanced] = SP_REACT.useState(false);
-    // FSR4 runtime is chosen once in the top section and shared with the advanced OptiScaler controls.
-    const [fsr4Variant, setFsr4Variant] = SP_REACT.useState(DEFAULT_FSR4_VARIANT);
+    // One FSR4 runtime for every game, shared with the advanced OptiScaler controls.
+    const fsr4Variant = DEFAULT_FSR4_VARIANT;
     // The game is also picked once at the top and reused by the advanced sections.
     const [selectedAppid, setSelectedAppid] = SP_REACT.useState("");
-    const [detectedSteamTarget, setDetectedSteamTarget] = SP_REACT.useState(null);
     SP_REACT.useEffect(() => {
         const checkPath = async () => {
             const result = await safeAsyncOperation(async () => await checkFGModPath$1(), 'MainContent -> checkPath');
@@ -2057,15 +1981,14 @@ function MainContent() {
         const intervalId = setInterval(checkPath, TIMEOUTS.pathCheck);
         return () => clearInterval(intervalId);
     }, []);
-    const sharedTargetExePath = detectedSteamTarget?.target_executable || "";
     return (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
-        window.SP_REACT.createElement(SteamGameCombinedSection, { fsr4Variant: fsr4Variant, setFsr4Variant: setFsr4Variant, appid: selectedAppid, setAppid: setSelectedAppid, detectedTarget: detectedSteamTarget, setDetectedTarget: setDetectedSteamTarget }),
+        window.SP_REACT.createElement(SteamGameCombinedSection, { fsr4Variant: fsr4Variant, appid: selectedAppid, setAppid: setSelectedAppid }),
         window.SP_REACT.createElement(DFL.PanelSection, null,
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.ToggleField, { label: "Advanced controls", description: "Per-engine install, proxy DLL, ReShade shaders/AutoHDR.", checked: advanced, onChange: setAdvanced }))),
         advanced && (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
-            window.SP_REACT.createElement(OptiScalerControls, { pathExists: pathExists, setPathExists: setPathExists, fgmodInfo: fgmodInfo, fsr4Variant: fsr4Variant, appid: selectedAppid, targetExePath: sharedTargetExePath }),
-            window.SP_REACT.createElement(ReShadeInstallerSection, { appid: selectedAppid, targetExePath: sharedTargetExePath }))),
+            window.SP_REACT.createElement(OptiScalerControls, { pathExists: pathExists, setPathExists: setPathExists, fgmodInfo: fgmodInfo, fsr4Variant: fsr4Variant, appid: selectedAppid }),
+            window.SP_REACT.createElement(ReShadeInstallerSection, { appid: selectedAppid }))),
         window.SP_REACT.createElement(PluginUpdateSection, null)));
 }
 var index = definePlugin(() => ({
