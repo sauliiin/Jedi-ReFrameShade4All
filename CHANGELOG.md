@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.22
+
+### Fixed
+- **HelixSR 3.x** failed with "No HelixSR DLL found in HelixSR-3.1.0.zip". From 3.0, HelixSR's DLSS network (**HLX DLSS**) is `HelixSR/helixsr.dll`, an NGX (DLSS) runtime with no FFX exports, so it can no longer be OptiScaler's FFX upscaler.
+
+### Added
+- **HLX DLSS** through OptiScaler (experimental): patching with a HelixSR 3.x build puts `helixsr.dll` and `helixsr.ini` into `custom/HLX DLSS/dlss/` next to `OptiScaler.ini`, sets `Dx12Upscaler=HLX DLSS` and gives the game an OptiScaler 10 injector built from master `de2626f` (`OptiScaler_10.0.0-master.de2626f.dll`, the first build that loads custom upscalers, and runs a custom DLSS upscaler on AMD GPUs). Nukems frame generation keeps working (`FGInput=NvngxFG`, `FGNvngxReplacement=Nukems`). In the game, select DLSS.
+- Switching runtime or unpatching removes `custom/HLX DLSS/` and puts back the previous `OptiScaler.ini` values; patching again with another runtime puts that runtime's injector back. Games patched with HelixSR 2.0.0 keep working until they are patched again.
+- The game status reads HelixSR 3.x's log (`NGX: render AxB output CxD`).
+
 ## 1.1.21
 
 ### Fixed

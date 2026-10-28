@@ -1,6 +1,6 @@
 {
   "name": "jedi-reframeshade4all-decky",
-  "version": "1.1.21",
+  "version": "1.1.22",
   "description": "All-in-one OptiScaler frame generation/upscaling + ReShade (with addons) for Decky.",
   "type": "module",
   "scripts": {
@@ -96,6 +96,11 @@
       "sha256hash": "52b3045d6e0d5322f45368652c16185ca8c34a4fe5da0b0ab098818fb2f458a5",
       "url": "https://github.com/sauliiin/Jedi-ReFrameShade4All/releases/download/fsr-4-1-2-lite/OptiScaler_10.0.0-master.2128299c.dll",
       "name": "OptiScaler_10.0.0-master.2128299c.dll"
+    },
+    {
+      "sha256hash": "7bd7525bfbe0d6d54f36c2719b633d29f9fa9927386c35abe0d19097adf5b26e",
+      "url": "https://github.com/sauliiin/Jedi-ReFrameShade4All/releases/download/optiscaler-10-de2626f/OptiScaler_10.0.0-master.de2626f.dll",
+      "name": "OptiScaler_10.0.0-master.de2626f.dll"
     },
     {
       "sha256hash": "88b9e1be3559737cd205fdf5f2c8550cf1923fb1def4c603e5bf03c3e84131b1",

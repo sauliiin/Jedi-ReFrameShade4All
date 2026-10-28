@@ -518,10 +518,10 @@ function HelixSRGameStatus({ info }) {
         lines.push({ color: "#ff6b6b", text: `❌ HelixSR loaded but its network isn't running.${info.errors?.length ? `\n${info.errors.join("\n")}` : ""}` });
     }
     else if (info.log_status === "loaded") {
-        lines.push({ color: undefined, text: `HelixSR ${info.version || ""} was loaded but hasn't upscaled yet. In OptiScaler (Insert): Upscalers → FSR 3.X/4 → FFX Upscaler → "FSR HelixSR".` });
+        lines.push({ color: undefined, text: `HelixSR ${info.version || ""} was loaded but hasn't upscaled yet. In OptiScaler (Insert), pick "HLX DLSS" (3.x) or "FSR HelixSR" (2.0) as the upscaler.` });
     }
     else {
-        lines.push({ color: undefined, text: `HelixSR ${info.version || ""} is set up but hasn't been loaded yet. Start the game, select DLSS (or FSR/XeSS) as its upscaler, then check OptiScaler (Insert): FFX Upscaler → "FSR HelixSR".` });
+        lines.push({ color: undefined, text: `HelixSR ${info.version || ""} is set up but hasn't been loaded yet. Start the game and select DLSS as its upscaler.` });
     }
     if (info.log_time) {
         lines.push({ color: undefined, text: `helixsr.log: ${info.log_time}` });

@@ -75,6 +75,14 @@ OPTISCALER_V10_ASSET = {
     "version": "10.0.0-master.2128299c",
 }
 
+# OptiScaler 10 built from optiscaler/OptiScaler master de2626f: loads upscalers from custom/<name>/dlss even on
+# GPUs it doesn't consider DLSS capable, which is how HelixSR 3.x's HLX DLSS (an NGX runtime) runs on AMD.
+OPTISCALER_HLX_ASSET = {
+    "name": "OptiScaler_10.0.0-master.de2626f.dll",
+    "sha256": "7bd7525bfbe0d6d54f36c2719b633d29f9fa9927386c35abe0d19097adf5b26e",
+    "version": "10.0.0-master.de2626f",
+}
+
 OPTIPATCHER_ASSET = {
     "name": "OptiPatcher_rolling.asi",
     "sha256": "88b9e1be3559737cd205fdf5f2c8550cf1923fb1def4c603e5bf03c3e84131b1",
@@ -305,6 +313,15 @@ PROTON_LITE_UPSCALER_PATCHES = (
 HELIXSR_DLL_FFX = "amd_fidelityfx_dx12.dll"   # up to 1.4 and from 1.7: an FSR 3.1 replacement
 HELIXSR_DLL_NGX = "nvngx.dll"                 # 1.5/1.6 (withdrawn): a DLSS replacement, not supported here
 HELIXSR_OUT_SUBDIR = "HelixSR-fsrfg"          # 2.0+: HelixSR's DLL (and what the setup builds) is in this folder
+HELIXSR_DLL_HLX = "helixsr.dll"               # 3.0+: HLX DLSS, an NGX runtime (no FFX exports)
+HELIXSR_HLX_SUBDIR = "HelixSR"                # 3.0+: the release folder that holds it
+# 3.0+ in the game: OptiScaler (de2626f+) lists custom/<name>/dlss/<dll> as an upscaler named <name>
+HELIXSR_HLX_NAME = "HLX DLSS"
+HELIXSR_HLX_FG_KEYS = {   # OptiScaler 10 reads FGInput=nukems as no FG: the same Nukems FG, as the Lite runtime sets it
+    ("FrameGen", "FGInput"): "NvngxFG",
+    ("FrameGen", "FGOutput"): "auto",
+    ("FrameGen", "FGNvngxReplacement"): "Nukems",
+}
 HELIXSR_DLSS_FILENAME = ".jedi-nvngx_dlss.dll"   # NVIDIA's DLSS DLL for the setup's --dlss, deleted after the build
 HELIXSR_DLSS_URL = re.compile(r"""^DLSS_URL\s*=\s*['"](https://[^'"]+)['"]""", re.M)
 HELIXSR_DLSS_SHA256 = re.compile(r"""^DLSS_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]""", re.M)
@@ -835,7 +852,8 @@ class _OptiScalerMixin:
 
     def _detect_fsr4_variant(self, directory: Path, upscaler_sha256: str | None) -> str | None:
         # HelixSR lives in its own subfolder; the game root keeps the INT8 FSR4 upscaler.
-        if (directory / HELIXSR_GAME_SUBDIR / HELIXSR_GAME_MARKER).exists():
+        if ((directory / HELIXSR_GAME_SUBDIR / HELIXSR_GAME_MARKER).exists()
+                or (self._helixsr_hlx_folder(directory) / HELIXSR_GAME_MARKER).exists()):
             return HELIXSR_VARIANT
         for variant_id, variant in FSR4_VARIANTS.items():
             if variant.get("helixsr"):
@@ -1894,7 +1912,7 @@ class _OptiScalerMixin:
 
             helixsr_note = ""
             if use_helixsr:
-                helixsr_note = f" {self._helixsr_apply_to_game(directory)}"
+                helixsr_note = f" {self._helixsr_apply_to_game(directory, destination_dll)}"
             elif self._helixsr_remove_from_game(directory, restore_ini=True):
                 helixsr_note = " HelixSR removed; OptiScaler is back to FSR."
                 # HelixSR's restore puts back keys still holding its values (Dx12Upscaler=ffx, UpscalerIndex=0),
@@ -4671,12 +4689,17 @@ class _HelixSRMixin:
         return all((Path(path).parent / name).exists() for name in HELIXSR_SEPARATE_FILES)
 
     def _helixsr_release_dll(self, directory: Path) -> Path | None:
-        for folder in (Path(directory) / HELIXSR_OUT_SUBDIR, Path(directory)):
-            for name in (HELIXSR_DLL_NGX, HELIXSR_DLL_FFX):
-                candidate = folder / name
-                if candidate.exists() and self._helixsr_is_helixsr(candidate):
-                    return candidate
-        return None
+        candidates = [
+            Path(directory) / HELIXSR_HLX_SUBDIR / HELIXSR_DLL_HLX,
+            *(folder / name for folder in (Path(directory) / HELIXSR_OUT_SUBDIR, Path(directory))
+              for name in (HELIXSR_DLL_NGX, HELIXSR_DLL_FFX)),
+        ]
+        return next((c for c in candidates if c.exists() and self._helixsr_is_helixsr(c)), None)
+
+    def _helixsr_dll_kind(self, dll: Path) -> str:
+        """hlx: 3.0+'s HLX DLSS (OptiScaler's custom DLSS upscaler); ffx: an FSR 3.1 replacement; ngx: 1.5/1.6."""
+        name = dll.name.lower()
+        return "hlx" if name == HELIXSR_DLL_HLX else "ngx" if name == HELIXSR_DLL_NGX else "ffx"
 
     def _helixsr_installed(self) -> dict | None:
         directory = self._helixsr_current_dir()
@@ -4692,7 +4715,7 @@ class _HelixSRMixin:
             "version": self._helixsr_dll_version(dll) or (tag.lstrip("v") if tag else None),
             "sha256": meta.get("sha256"),
             "built": self._helixsr_has_network(dll),
-            "kind": "ngx" if dll.name.lower() == HELIXSR_DLL_NGX else "ffx",
+            "kind": self._helixsr_dll_kind(dll),
         }
 
     def _helixsr_built_dll(self) -> Path:
@@ -4701,7 +4724,7 @@ class _HelixSRMixin:
             raise RuntimeError(
                 "HelixSR isn't installed yet. Select the HelixSR runtime and press \"Install HelixSR\" first."
             )
-        if installed["kind"] != "ffx":
+        if installed["kind"] == "ngx":
             raise RuntimeError("The installed HelixSR release replaces DLSS (nvngx.dll), which this plugin doesn't support.")
         if not installed["built"]:
             raise RuntimeError("HelixSR has no network yet (its build didn't finish). Press \"Install HelixSR\" again.")
@@ -5089,14 +5112,19 @@ class _HelixSRMixin:
         """Linux path -> the Windows path a Proton game sees (Z: is the Linux root)."""
         return "Z:" + os.path.realpath(path).replace("/", "\\")
 
-    def _helixsr_apply_to_game(self, directory: Path) -> str:
-        """HelixSR as OptiScaler's FFX upscaler: HelixSR/ next to OptiScaler.ini holds HelixSR as helixsr.dll and
-        helixsr_upscaler.dll, AMD's FidelityFX DLL as amd_fidelityfx_dx12.original.dll (frame generation keeps working)
-        and the INT8 FSR4 upscaler as amd_fidelityfx_upscaler_dx12.amd.dll (FSR4 stays selectable)."""
+    def _helixsr_apply_to_game(self, directory: Path, injector: Path) -> str:
+        """HelixSR as OptiScaler's upscaler. 3.0+ (HLX DLSS): see _helixsr_apply_hlx. Up to 2.0, as OptiScaler's FFX
+        upscaler: HelixSR/ next to OptiScaler.ini holds HelixSR as helixsr.dll and helixsr_upscaler.dll, AMD's
+        FidelityFX DLL as amd_fidelityfx_dx12.original.dll (frame generation keeps working) and the INT8 FSR4
+        upscaler as amd_fidelityfx_upscaler_dx12.amd.dll (FSR4 stays selectable)."""
         dll = self._helixsr_built_dll()
         ini = directory / "OptiScaler.ini"
         if not ini.exists():
             raise RuntimeError(f"OptiScaler.ini not found in {directory}; can't point OptiScaler at HelixSR.")
+        if self._helixsr_dll_kind(dll) == "hlx":
+            self._helixsr_remove_ffx_route(directory)
+            return self._helixsr_apply_hlx(directory, dll, ini, injector)
+        self._helixsr_remove_hlx_route(directory)
         sub = directory / HELIXSR_GAME_SUBDIR
         marker = sub / HELIXSR_GAME_MARKER
         replaced = None
@@ -5198,21 +5226,78 @@ class _HelixSRMixin:
             + (" (FSR4 stays selectable in OptiScaler's menu)." if keep_fsr4 else ".")
         )
 
+    def _helixsr_hlx_folder(self, directory: Path) -> Path:
+        return Path(directory) / "custom" / HELIXSR_HLX_NAME
+
+    def _helixsr_apply_hlx(self, directory: Path, dll: Path, ini: Path, injector: Path) -> str:
+        """3.0+: HLX DLSS as OptiScaler's custom DLSS upscaler. custom/HLX DLSS/dlss/ holds helixsr.dll and
+        helixsr.ini, and the game gets the OptiScaler build that loads it (OPTISCALER_HLX_ASSET); patching with
+        another runtime copies that runtime's injector back."""
+        bin_dir = self._ensure_runtime_binaries([OPTISCALER_HLX_ASSET["name"]])
+        source = bin_dir / OPTISCALER_HLX_ASSET["name"]
+        if not source.exists():
+            raise RuntimeError(f"{OPTISCALER_HLX_ASSET['name']} couldn't be downloaded. Check the connection and patch again.")
+        self._verify_bundled_asset(source, OPTISCALER_HLX_ASSET["sha256"], "OptiScaler for HLX DLSS")
+        folder = self._helixsr_hlx_folder(directory)
+        marker = folder / HELIXSR_GAME_MARKER
+        previous = self._read_json_file(marker).get("previous") if marker.exists() else None
+        created = not folder.exists()
+        try:
+            dlss_dir = folder / "dlss"
+            dlss_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(dll, dlss_dir / HELIXSR_DLL_HLX)
+            template = dll.parent / "helixsr.ini"
+            if not (dlss_dir / "helixsr.ini").exists() and template.exists():
+                shutil.copyfile(template, dlss_dir / "helixsr.ini")
+            if injector.is_symlink():   # copying onto ReShade's link would overwrite ReShade's own DLL
+                injector.unlink()
+            shutil.copyfile(source, injector)
+
+            text = ini.read_text(encoding="utf-8", errors="replace")
+            wanted = {("Upscalers", "Dx12Upscaler"): HELIXSR_HLX_NAME, **HELIXSR_HLX_FG_KEYS}
+            if previous is None:
+                previous = {f"{s}/{k}": self._helixsr_ini_get(text, s, k) for (s, k) in wanted}
+            for (section, key), value in wanted.items():
+                text = self._helixsr_ini_set(text, section, key, value)
+            ini.write_text(text, encoding="utf-8")
+
+            installed = self._helixsr_installed() or {}
+            self._write_json_file(marker, {
+                "previous": previous,
+                "set": {f"{s}/{k}": v for (s, k), v in wanted.items()},
+                "helixsr": self._helixsr_dll_version(dll),
+                "tag": installed.get("tag"),
+                "optiscaler": OPTISCALER_HLX_ASSET["version"],
+                "installed_at": datetime.now(timezone.utc).isoformat(),
+            })
+        except Exception:
+            if created:   # no half-made folder that would block the next patch
+                shutil.rmtree(folder, ignore_errors=True)
+            raise
+        version = self._helixsr_dll_version(dll) or ""
+        return f"HelixSR {version} (HLX DLSS) set as OptiScaler's upscaler. In the game, select DLSS."
+
     def _helixsr_game_check(self, directory: Path) -> dict | None:
         """Whether a game patched with HelixSR is set up and what helixsr.log (written next to HelixSR once
         OptiScaler loads it) says. None when the game doesn't use HelixSR."""
         sub = Path(directory) / HELIXSR_GAME_SUBDIR
-        if not (sub / HELIXSR_GAME_MARKER).exists():
-            return None
-        dll = sub / HELIXSR_GAME_SR_DLL
+        hlx = self._helixsr_hlx_folder(directory)
         ini_text = ""
         try:
             ini_text = (Path(directory) / "OptiScaler.ini").read_text(encoding="utf-8", errors="replace")
         except OSError:
             pass
-        sr_value = (self._helixsr_ini_get(ini_text, "Libraries", "FfxDx12SRPath") or "").strip()
-        configured = dll.exists() and sr_value.lower() == self._helixsr_win_path(dll).lower()
-        log = sub / "helixsr.log"
+        if (hlx / HELIXSR_GAME_MARKER).exists():
+            dll = hlx / "dlss" / HELIXSR_DLL_HLX
+            upscaler = (self._helixsr_ini_get(ini_text, "Upscalers", "Dx12Upscaler") or "").strip()
+            configured = dll.exists() and upscaler.lower() == HELIXSR_HLX_NAME.lower()
+        elif (sub / HELIXSR_GAME_MARKER).exists():
+            dll = sub / HELIXSR_GAME_SR_DLL
+            sr_value = (self._helixsr_ini_get(ini_text, "Libraries", "FfxDx12SRPath") or "").strip()
+            configured = dll.exists() and sr_value.lower() == self._helixsr_win_path(dll).lower()
+        else:
+            return None
+        log = dll.parent / "helixsr.log"
         lines = self._helixsr_tail(log, 400) if log.exists() else []
         text = "\n".join(lines)
         if not lines:
@@ -5225,7 +5310,8 @@ class _HelixSRMixin:
             log_status = "loaded"
         last_upscale = None
         for line in lines:
-            match = re.search(r"dispatch \d+: render (\d+)x(\d+) -> (\d+)x(\d+)", line)
+            # up to 2.0 "dispatch 12: render AxB -> CxD", 3.0+ "input: ... -> NGX: render AxB output CxD"
+            match = re.search(r"(?:dispatch \d+|NGX): render (\d+)x(\d+) (?:->|output) (\d+)x(\d+)", line)
             if match and "dry run" not in line:
                 last_upscale = f"{match.group(1)}x{match.group(2)} -> {match.group(3)}x{match.group(4)}"
         errors = [line.strip() for line in lines if "HelixSR ERROR" in line or "NOT RUNNING" in line][-2:]
@@ -5239,8 +5325,40 @@ class _HelixSRMixin:
         }
 
     def _helixsr_remove_from_game(self, directory: Path, restore_ini: bool = True) -> bool:
-        """Removes the HelixSR folder this plugin made and, if asked, puts OptiScaler.ini's previous values
-        back (only those that still hold HelixSR's value). False when there was nothing to remove."""
+        """Removes what this plugin put in for HelixSR (either route) and, if asked, puts OptiScaler.ini's
+        previous values back (only those that still hold HelixSR's value). False when there was nothing to remove."""
+        removed_ffx = self._helixsr_remove_ffx_route(directory, restore_ini)
+        removed_hlx = self._helixsr_remove_hlx_route(directory, restore_ini)
+        return removed_ffx or removed_hlx
+
+    def _helixsr_restore_ini(self, directory: Path, data: dict) -> None:
+        ini = Path(directory) / "OptiScaler.ini"
+        if not ini.exists():
+            return
+        text = ini.read_text(encoding="utf-8", errors="replace")
+        for section_key, old in (data.get("previous") or {}).items():
+            section, key = section_key.split("/", 1)
+            if (self._helixsr_ini_get(text, section, key) or "") == ((data.get("set") or {}).get(section_key) or ""):
+                if old is None or (key.lower().endswith("path") and str(old).strip().lower() == "plugins"):
+                    old = "auto"   # never put back the old template bug
+                text = self._helixsr_ini_set(text, section, key, old)
+        ini.write_text(text, encoding="utf-8")
+
+    def _helixsr_remove_hlx_route(self, directory: Path, restore_ini: bool = True) -> bool:
+        folder = self._helixsr_hlx_folder(directory)
+        marker = folder / HELIXSR_GAME_MARKER
+        if not marker.exists():
+            return False
+        if restore_ini:
+            self._helixsr_restore_ini(directory, self._read_json_file(marker))
+        shutil.rmtree(folder, ignore_errors=True)
+        try:
+            folder.parent.rmdir()   # custom/, when nothing else is in it
+        except OSError:
+            pass
+        return True
+
+    def _helixsr_remove_ffx_route(self, directory: Path, restore_ini: bool = True) -> bool:
         sub = directory / HELIXSR_GAME_SUBDIR
         marker = sub / HELIXSR_GAME_MARKER
         if not marker.exists():
@@ -5257,17 +5375,8 @@ class _HelixSRMixin:
                 ini.write_text(text, encoding="utf-8")
             shutil.rmtree(sub, ignore_errors=True)
             return True
-        data = self._read_json_file(marker)
-        ini = directory / "OptiScaler.ini"
-        if restore_ini and ini.exists():
-            text = ini.read_text(encoding="utf-8", errors="replace")
-            for section_key, old in (data.get("previous") or {}).items():
-                section, key = section_key.split("/", 1)
-                if (self._helixsr_ini_get(text, section, key) or "") == ((data.get("set") or {}).get(section_key) or ""):
-                    if old is None or (key.lower().endswith("path") and str(old).strip().lower() == "plugins"):
-                        old = "auto"   # never put back the old template bug
-                    text = self._helixsr_ini_set(text, section, key, old)
-            ini.write_text(text, encoding="utf-8")
+        if restore_ini:
+            self._helixsr_restore_ini(directory, self._read_json_file(marker))
         shutil.rmtree(sub, ignore_errors=True)
         return True
 
