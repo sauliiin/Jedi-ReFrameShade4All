@@ -162,6 +162,39 @@ function getLaunchOptions$1(appId) {
 function setLaunchOptions(appId, options) {
     SteamClient.Apps.SetAppLaunchOptions(appId, options);
 }
+// The LSFG-VK launch wrapper; Steam runs it in front of the game.
+const LSFG_WRAPPER = "~/.jedi-lsfg";
+// Wrappers from decky-lsfg-vk and MAKO Decky: two frame generation layers on one game don't work together.
+const LEGACY_LSFG_WRAPPER = /^(?:~\/\.?lsfg|~\/\.local\/bin\/(?:lsfg|lsfg-vk-experimental|mako-run|mako-launch)|mako-run|mako-launch|\/home\/[^/]+\/(?:\.?lsfg|\.local\/bin\/(?:lsfg|lsfg-vk-experimental|mako-run|mako-launch)))$/;
+function hasLsfgWrapper(opts) {
+    const tokens = (opts || "").trim().split(/\s+/);
+    const command = tokens.indexOf("%command%");
+    return command > 0 && tokens[command - 1] === LSFG_WRAPPER;
+}
+// Puts ~/.jedi-lsfg right before %command% (on) or takes it out (off), keeping the rest of the launch options.
+function withLsfgWrapper(opts, enabled) {
+    const tokens = (opts || "").trim().split(/\s+/).filter((t) => t && t !== LSFG_WRAPPER && !LEGACY_LSFG_WRAPPER.test(t));
+    if (enabled) {
+        let command = tokens.indexOf("%command%");
+        if (command < 0) {
+            // Like Steam: leading NAME=value assignments stay in front of the command.
+            command = 0;
+            while (command < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[command]))
+                command++;
+            tokens.splice(command, 0, "%command%");
+        }
+        tokens.splice(command, 0, LSFG_WRAPPER);
+    }
+    const next = tokens.join(" ");
+    return next === "%command%" ? "" : next;
+}
+// For writers that rebuild the launch options from scratch: keeps ~/.jedi-lsfg when the game had it.
+async function setLaunchOptionsKeepingLsfg(appId, options) {
+    const current = await getLaunchOptions$1(appId);
+    const next = hasLsfgWrapper(current) ? withLsfgWrapper(options, true) : options;
+    SteamClient.Apps.SetAppLaunchOptions(appId, next);
+    return next;
+}
 
 // Shared constants for the application
 // Common style definitions
@@ -276,7 +309,7 @@ function OptiScalerControls({ pathExists, setPathExists, fgmodInfo, fsr4Variant 
             if (r.status === "success") {
                 if (r.launch_options) {
                     try {
-                        setLaunchOptions(parseInt(appid, 10), r.launch_options);
+                        r.launch_options = await setLaunchOptionsKeepingLsfg(parseInt(appid, 10), r.launch_options);
                     }
                     catch (e) {
                         console.error(e);
@@ -309,7 +342,7 @@ function OptiScalerControls({ pathExists, setPathExists, fgmodInfo, fsr4Variant 
             const r = await removeOptiScalerOnly(appid, targetExePath || "", current);
             if (r.status === "success") {
                 try {
-                    setLaunchOptions(parseInt(appid, 10), r.launch_options || "");
+                    r.launch_options = await setLaunchOptionsKeepingLsfg(parseInt(appid, 10), r.launch_options || "");
                 }
                 catch (e) {
                     console.error(e);
@@ -399,8 +432,20 @@ const unpatchAllGame = callable("unpatch_all_game");
 const getCachyosFsr4Status = callable("get_cachyos_fsr4_status");
 const prepareCachyosFsr4Lite = callable("prepare_cachyos_fsr4_lite");
 const installProtonLite = callable("install_proton_lite");
+const getProtonLiteUpdateStatus = callable("get_proton_lite_update_status");
+// Every Lite Proton copy's internal name ends with this (up to 1.1.23 it also carried the release).
+const LITE_TOOL_SUFFIX = "-jedi-fsr4lite";
 const uninstallProtonLite = callable("uninstall_proton_lite");
 const rememberCompatTool = callable("remember_compat_tool");
+const getLsfgStatus = callable("get_lsfg_status");
+const enableLsfg = callable("enable_lsfg");
+const disableLsfg = callable("disable_lsfg");
+const setLsfgTargetFps = callable("set_lsfg_target_fps");
+// LSFG-VK target FPS: the slider only saves the value it settles on (each save rewrites MAKO's profiles).
+const LSFG_FPS_MIN = 60;
+const LSFG_FPS_MAX = 120;
+const LSFG_SAVE_DEBOUNCE_MS = 300;
+const LSFG_FPS_NOTCHES = [60, 90, 120].map((value, notchIndex) => ({ notchIndex, label: String(value), value }));
 // Sets the patched Proton-CachyOS for the game once Steam lists it (Steam picks up new tools on restart).
 async function selectLiteProton(appid, status) {
     if (!status?.lite_tool_name)
@@ -410,7 +455,9 @@ async function selectLiteProton(appid, status) {
     const tools = await SteamClient.Apps.GetAvailableCompatTools(parseInt(appid, 10));
     if (!(tools || []).some((t) => t.strToolName === status.lite_tool_name))
         return null;
-    await rememberCompatTool(appid, status.tool_name || "");
+    // Moving off an older Lite copy keeps the Proton the game had before Lite.
+    if (!(status.tool_name || "").endsWith(LITE_TOOL_SUFFIX))
+        await rememberCompatTool(appid, status.tool_name || "");
     SteamClient.Apps.SpecifyCompatTool(parseInt(appid, 10), status.lite_tool_name);
     return { ...status, previous_tool: status.tool_name || "", tool_name: status.lite_tool_name, tool_label: status.lite_proton, takes_dll_path: true };
 }
@@ -570,8 +617,7 @@ function HelixSRPanel() {
         }
     };
     const handleInstall = () => {
-        const version = info?.latest_version ? ` ${info.latest_version}` : "";
-        DFL.showModal(window.SP_REACT.createElement(DFL.ConfirmModal, { strTitle: `${info?.installed ? "Update" : "Install"} HelixSR${version}?`, strDescription: "HelixSR's setup downloads NVIDIA's DLSS 310.7.0 DLL from NVIDIA's GitHub (NVIDIA's license applies), a portable Python and Microsoft's shader compiler, builds the network on this device and deletes NVIDIA's DLL again. It takes about 7-10 minutes on a Steam Deck: keep it plugged in and awake. The installed HelixSR (if any) is replaced once the build succeeds.", strOKButtonText: "Download and build", strCancelButtonText: "Cancel", onOK: () => void doInstall() }));
+        DFL.showModal(window.SP_REACT.createElement(DFL.ConfirmModal, { strTitle: `${info?.installed ? "Update to" : "Install"} ${info?.latest_label || "HelixSR"}?`, strDescription: "HelixSR's setup downloads NVIDIA's DLSS 310.7.0 DLL from NVIDIA's GitHub (NVIDIA's license applies), a portable Python and Microsoft's shader compiler, builds the network on this device and deletes NVIDIA's DLL again. It takes about 7-10 minutes on a Steam Deck: keep it plugged in and awake. The installed HelixSR (if any) is replaced once the build succeeds.", strOKButtonText: "Download and build", strCancelButtonText: "Cancel", onOK: () => void doInstall() }));
     };
     const handleCancel = async () => {
         try {
@@ -586,15 +632,17 @@ function HelixSRPanel() {
         }
     };
     const setup = info?.setup;
+    // Full release names: "HelixSR 3.2.0 (pre-release)", or "(re-uploaded …)" for a new zip under the same tag.
+    const installedName = info?.installed_label || `HelixSR ${info?.installed_version || ""}`.trim();
     const installedLine = !info
         ? "Checking HelixSR…"
         : info.installed
             ? info.up_to_date
-                ? `🟢 HelixSR ${info.installed_version || ""} installed (latest)`
-                : info.latest_version
-                    ? `🟡 HelixSR ${info.installed_version || ""} installed — ${info.latest_version} available`
-                    : `🟢 HelixSR ${info.installed_version || ""} installed`
-            : `⚪ HelixSR not installed${info.latest_version ? ` (latest: ${info.latest_version})` : ""}`;
+                ? `🟢 ${installedName} installed (latest)`
+                : info.latest_label
+                    ? `🟡 ${installedName} installed — ${info.latest_label} available`
+                    : `🟢 ${installedName} installed`
+            : `⚪ HelixSR not installed${info.latest_label ? ` (latest: ${info.latest_label})` : ""}`;
     const showInstallButton = info && !busy && !info.up_to_date;
     const mb = (bytes) => `${((bytes || 0) / 1048576).toFixed(0)} MB`;
     const downloadText = !downloading
@@ -620,18 +668,18 @@ function HelixSRPanel() {
                     "❌ The last HelixSR build failed.",
                     (setup.errors || []).length > 0 ? `\n${setup.errors.join("\n")}` : "",
                     `\nLog: ${setup.log_path}`)),
-                download?.error && (window.SP_REACT.createElement("div", { style: { color: "#ff6b6b", marginTop: "4px", whiteSpace: "pre-wrap", wordBreak: "break-word" } }, `❌ HelixSR ${download.version || ""} download failed: ${download.error}`)),
+                download?.error && (window.SP_REACT.createElement("div", { style: { color: "#ff6b6b", marginTop: "4px", whiteSpace: "pre-wrap", wordBreak: "break-word" } }, `❌ ${download.label || `HelixSR ${download.version || ""}`} download failed: ${download.error}`)),
                 setup?.state === "stopped" && (window.SP_REACT.createElement("div", { style: { opacity: 0.7, marginTop: "4px" } }, "The last HelixSR build was interrupted (sleep or restart). Start it again.")))),
         downloading && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement(DFL.ProgressBarWithInfo, { layout: "below", bottomSeparator: "none", indeterminate: download.phase === "downloading" && !download.total,nProgress: downloadProgress, sOperationText: downloadText, description: `HelixSR ${download.version || ""}: the build starts right after. You can close this menu.` }))),
+            window.SP_REACT.createElement(DFL.ProgressBarWithInfo, { layout: "below", bottomSeparator: "none", indeterminate: download.phase === "downloading" && !download.total,nProgress: downloadProgress, sOperationText: downloadText, description: `${download.label || `HelixSR ${download.version || ""}`}: the build starts right after. You can close this menu.` }))),
         building && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement(DFL.ProgressBarWithInfo, { layout: "below", bottomSeparator: "none", nProgress: setup.progress || 0, sOperationText: setup.phase || "Building HelixSR…", sTimeRemaining: setup.elapsed != null ? formatElapsed(setup.elapsed) : undefined, description: `Building HelixSR ${setup.tag || ""} — about 7-10 minutes on a Steam Deck. You can close this menu.` }))),
         showInstallButton && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleInstall, disabled: working }, working
                 ? "Starting…"
                 : info.installed
-                    ? `⬆️ Update HelixSR${info.latest_version ? ` to ${info.latest_version}` : ""}`
-                    : `⬇️ Install HelixSR${info.latest_version ? ` ${info.latest_version}` : ""}`))),
+                    ? `⬆️ Update to ${info.latest_label || "the latest HelixSR"}`
+                    : `⬇️ Install ${info.latest_label || "HelixSR"}`))),
         building && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleCancel }, "Cancel HelixSR build"))),
         window.SP_REACT.createElement(DFL.PanelSectionRow, null,
@@ -680,6 +728,72 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, }) {
     const [fsr4Upgrade, setFsr4Upgrade] = SP_REACT.useState(false);
     const [fsr4Indicator, setFsr4Indicator] = SP_REACT.useState(false);
     const [fsr4LitePath, setFsr4LitePath] = SP_REACT.useState("");
+    const [lsfg, setLsfg] = SP_REACT.useState(null);
+    const [lsfgFps, setLsfgFps] = SP_REACT.useState(LSFG_FPS_MIN);
+    const lsfgSaveTimer = SP_REACT.useRef(null);
+    SP_REACT.useEffect(() => () => clearTimeout(lsfgSaveTimer.current), []);
+    // On only while the backend has the game's profile and ~/.jedi-lsfg is in its launch options.
+    const loadLsfg = async (id) => {
+        setLsfg(null);
+        try {
+            const [r, current] = await Promise.all([getLsfgStatus(id), getLaunchOptions(parseInt(id, 10)).catch(() => "")]);
+            if (r.status !== "success") {
+                await logError$4(`SteamGameCombinedSection -> lsfg status: ${r.message}`);
+                return;
+            }
+            setLsfg({ ...r, enabled: r.enabled && hasLsfgWrapper(current) });
+            setLsfgFps(r.target_fps);
+        }
+        catch (e) {
+            await logError$4(`SteamGameCombinedSection -> lsfg: ${String(e)}`);
+        }
+    };
+    const handleLsfgToggle = async (enabled) => {
+        if (!appid)
+            return;
+        const id = parseInt(appid, 10);
+        try {
+            setBusy(true);
+            if (!enabled) {
+                const next = withLsfgWrapper(await getLaunchOptions(id), false);
+                SteamClient.Apps.SetAppLaunchOptions(id, next);
+                setLsfg({ ...lsfg, enabled: false });
+                const r = await disableLsfg(appid);
+                setResult(r.status === "success" ? `✅ Launch options: ${next || "(empty)"}` : `❌ ${r.message || "Could not turn LSFG-VK off."}`);
+                return;
+            }
+            if (!lsfg?.renderer_installed)
+                setResult("Installing MAKO Renderer…");
+            const nonSteam = !!games.find((g) => g.appid === appid)?.non_steam;
+            const r = await enableLsfg(appid, lsfgFps, nonSteam);
+            if (r.status !== "success") {
+                setResult(`❌ ${r.message || "Could not turn LSFG-VK on."}`);
+                return;
+            }
+            const next = withLsfgWrapper(await getLaunchOptions(id), true);
+            SteamClient.Apps.SetAppLaunchOptions(id, next);
+            setLsfg({ ...lsfg, renderer_installed: true, lossless_found: true, enabled: true });
+            setLsfgFps(r.target_fps);
+            setResult(`✅ Launch options: ${next}`);
+        }
+        catch (e) {
+            setResult(`❌ ${String(e)}`);
+            await logError$4(`SteamGameCombinedSection -> lsfg toggle: ${String(e)}`);
+        }
+        finally {
+            setBusy(false);
+        }
+    };
+    const handleLsfgFps = (value) => {
+        setLsfgFps(value);
+        clearTimeout(lsfgSaveTimer.current);
+        const id = appid;
+        lsfgSaveTimer.current = setTimeout(async () => {
+            const r = await setLsfgTargetFps(id, value).catch((e) => ({ status: "error", message: String(e) }));
+            if (r.status !== "success")
+                setResult(`❌ ${r.message || "Could not save the target FPS."}`);
+        }, LSFG_SAVE_DEBOUNCE_MS);
+    };
     const getLiteStatus = async (id) => {
         const [r, live] = await Promise.all([
             getCachyosFsr4Status(id).catch((e) => logError$4(`SteamGameCombinedSection -> cachyos status: ${String(e)}`).then(() => null)),
@@ -736,7 +850,7 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, }) {
             if (!enabled) {
                 const next = await applyProtonFsr4("");
                 setResult(`✅ Launch options: ${next || "(empty)"}`);
-                if (cachyos?.lite_tool_name && cachyos.tool_name === cachyos.lite_tool_name && cachyos.previous_tool !== null && cachyos.previous_tool !== undefined) {
+                if (cachyos?.lite_tool_name && (cachyos.tool_name || "").endsWith(LITE_TOOL_SUFFIX) && cachyos.previous_tool !== null && cachyos.previous_tool !== undefined) {
                     SteamClient.Apps.SpecifyCompatTool(parseInt(appid, 10), cachyos.previous_tool);
                     setCachyos({ ...cachyos, tool_name: cachyos.previous_tool, tool_label: cachyos.previous_tool || "Steam default", takes_dll_path: false });
                     setResult("✅ FSR 4.1.2 Lite off.");
@@ -748,25 +862,26 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, }) {
                 setResult(`❌ ${r.message || "Could not prepare the FSR 4.1.2 Lite DLL."}`);
                 return;
             }
-            // Installed once: with the copy already there, only the Proton and the launch options are set.
-            let status = await getLiteStatus(appid);
-            if (!status.takes_dll_path) {
-                if (!status.lite_tool_name) {
-                    setResult("Installing the Lite Proton (~330 MB)…");
-                    const inst = await installProtonLite();
-                    if (inst.status !== "success") {
-                        setResult(`❌ ${inst.message || "Could not install the Lite Proton."}`);
-                        return;
-                    }
-                    status = await getLiteStatus(appid);
-                }
-                status = (await selectLiteProton(appid, status)) || status;
+            // Always checks Proton-CachyOS's newest release: a newer one replaces the Lite copy (same name, so
+            // games keep it); otherwise the copy already there is reused.
+            setResult("Checking Proton-CachyOS…");
+            const upd = await getProtonLiteUpdateStatus().catch(() => null);
+            if (upd?.status === "success" && upd.update_available)
+                setResult(upd.installed ? `Updating the Lite Proton to ${upd.latest} (~330 MB)…` : "Installing the Lite Proton (~330 MB)…");
+            const inst = await installProtonLite();
+            if (inst.status !== "success") {
+                setResult(`❌ ${inst.message || "Could not install the Lite Proton."}`);
+                return;
             }
+            let status = await getLiteStatus(appid);
+            if (!status.takes_dll_path)
+                status = (await selectLiteProton(appid, status)) || status;
             const next = await applyProtonFsr4(r.path);
             setCachyos(status);
+            const note = inst.message ? `\n${inst.message}` : inst.updated ? `\nLite Proton updated: ${inst.tool_label}.` : "";
             setResult(status.takes_dll_path
-                ? `✅ FSR 4.1.2 Lite on.\n\n${next}`
-                : `✅ Lite Proton installed. Restart Steam to finish.\n\n${next}`);
+                ? `✅ FSR 4.1.2 Lite on.${note}\n\n${next}`
+                : `✅ Lite Proton installed. Restart Steam to finish.${note}\n\n${next}`);
             showLiteProtonModal(status);
         }
         catch (e) {
@@ -855,7 +970,7 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, }) {
                     r.launch_options = withLaunchEnv(r.launch_options, FSR4_INDICATOR_ENV, true);
                 if (r.launch_options) {
                     try {
-                        SteamClient.Apps.SetAppLaunchOptions(parseInt(appid, 10), r.launch_options);
+                        r.launch_options = await setLaunchOptionsKeepingLsfg(parseInt(appid, 10), r.launch_options);
                     }
                     catch (e) {
                         await logError$4(`SetAppLaunchOptions: ${String(e)}`);
@@ -889,7 +1004,7 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, }) {
             const r = await unpatchAllGame(appid, current);
             if (r.status === "success") {
                 try {
-                    SteamClient.Apps.SetAppLaunchOptions(parseInt(appid, 10), r.launch_options || "");
+                    r.launch_options = await setLaunchOptionsKeepingLsfg(parseInt(appid, 10), r.launch_options || "");
                 }
                 catch (e) {
                     await logError$4(`SetAppLaunchOptions(remove): ${String(e)}`);
@@ -927,7 +1042,12 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, }) {
                     setResult("");
                     void loadStatus(o.data);
                     void loadCachyos(o.data);
+                    void loadLsfg(o.data);
                 }, strDefaultLabel: "Select a game..." })),
+        appid && lsfg && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+            window.SP_REACT.createElement(DFL.ToggleField, { label: "LSFG-VK", description: lsfg.lossless_found ? "Lossless Scaling frame generation." : "Needs Lossless Scaling on Steam.", checked: lsfg.enabled, disabled: busy, onChange: (v) => void handleLsfgToggle(v) }))),
+        appid && lsfg?.enabled && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+            window.SP_REACT.createElement(DFL.SliderField, { label: `Target FPS · ${lsfgFps}`, value: lsfgFps, min: LSFG_FPS_MIN, max: LSFG_FPS_MAX, step: 1, notchCount: LSFG_FPS_NOTCHES.length, notchLabels: LSFG_FPS_NOTCHES, notchTicksVisible: true, showValue: false, onChange: handleLsfgFps }))),
         status && appid && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", padding: "8px", backgroundColor: "rgba(255,255,255,0.05)", borderRadius: "4px" } },
                 window.SP_REACT.createElement("div", null,
@@ -1584,9 +1704,9 @@ function ReShadeInstallerSection({ appid, targetExePath = "" }) {
             catch (e) {
                 await logError$2(`ReShadeInstallerSection -> getCombinedGameStatus: ${String(e)}`);
             }
-            const launchOptions = buildSteamLaunchOptions(resolvedApi, optiscalerSlot);
+            let launchOptions = buildSteamLaunchOptions(resolvedApi, optiscalerSlot);
             try {
-                SteamClient.Apps.SetAppLaunchOptions(parseInt(appid, 10), launchOptions);
+                launchOptions = await setLaunchOptionsKeepingLsfg(parseInt(appid, 10), launchOptions);
             }
             catch (e) {
                 await logError$2(`ReShadeInstallerSection -> SetAppLaunchOptions: ${String(e)}`);
@@ -1624,7 +1744,7 @@ function ReShadeInstallerSection({ appid, targetExePath = "" }) {
                 return;
             }
             try {
-                SteamClient.Apps.SetAppLaunchOptions(parseInt(appid, 10), result.launch_options || "");
+                result.launch_options = await setLaunchOptionsKeepingLsfg(parseInt(appid, 10), result.launch_options || "");
             }
             catch (e) {
                 await logError$2(`ReShadeInstallerSection -> SetAppLaunchOptions: ${String(e)}`);
@@ -1897,6 +2017,8 @@ const getPluginUpdateStatus = callable("get_plugin_update_status");
 const installPluginUpdate = callable("install_plugin_update");
 // Plugin self-update: compares this plugin with its newest GitHub release; the backend writes the
 // release over the plugin and Decky reloads it. (Decky's own install prompt didn't show from the Quick Access menu.)
+// Survives the reload after an update, so the reloaded panel can say it worked.
+const PLUGIN_UPDATED_KEY = "jedi-reframeshade4all-updated-to";
 function PluginUpdateSection() {
     const [info, setInfo] = SP_REACT.useState(null);
     const [checking, setChecking] = SP_REACT.useState(false);
@@ -1905,7 +2027,19 @@ function PluginUpdateSection() {
     const refresh = async (force = false) => {
         try {
             setChecking(true);
-            setInfo(await getPluginUpdateStatus(force));
+            const status = await getPluginUpdateStatus(force);
+            setInfo(status);
+            let updatedTo = null;
+            try {
+                updatedTo = localStorage.getItem(PLUGIN_UPDATED_KEY);
+                if (updatedTo)
+                    localStorage.removeItem(PLUGIN_UPDATED_KEY);
+            }
+            catch (e) { }
+            if (updatedTo && updatedTo === status?.installed_version) {
+                setMessage(`✅ Updated to v${updatedTo}.`);
+                toaster.toast({ title: "Jedi ReFrameShade4All", body: `Updated to v${updatedTo}.` });
+            }
         }
         catch (e) {
             await logError$4(`PluginUpdateSection -> status: ${String(e)}`);
@@ -1927,6 +2061,10 @@ function PluginUpdateSection() {
                 return;
             }
             setMessage(`✅ v${r.version} installed. Reloading the plugin…`);
+            try {
+                localStorage.setItem(PLUGIN_UPDATED_KEY, r.version);
+            }
+            catch (e) { }
             try {
                 await window.DeckyBackend.call("loader/reload_plugin", r.plugin_name || manifest.name);
             }

@@ -2,6 +2,7 @@ import decky
 import asyncio
 import os
 import signal
+import sys
 import subprocess
 import time
 import zipfile
@@ -280,6 +281,10 @@ PROTON_FSR4_LITE_DIRNAME = "fgmod-proton-fsr4"
 PROTON_CACHYOS_RELEASES_API = "https://api.github.com/repos/CachyOS/proton-cachyos/releases?per_page=10"
 PROTON_CACHYOS_ASSET_RE = re.compile(r"^(proton-cachyos-[A-Za-z0-9._-]+-x86_64)\.tar\.xz$")
 PROTON_LITE_SUFFIX = "-jedi-fsr4lite"
+# One internal name for every release, so an update replaces the copy in place: games set to it keep it and
+# Steam keeps a single entry. Up to 1.1.23 the name carried the release (proton-cachyos-<release>-jedi-fsr4lite).
+PROTON_LITE_TOOL_NAME = "proton-cachyos" + PROTON_LITE_SUFFIX
+PROTON_LITE_RELEASE_FILE = ".jedi-proton-lite.json"
 PROTON_LITE_MARKER = "# Jedi-ReFrameShade4All: local dll"
 PROTON_LITE_UPSCALER_PATCHES = (
     (
@@ -4736,6 +4741,7 @@ class _HelixSRMixin:
             "dll": dll,
             "tag": tag,
             "version": self._helixsr_dll_version(dll) or (tag.lstrip("v") if tag else None),
+            "label": str(meta.get("label") or ""),
             "sha256": meta.get("sha256"),
             "built": self._helixsr_has_network(dll),
             "kind": self._helixsr_dll_kind(dll),
@@ -4770,8 +4776,17 @@ class _HelixSRMixin:
         other = [a for a in zips if not re.search(r"scaler|desktop", a["name"].lower())]
         return (own or other or [None])[0]
 
+    @staticmethod
+    def _helixsr_release_label(release: dict) -> str:
+        """The release's full name, e.g. "HelixSR 3.2.0 (pre-release)"."""
+        tag = str(release.get("tag_name") or "")
+        label = " ".join(str(release.get("name") or "").split()) or f"HelixSR {tag.lstrip('vV')}"
+        if release.get("prerelease") and "pre-release" not in label.lower() and "prerelease" not in label.lower():
+            label += " (pre-release)"
+        return label
+
     def _helixsr_latest_release(self, use_cache: bool = True) -> dict:
-        """Newest published (non-draft, non-prerelease) HelixSR release that carries HelixSR's zip."""
+        """Newest published HelixSR release (pre-releases included, drafts not) that carries HelixSR's zip."""
         now = time.time()
         cached = self._helixsr_latest_cache
         if use_cache and cached and now - cached[0] < HELIXSR_LATEST_CACHE_SECONDS:
@@ -4781,7 +4796,7 @@ class _HelixSRMixin:
             raise RuntimeError("Unexpected GitHub releases response")
         candidates = []
         for release in releases:
-            if release.get("draft") or release.get("prerelease"):
+            if release.get("draft"):
                 continue
             tag = str(release.get("tag_name") or "")
             asset = self._helixsr_release_zip(release.get("assets") or [])
@@ -4791,6 +4806,9 @@ class _HelixSRMixin:
             candidates.append({
                 "tag": tag,
                 "version": tag.lstrip("vV"),
+                "label": self._helixsr_release_label(release),
+                "prerelease": bool(release.get("prerelease")),
+                "uploaded_at": str(asset.get("updated_at") or ""),
                 "name": asset["name"],
                 "url": asset["browser_download_url"],
                 "size": asset.get("size"),
@@ -4863,6 +4881,7 @@ class _HelixSRMixin:
             self._helixsr_fetch_dlss(*dlss_source, progress)
         self._write_json_file(staging / HELIXSR_META_FILENAME, {
             "tag": release["tag"],
+            "label": release.get("label"),
             "asset_name": release["name"],
             "sha256": digest,
             "verified": bool(release.get("sha256")),
@@ -5478,10 +5497,20 @@ class _HelixSRMixin:
             installed and installed["built"] and latest and installed.get("tag") == latest["tag"]
             and (not latest.get("sha256") or not installed.get("sha256") or installed["sha256"] == latest["sha256"])
         )
+        installed_label = None
+        if installed:
+            installed_label = installed["label"] or (f"HelixSR {installed['version']}" if installed["version"] else "HelixSR")
+        latest_label = latest["label"] if latest else None
+        # Same tag, other SHA256: the release's zip was uploaded again.
+        if latest and not is_latest and installed and installed.get("tag") == latest["tag"]:
+            latest_label += f" (re-uploaded {latest['uploaded_at'][:10]})" if latest.get("uploaded_at") else " (re-uploaded)"
         return {
             "status": "success",
             "installed": bool(installed and installed["built"]),
             "installed_version": installed["version"] if installed else None,
+            "installed_label": installed_label,
+            "latest_label": latest_label,
+            "latest_prerelease": bool(latest and latest.get("prerelease")),
             "installed_tag": installed["tag"] if installed else None,
             "latest_version": latest["version"] if latest else None,
             "latest_tag": latest["tag"] if latest else None,
@@ -5506,6 +5535,7 @@ class _HelixSRMixin:
             "active": not data.get("error"),
             "tag": data.get("tag"),
             "version": data.get("version"),
+            "label": data.get("label"),
             "phase": data.get("phase"),
             "bytes": done,
             "total": data.get("total"),
@@ -5528,13 +5558,13 @@ class _HelixSRMixin:
         if (installed and installed["built"] and installed.get("tag") == latest["tag"]
                 and (not latest.get("sha256") or installed.get("sha256") in (None, latest["sha256"]))):
             return {"status": "success", "started": False,
-                    "message": f"HelixSR {latest['version']} (the latest) is already installed."}
-        self._helixsr_download = {"tag": latest["tag"], "version": latest["version"], "path": None,
+                    "message": f"{latest['label']} (the latest) is already installed."}
+        self._helixsr_download = {"tag": latest["tag"], "version": latest["version"], "label": latest["label"], "path": None,
                                   "total": latest.get("size"), "phase": "downloading", "error": None}
         asyncio.get_event_loop().create_task(self._helixsr_install_task(latest))
         size_mb = f" ({int(latest['size']) / 1048576:.0f} MB)" if latest.get("size") else ""
         return {"status": "success", "started": True,
-                "message": f"Downloading HelixSR {latest['version']}{size_mb}, then building its network "
+                "message": f"Downloading {latest['label']}{size_mb}, then building its network "
                            "(about 7-10 minutes on a Steam Deck). Keep the device awake."}
 
     async def _helixsr_install_task(self, release: dict) -> None:
@@ -5550,7 +5580,7 @@ class _HelixSRMixin:
             if isinstance(self._helixsr_download, dict):
                 self._helixsr_download["error"] = str(exc)
             else:
-                self._helixsr_download = {"tag": release["tag"], "version": release["version"], "error": str(exc)}
+                self._helixsr_download = {"tag": release["tag"], "version": release["version"], "label": release.get("label"), "error": str(exc)}
 
     async def cancel_helixsr_setup(self) -> dict:
         state_file = self._helixsr_setup_state_file()
@@ -5567,8 +5597,213 @@ class _HelixSRMixin:
         return {"status": "success", "message": "HelixSR build cancelled. The installed release (if any) is unchanged."}
 
 
+# ===== LSFG-VK backend (merged from the Jedi LSFG-VK plugin, defaults/py_modules/lsfg_vk) =====
+# Decky leaves the plugin folder itself root-owned, so Plugin Update can't create a top-level py_modules/
+# there; defaults/ is in every install and writable.
+sys.path.insert(0, str(Path(__file__).resolve().parent / "defaults" / "py_modules"))
+from lsfg_vk.config_schema import TARGET_FPS_MAX as LSFG_TARGET_FPS_MAX, TARGET_FPS_MIN as LSFG_TARGET_FPS_MIN
+from lsfg_vk.configuration import ConfigurationService as LsfgConfigurationService
+from lsfg_vk.constants import (
+    ACTIVE_RENDERER_STATE as MAKO_ACTIVE_RENDERER_STATE,
+    MAKO_ARCHIVE_TEMPLATE,
+    MAKO_RELEASE_TAG_PREFIX,
+    MAKO_RELEASES_API,
+)
+from lsfg_vk.installation import InstallationService as LsfgInstallationService
+from lsfg_vk.runtime_service import RuntimeService as LsfgRuntimeService
+from lsfg_vk.steam_service import SteamService as LsfgSteamService
+from lsfg_vk.wrapper_service import WrapperService as LsfgWrapperService
+
+
+class _LsfgMixin:
+    """Lossless Scaling frame generation through MAKO Renderer, one target FPS per game.
+
+    The game's launch options get `~/.jedi-lsfg` before `%command%` (set by the frontend);
+    that wrapper picks the game's MAKO profile from ~/.config/jedi-lsfg-vk/conf.toml.
+    Same files as the standalone Jedi LSFG-VK plugin, so its games carry over.
+    MAKO Renderer is always the newest render-v* release on GitHub.
+    """
+
+    _mako_release_cache = None
+
+    def _lsfg_services(self):
+        if getattr(self, "_lsfg_install", None) is None:
+            runtime = LsfgRuntimeService()
+            self._lsfg_steam = LsfgSteamService()
+            self._lsfg_config = LsfgConfigurationService(runtime_service=runtime)
+            self._lsfg_wrapper = LsfgWrapperService()
+            self._lsfg_install = LsfgInstallationService(runtime_service=runtime, steam_service=self._lsfg_steam)
+        return self._lsfg_install, self._lsfg_config, self._lsfg_wrapper, self._lsfg_steam
+
+    def _lsfg_renderer_ready(self) -> bool:
+        install, *_ = self._lsfg_services()
+        return install._renderer_installed() and install.config_file_path.is_file()
+
+    def _mako_installed_version(self) -> str:
+        install, *_ = self._lsfg_services()
+        try:
+            data = json.loads((install.install_prefix / MAKO_ACTIVE_RENDERER_STATE).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return ""
+        return str(data.get("version") or "") if isinstance(data, dict) else ""
+
+    def _mako_latest_release(self) -> dict | None:
+        """Newest published render-v* release that ships the linux .tar.xz with a SHA256 from GitHub."""
+        cached = _LsfgMixin._mako_release_cache
+        if cached and time.time() - cached[0] < PLUGIN_UPDATE_CACHE_SECONDS:
+            return cached[1]
+        best = None
+        for release in self._request_json(MAKO_RELEASES_API):
+            tag = str(release.get("tag_name") or "")
+            if release.get("draft") or release.get("prerelease") or not tag.startswith(MAKO_RELEASE_TAG_PREFIX):
+                continue
+            version = tag[len(MAKO_RELEASE_TAG_PREFIX):]
+            if not self._parse_version_tuple(version):
+                continue
+            if best and self._parse_version_tuple(version) <= self._parse_version_tuple(best["version"]):
+                continue
+            name = MAKO_ARCHIVE_TEMPLATE.format(version=version)
+            asset = next((a for a in release.get("assets") or [] if a.get("name") == name), None)
+            digest = str((asset or {}).get("digest") or "")
+            if asset and digest.startswith("sha256:"):
+                best = {"version": version, "name": name, "url": asset.get("browser_download_url"), "sha256": digest[7:]}
+        _LsfgMixin._mako_release_cache = (time.time(), best)
+        return best
+
+    def _lsfg_ensure_latest_renderer(self) -> None:
+        """Installs MAKO Renderer, or updates it, when the newest release isn't the installed one."""
+        install, *_ = self._lsfg_services()
+        ready = self._lsfg_renderer_ready()
+        try:
+            latest = self._mako_latest_release()
+        except Exception as exc:
+            # Offline: the installed renderer keeps working.
+            if ready:
+                decky.logger.warning(f"[LSFG] MAKO release check failed, keeping the installed renderer: {exc}")
+                return
+            raise RuntimeError(f"Could not reach GitHub for MAKO Renderer: {exc}")
+        if not latest:
+            if ready:
+                return
+            raise RuntimeError("No MAKO Renderer release found on GitHub.")
+        installed = self._mako_installed_version()
+        if ready and installed == latest["version"]:
+            return
+        with tempfile.TemporaryDirectory(prefix="jedi-mako-") as tmp:
+            archive = Path(tmp) / latest["name"]
+            self._download_file(latest["url"], archive)
+            if self._file_sha256(archive) != latest["sha256"]:
+                raise RuntimeError(f"{latest['name']} doesn't match GitHub's SHA256.")
+            result = install.install(archive)
+        if not result.get("success"):
+            raise RuntimeError(result.get("error") or "Could not install MAKO Renderer.")
+        decky.logger.info(f"[LSFG] MAKO Renderer {installed or 'none'} -> {latest['version']}")
+
+    def _lsfg_profile(self, appid: str):
+        _, config, _, _ = self._lsfg_services()
+        result = config.get_game_configs()
+        if not result.get("success"):
+            raise RuntimeError(result.get("error") or "Could not read the LSFG profiles.")
+        return next((game["config"] for game in result["games"] if game["appid"] == appid), None)
+
+    @staticmethod
+    def _lsfg_target(target_fps) -> int:
+        return min(max(int(target_fps), LSFG_TARGET_FPS_MIN), LSFG_TARGET_FPS_MAX)
+
+    def _lsfg_save_target(self, appid: str, target_fps) -> dict:
+        _, config, _, _ = self._lsfg_services()
+        profile = self._lsfg_profile(appid) or {}
+        result = config.update_game_config(appid, "", {**profile, "target_fps": self._lsfg_target(target_fps)})
+        if not result.get("success"):
+            raise RuntimeError(result.get("error") or "Could not save the target FPS.")
+        return result["config"]
+
+    def _lsfg_status(self, appid: str) -> dict:
+        _, _, wrapper, steam = self._lsfg_services()
+        state = wrapper.get(appid)
+        profile = self._lsfg_profile(appid)
+        return {
+            "status": "success",
+            "renderer_installed": self._lsfg_renderer_ready(),
+            "lossless_found": steam.find_lossless_dll() is not None,
+            "enabled": bool(state.get("success") and state.get("state")) and profile is not None,
+            "target_fps": profile["target_fps"] if profile else LSFG_TARGET_FPS_MIN,
+        }
+
+    def _lsfg_enable(self, appid: str, target_fps, non_steam: bool) -> dict:
+        _, _, wrapper, steam = self._lsfg_services()
+        if steam.find_lossless_dll() is None:
+            raise RuntimeError("Install Lossless Scaling on Steam first.")
+        self._lsfg_ensure_latest_renderer()
+        config = self._lsfg_save_target(appid, target_fps)
+        current = wrapper.get(appid)
+        result = wrapper.set(appid, current.get("state") or LsfgWrapperService.default_state(), False, bool(non_steam))
+        if not result.get("success"):
+            raise RuntimeError(result.get("error") or "Could not update the launch wrapper.")
+        return {"status": "success", "target_fps": config["target_fps"], "wrapper": result["wrapper_path"]}
+
+    def _lsfg_disable(self, appid: str) -> dict:
+        _, config, wrapper, _ = self._lsfg_services()
+        for result in (wrapper.remove(appid), config.reset_game_config(appid)):
+            if not result.get("success"):
+                raise RuntimeError(result.get("error") or "Could not turn LSFG off.")
+        return {"status": "success"}
+
+    async def get_lsfg_status(self, appid) -> dict:
+        try:
+            return await asyncio.to_thread(self._lsfg_status, str(appid))
+        except Exception as exc:
+            decky.logger.error(f"[LSFG] status failed: {exc}")
+            return {"status": "error", "message": str(exc)}
+
+    async def enable_lsfg(self, appid, target_fps=LSFG_TARGET_FPS_MIN, non_steam: bool = False) -> dict:
+        try:
+            return await asyncio.to_thread(self._lsfg_enable, str(appid), target_fps, non_steam)
+        except Exception as exc:
+            decky.logger.error(f"[LSFG] enable failed: {exc}")
+            return {"status": "error", "message": str(exc)}
+
+    async def disable_lsfg(self, appid) -> dict:
+        try:
+            return await asyncio.to_thread(self._lsfg_disable, str(appid))
+        except Exception as exc:
+            decky.logger.error(f"[LSFG] disable failed: {exc}")
+            return {"status": "error", "message": str(exc)}
+
+    async def set_lsfg_target_fps(self, appid, target_fps) -> dict:
+        try:
+            config = await asyncio.to_thread(self._lsfg_save_target, str(appid), target_fps)
+            return {"status": "success", "target_fps": config["target_fps"]}
+        except Exception as exc:
+            decky.logger.error(f"[LSFG] target FPS failed: {exc}")
+            return {"status": "error", "message": str(exc)}
+
+    def _lsfg_on_load(self) -> None:
+        install, _, wrapper, _ = self._lsfg_services()
+        repair = wrapper.repair()
+        if not repair.get("success"):
+            decky.logger.error(f"[LSFG] could not repair the launch wrapper: {repair.get('error')}")
+        # With LSFG on for some game, its next launch gets the newest MAKO Renderer.
+        if repair.get("success") and wrapper.list_apps().get("apps") and self._lsfg_renderer_ready():
+            try:
+                self._lsfg_ensure_latest_renderer()
+            except Exception as exc:
+                decky.logger.warning(f"[LSFG] MAKO Renderer update failed: {exc}")
+        # Before any game starts, so the next launch reads current profiles.
+        install.refresh_config()
+
+    def _lsfg_on_uninstall(self) -> None:
+        install, _, wrapper, _ = self._lsfg_services()
+        # A passthrough wrapper keeps launch options that still name ~/.jedi-lsfg working.
+        result = wrapper.neutralize()
+        if not result.get("success"):
+            decky.logger.warning(f"[LSFG] keeping MAKO Renderer, wrapper cleanup failed: {result.get('error')}")
+            return
+        install.cleanup_on_uninstall()
+
+
 # ===== Unified plugin =====
-class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin):
+class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin, _LsfgMixin):
     # Coexistence policy ("fixed + auto-merge"): ReShade owns the graphics proxy slot
     # (default dxgi); OptiScaler/Framegen is forced onto a non-graphics proxy so the two
     # never fight over the same file. Users can override per game via set_slots_manual.
@@ -5590,10 +5825,24 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin):
     )
 
     async def _main(self):
+        try:
+            await asyncio.to_thread(self._remove_obsolete_binaries)
+        except Exception as exc:
+            decky.logger.error(f"[JediReFrameShade] binary cleanup failed: {exc}")
+        try:
+            await asyncio.to_thread(self._lsfg_on_load)
+        except Exception as exc:
+            decky.logger.error(f"[LSFG] load failed: {exc}")
         decky.logger.info("Jedi ReFrameShade4All loaded")
 
     async def _unload(self):
         decky.logger.info("Jedi ReFrameShade4All unloaded")
+
+    async def _uninstall(self):
+        try:
+            self._lsfg_on_uninstall()
+        except Exception as exc:
+            decky.logger.error(f"[LSFG] uninstall cleanup failed: {exc}")
 
     # ── coexistence helpers ──────────────────────────────────────────────────
     def _dir_has_reshade(self, directory) -> bool:
@@ -5850,19 +6099,83 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin):
             cached.unlink(missing_ok=True)
         return "patched"
 
-    def _install_proton_lite(self) -> dict:
-        # Installed once: an existing copy is reused, never downloaded again.
+    def _proton_lite_release(self, tool_dir: Path) -> str:
+        """The Proton-CachyOS release (tarball base name) a Lite copy was made from."""
+        base = str(self._read_json_file(tool_dir / PROTON_LITE_RELEASE_FILE).get("base") or "")
+        if not base and tool_dir.name != PROTON_LITE_TOOL_NAME:
+            base = tool_dir.name[: -len(PROTON_LITE_SUFFIX)]
+        return base
+
+    @staticmethod
+    def _proton_lite_in_use(tool_dir: Path) -> bool:
+        """True while a running process (a game, wineserver) comes from this Proton."""
+        needle = str(tool_dir.resolve()).encode()
+        for proc in Path("/proc").iterdir():
+            if not proc.name.isdigit():
+                continue
+            try:
+                if needle in (proc / "cmdline").read_bytes() or needle in os.readlink(proc / "exe").encode():
+                    return True
+            except OSError:
+                continue
+        return False
+
+    def _proton_lite_update_status(self) -> dict:
         installed = self._proton_lite_installs()
-        if installed and self._proton_takes_dll_path(installed[-1]):
-            name = installed[-1].name
-            return {"status": "success", "tool_name": name, "tool_label": self._compat_tool_label(name) or name, "patch": "existing"}
+        current = installed[-1] if installed and self._proton_takes_dll_path(installed[-1]) else None
         release = self._proton_cachyos_latest_release()
+        installed_base = self._proton_lite_release(current) if current else ""
+        return {
+            "status": "success",
+            "installed": installed_base or None,
+            "latest": release["base"],
+            "update_available": not current or installed_base != release["base"],
+        }
+
+    async def get_proton_lite_update_status(self) -> dict:
+        try:
+            return await asyncio.to_thread(self._proton_lite_update_status)
+        except Exception as exc:
+            decky.logger.warning(f"[ProtonLite] update check failed: {exc}")
+            return {"status": "error", "message": str(exc)}
+
+    def _install_proton_lite(self) -> dict:
+        """Installs the newest Proton-CachyOS as the Lite Proton, or updates the copy when a newer release is out."""
+        installed = self._proton_lite_installs()
+        current = installed[-1] if installed and self._proton_takes_dll_path(installed[-1]) else None
+
+        def keep_current(reason: str) -> dict:
+            name = current.name
+            return {"status": "success", "tool_name": name, "tool_label": self._compat_tool_label(name) or name,
+                    "patch": "existing", "updated": False, "message": reason}
+
+        try:
+            release = self._proton_cachyos_latest_release()
+        except Exception as exc:
+            if current:
+                decky.logger.warning(f"[ProtonLite] update check failed, keeping {current.name}: {exc}")
+                return keep_current("")
+            raise
+        if current and self._proton_lite_release(current) == release["base"]:
+            return keep_current("")
+        if current and self._proton_lite_in_use(current):
+            return keep_current("Lite Proton update skipped: close the game first.")
+        try:
+            return self._install_proton_lite_release(release, current)
+        except Exception as exc:
+            # A newer release the patch can't handle (or a failed download) leaves the working copy in place.
+            if current:
+                decky.logger.warning(f"[ProtonLite] update to {release['tag']} failed, keeping {current.name}: {exc}")
+                return keep_current(f"Lite Proton update failed: {exc}")
+            raise
+
+    def _install_proton_lite_release(self, release: dict, current: Path | None) -> dict:
         roots = [r for r in self._steam_root_candidates() if r.is_dir()]
         if not roots:
             raise RuntimeError("Steam folder not found.")
         base = roots[0] / "compatibilitytools.d"
         base.mkdir(parents=True, exist_ok=True)
-        name = release["base"] + PROTON_LITE_SUFFIX
+        name = PROTON_LITE_TOOL_NAME
         staging = base / f".{name}.staging"
         shutil.rmtree(staging, ignore_errors=True)
         staging.mkdir()
@@ -5901,13 +6214,30 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin):
             if f'"{name}"' not in text:
                 raise RuntimeError("Unexpected compatibilitytool.vdf in the Proton-CachyOS tarball.")
             vdf.write_text(text, encoding="utf-8")
-            for old in self._proton_lite_installs():
-                shutil.rmtree(old, ignore_errors=True)
-            tool_dir.rename(base / name)
+            self._write_json_file(tool_dir / PROTON_LITE_RELEASE_FILE, {"tag": release["tag"], "base": release["base"]})
+            # The previous copy goes (the same name in place, or the old per-release name), so Steam lists one.
+            # It's moved aside first, so a failed swap puts it back instead of leaving half of it.
+            olds = self._proton_lite_installs()
+            target = base / name
+            trash = base / f".{name}.old"
+            shutil.rmtree(trash, ignore_errors=True)
+            if target.exists():
+                target.rename(trash)
+            try:
+                tool_dir.rename(target)
+            except Exception:
+                if trash.exists() and not target.exists():
+                    trash.rename(target)
+                raise
+            shutil.rmtree(trash, ignore_errors=True)
+            for old in olds:
+                if old.resolve() != target.resolve():
+                    shutil.rmtree(old, ignore_errors=True)
         finally:
             shutil.rmtree(staging, ignore_errors=True)
-        decky.logger.info(f"[ProtonLite] installed {name} ({patch})")
-        return {"status": "success", "tool_name": name, "tool_label": label, "patch": patch}
+        decky.logger.info(f"[ProtonLite] installed {name} from {release['tag']} ({patch})")
+        return {"status": "success", "tool_name": name, "tool_label": label, "patch": patch,
+                "updated": current is not None, "previous_tool_name": current.name if current else None}
 
     async def install_proton_lite(self) -> dict:
         try:
@@ -6095,7 +6425,8 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin):
     def _apply_plugin_update(self, latest: dict) -> list[str]:
         """Write the release zip over this plugin. Decky owns the plugin folder itself (only files already
         in it can be replaced), so nothing is written until every file is known to be writable, the zip
-        matches GitHub's SHA256 and the new package.json's remote binaries are in bin/."""
+        matches GitHub's SHA256 and the new package.json's remote binaries are in bin/. Files the new
+        release doesn't have (old binaries, removed files) are deleted first."""
         if not latest.get("sha256"):
             raise RuntimeError("GitHub gave no SHA256 for the release zip.")
         plugin_dir = Path(decky.DECKY_PLUGIN_DIR)
@@ -6106,6 +6437,7 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin):
                 raise RuntimeError("The downloaded zip doesn't match GitHub's SHA256.")
             with zipfile.ZipFile(archive) as zf:
                 files = {}
+                release_files = set()
                 for info in zf.infolist():
                     parts = Path(info.filename).parts[1:]   # drop the zip's top folder
                     if info.is_dir() or not parts:
@@ -6114,6 +6446,7 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin):
                         raise RuntimeError(f"Unsafe path in the zip: {info.filename}")
                     data = zf.read(info)
                     target = plugin_dir.joinpath(*parts)
+                    release_files.add(target)
                     if target.is_file() and self._file_sha256(target) == hashlib.sha256(data).hexdigest():
                         continue
                     files[target] = data
@@ -6124,12 +6457,53 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin):
             if blocked:
                 raise RuntimeError("Can't write " + ", ".join(blocked) + ". Install the update from Decky's settings instead.")
             package = json.loads(files.get(plugin_dir / "package.json") or (plugin_dir / "package.json").read_bytes())
-            self._fetch_remote_binaries(plugin_dir / "bin", package.get("remote_binary") or [])
+            binaries = package.get("remote_binary") or []
+            self._remove_obsolete_plugin_files(plugin_dir, release_files | {plugin_dir / "bin" / b["name"] for b in binaries})
+            self._fetch_remote_binaries(plugin_dir / "bin", binaries)
             # main.py last: if anything fails before it, the plugin that runs is still the old one.
             for path in sorted(files, key=lambda p: (p == plugin_dir / "main.py", p == plugin_dir / "dist" / "index.js")):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(files[path])
             return [str(path.relative_to(plugin_dir)) for path in files]
+
+    def _remove_obsolete_plugin_files(self, plugin_dir: Path, keep: set) -> list[str]:
+        """Deletes what's in the plugin folder but not in `keep`, then the folders left empty. Files Decky
+        keeps root-owned (directly in the plugin folder) can't be deleted and stay."""
+        removed = []
+        for root, dirs, names in os.walk(plugin_dir, topdown=False):
+            root_path = Path(root)
+            for name in names + [d for d in dirs if (root_path / d).is_symlink()]:
+                path = root_path / name
+                if path in keep:
+                    continue
+                try:
+                    path.unlink()
+                    removed.append(str(path.relative_to(plugin_dir)))
+                except OSError as exc:
+                    decky.logger.warning(f"[JediReFrameShade] can't remove old {path}: {exc}")
+            if root_path != plugin_dir and not root_path.is_symlink():
+                try:
+                    root_path.rmdir()
+                except OSError:
+                    pass
+        if removed:
+            decky.logger.info(f"[JediReFrameShade] removed old plugin files: {removed}")
+        return removed
+
+    def _remove_obsolete_binaries(self) -> None:
+        """bin/ keeps only package.json's remote binaries: older releases' downloads go."""
+        bin_dir = self._get_bin_dir()
+        if not bin_dir.is_dir():
+            return
+        names = {entry["name"] for entry in self._load_remote_binary_manifest()}
+        for path in bin_dir.iterdir():
+            if path.name in names or path.is_dir():
+                continue
+            try:
+                path.unlink()
+                decky.logger.info(f"[JediReFrameShade] removed old binary {path.name}")
+            except OSError as exc:
+                decky.logger.warning(f"[JediReFrameShade] can't remove old binary {path}: {exc}")
 
     def _existing_parent(self, path: Path) -> Path:
         while not path.exists():

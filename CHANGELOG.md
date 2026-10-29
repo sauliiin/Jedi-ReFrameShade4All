@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.1.24
+
+### Added
+- **LSFG-VK** toggle, right below the game picker, merged from the [Jedi LSFG-VK](https://github.com/sauliiin/Jedi-LSFG-VK) plugin (1.2.1): Lossless Scaling frame generation through MAKO Renderer. On, it saves the game's MAKO profile in `~/.config/jedi-lsfg-vk/conf.toml` and adds `~/.jedi-lsfg` before `%command%` in the launch options. Off removes both. Needs Lossless Scaling on Steam.
+- **Always the newest MAKO Renderer** (Jedi LSFG-VK pinned 4.6.0): turning LSFG-VK on, and loading the plugin while some game has it on, installs or updates MAKO Renderer when the newest `render-v*` GitHub release isn't the installed one (read from `active-renderer.json`). The archive is checked against GitHub's SHA-256. Offline, an installed renderer keeps working.
+- **Target FPS** slider (60–120) below the toggle while it is on. Same policy as Jedi LSFG-VK: the target is a floor, generation fills the gap in fractional steps up to 4x.
+- Backend: `defaults/py_modules/lsfg_vk` (Jedi LSFG-VK's services without Flatpak, its own updater and the pinned MAKO version), `_LsfgMixin` with `get_lsfg_status`, `enable_lsfg`, `disable_lsfg`, `set_lsfg_target_fps`. On load the plugin repairs the `~/.jedi-lsfg` wrapper and refreshes `conf.toml`; on uninstall it leaves a passthrough wrapper and removes MAKO Renderer if it installed it.
+- **Proton FSR4 → 4.1.2 Lite** updates its Proton: turning it on checks Proton-CachyOS's newest GitHub release and, when it's newer than the Lite copy, downloads it (SHA-512 checked), patches it and replaces the copy. Skipped while a game runs on it; offline or when the new release can't be patched, the working copy stays and the panel says so. Backend: `get_proton_lite_update_status`.
+- **HelixSR pre-releases**: the newest HelixSR release counts even when it's a pre-release (now HelixSR 3.2.0).
+
+### Changed
+- Patch All, Remove All and the per-engine apply/remove buttons keep `~/.jedi-lsfg` when they rewrite the launch options.
+- The Lite Proton's internal name is now always `proton-cachyos-jedi-fsr4lite` (was `proton-cachyos-<release>-jedi-fsr4lite`), so an update replaces it in place: Steam lists a single copy and games keep it. The first update removes the old per-release copy: restart Steam and reopen each Lite game in the panel once, which moves it to the new copy (its earlier Proton is still the one restored when Lite is turned off).
+- **Plugin Update** deletes what the new release no longer has (old binaries in `bin/`, removed files) before writing it, and each load removes `bin/` files no release lists anymore, so the plugin folder doesn't pile up old versions.
+- **Plugin Update** says it worked: after the reload the panel shows "✅ Updated to v<version>." and Decky shows a toast.
+- The HelixSR panel shows full release names (installed, latest, button, dialog), e.g. *HelixSR 3.2.0 (pre-release)*.
+
+### Fixed
+- HelixSR offered an "update" to the version already installed. HelixSR-3.1.0.zip was uploaded again under the same tag (new SHA-256); that now shows as *HelixSR 3.1.0 (re-uploaded 2026-10-29)*.
+
 ## 1.1.23
 
 ### Changed
