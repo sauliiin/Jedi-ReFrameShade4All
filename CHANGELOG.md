@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.1.25
+
+### Fixed
+- **Proton FSR4 → 4.1.2 Lite** didn't switch the game to the Lite Proton. It relied on `SteamClient.Apps.GetAvailableCompatTools`, which Steam's `CompatManager` service replaced. It now asks `CompatManager.GetCompatTools#1` first, then the old call, 3 seconds each. If neither answers, it sets the Proton anyway and the dialog asks you to check it.
+- After the Steam restart the first install asks for, the plugin sets the Lite Proton by itself when it loads, and shows a toast. The game no longer has to be reopened in the panel. Backend: `get_lite_proton_pending`, `set_lite_proton_pending`, `~/fgmod-proton-fsr4/pending_compat_tools.json`.
+- The game's Proton is read from `RegisterForAppDetails` first. `appDetailsStore` is only the fallback, because a stale value could skip the switch.
+- **Proton-CachyOS FSR4** and **Show FSR watermark** stayed hidden after the switch until the game was reloaded in the panel, and while waiting for the restart. They now show whenever Lite is on.
+
+### Removed
+- **Remove Lite Proton** button and `uninstall_proton_lite`: it deleted the copy for every game without warning. The copy stays in `compatibilitytools.d/proton-cachyos-jedi-fsr4lite`.
+
 ## 1.1.24
 
 ### Added

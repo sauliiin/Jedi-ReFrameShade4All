@@ -435,8 +435,9 @@ const installProtonLite = callable("install_proton_lite");
 const getProtonLiteUpdateStatus = callable("get_proton_lite_update_status");
 // Every Lite Proton copy's internal name ends with this (up to 1.1.23 it also carried the release).
 const LITE_TOOL_SUFFIX = "-jedi-fsr4lite";
-const uninstallProtonLite = callable("uninstall_proton_lite");
 const rememberCompatTool = callable("remember_compat_tool");
+const getLiteProtonPending = callable("get_lite_proton_pending");
+const setLiteProtonPending = callable("set_lite_proton_pending");
 const getLsfgStatus = callable("get_lsfg_status");
 const enableLsfg = callable("enable_lsfg");
 const disableLsfg = callable("disable_lsfg");
@@ -446,26 +447,95 @@ const LSFG_FPS_MIN = 60;
 const LSFG_FPS_MAX = 120;
 const LSFG_SAVE_DEBOUNCE_MS = 300;
 const LSFG_FPS_NOTCHES = [60, 90, 120].map((value, notchIndex) => ({ notchIndex, label: String(value), value }));
+// Steam's CompatManager service replaced SteamClient.Apps.GetAvailableCompatTools (same request as
+// decky-wine-cellar's steamCompat.ts). Only the tool names are read from its protobuf answer.
+class CompatToolsResponse {
+    tools = [];
+    static deserializeBinaryFromReader(response, reader) {
+        while (reader.nextField() && !reader.isEndGroup()) {
+            if (reader.getFieldNumber() !== 1 && reader.getFieldNumber() !== 2) {
+                reader.skipField();
+                continue;
+            }
+            const tool = { strToolName: "" };
+            reader.readMessage(tool, (item, fields) => {
+                while (fields.nextField() && !fields.isEndGroup()) {
+                    if (fields.getFieldNumber() === 1)
+                        item.strToolName = fields.readString();
+                    else
+                        fields.skipField();
+                }
+            });
+            if (tool.strToolName)
+                response.tools.push(tool);
+        }
+    }
+}
+async function compatManagerTools(appId) {
+    const transport = DFL.findModuleExport((e) => e?.SendMsg && e?.GetConnectionDetails);
+    const message = DFL.findModuleExport((e) => e?.Init && e?.InitFromMsg && e?.InitFromPacket);
+    const protobuf = DFL.findModule((m) => m?.BinaryWriter && m?.BinaryReader);
+    if (!transport || !message || !protobuf)
+        throw new Error("CompatManager not found");
+    class CompatToolsRequest {
+        serializeBinary() {
+            const writer = new protobuf.BinaryWriter();
+            writer.writeUint32(1, appId);
+            return writer.getResultBuffer();
+        }
+    }
+    const response = await transport.SendMsg("CompatManager.GetCompatTools#1", message.Init(CompatToolsRequest), CompatToolsResponse, { ePrivilege: 1, eClientExecutionSite: 2 });
+    if (!response.BIsValid() || !response.BSuccess())
+        throw new Error(response.GetErrorMessage());
+    return response.Body().tools;
+}
+// The tools Steam lists for a game, or null when it doesn't say (a game always has some, so empty is no answer).
+async function listedCompatTools(appId) {
+    for (const source of [compatManagerTools, (id) => SteamClient.Apps.GetAvailableCompatTools(id)]) {
+        try {
+            const tools = await Promise.race([source(appId), new Promise((resolve) => setTimeout(() => resolve(null), 3000))]);
+            if (tools?.length)
+                return tools;
+        }
+        catch (e) {
+            await logError$4(`listedCompatTools: ${String(e)}`).catch(() => null);
+        }
+    }
+    return null;
+}
+function isCachyosTool(name, label) {
+    return /cachyos/.test(`${name} ${label}`.toLowerCase().replace(/[-_\s]/g, ""));
+}
 // Sets the patched Proton-CachyOS for the game once Steam lists it (Steam picks up new tools on restart).
+// When Steam doesn't say what it lists, it's set anyway: the dialog asks the user to check it.
 async function selectLiteProton(appid, status) {
     if (!status?.lite_tool_name)
         return null;
     if (status.tool_name === status.lite_tool_name)
         return status;
-    const tools = await SteamClient.Apps.GetAvailableCompatTools(parseInt(appid, 10));
-    if (!(tools || []).some((t) => t.strToolName === status.lite_tool_name))
+    const tools = await listedCompatTools(parseInt(appid, 10));
+    if (tools && !tools.some((t) => t.strToolName === status.lite_tool_name))
         return null;
     // Moving off an older Lite copy keeps the Proton the game had before Lite.
     if (!(status.tool_name || "").endsWith(LITE_TOOL_SUFFIX))
         await rememberCompatTool(appid, status.tool_name || "");
     SteamClient.Apps.SpecifyCompatTool(parseInt(appid, 10), status.lite_tool_name);
-    return { ...status, previous_tool: status.tool_name || "", tool_name: status.lite_tool_name, tool_label: status.lite_proton, takes_dll_path: true };
+    return { ...status, supported: true, previous_tool: status.tool_name || "", tool_name: status.lite_tool_name, tool_label: status.lite_proton, takes_dll_path: true };
 }
-// The game's Proton as Steam has it right now (config.vdf can lag behind), or null for Steam's default.
+// The game's Proton as Steam has it right now, or null for Steam's default. config.vdf can lag behind, and so
+// can appDetailsStore, so that one is only the fallback.
 function liveCompatTool(appId) {
     return new Promise((resolve) => {
         let done = false;
         let reg = null;
+        const cached = () => {
+            try {
+                return window.appDetailsStore?.GetAppDetails?.(appId);
+            }
+            catch (e) {
+                return null;
+            }
+        };
         const finish = (details) => {
             if (done)
                 return;
@@ -477,19 +547,14 @@ function liveCompatTool(appId) {
             resolve(details?.strCompatToolName ? { name: details.strCompatToolName, label: details.strCompatToolDisplayName || details.strCompatToolName } : null);
         };
         try {
-            const cached = window.appDetailsStore?.GetAppDetails?.(appId);
-            if (cached) {
-                finish(cached);
-                return;
-            }
             reg = SteamClient.Apps.RegisterForAppDetails(appId, finish);
             if (done)
                 reg?.unregister();
         }
         catch (e) {
-            finish(null);
+            finish(cached());
         }
-        setTimeout(() => finish(null), 1500);
+        setTimeout(() => finish(cached()), 1500);
     });
 }
 // The backend's status with the game's live Proton.
@@ -501,9 +566,48 @@ function withLiveCompatTool(status, live) {
         ...s,
         tool_name: live.name,
         tool_label: live.label,
-        supported: /cachyos/.test(`${live.name} ${live.label}`.toLowerCase().replace(/[-_\s]/g, "")),
+        supported: isCachyosTool(live.name, live.label),
         takes_dll_path: live.name === s.lite_tool_name || (live.name === s.tool_name && !!s.takes_dll_path),
     };
+}
+async function getLiteStatus(id) {
+    const [r, live] = await Promise.all([
+        getCachyosFsr4Status(id).catch((e) => logError$4(`SteamGameCombinedSection -> cachyos status: ${String(e)}`).then(() => null)),
+        liveCompatTool(parseInt(id, 10)),
+    ]);
+    return withLiveCompatTool(r, live);
+}
+// Steam lists the Lite Proton after a restart: this sets it for the games the Lite toggle left waiting. Steam
+// may still be starting when the plugin loads, so it tries a few times.
+const LITE_PENDING_TRIES = 6;
+const LITE_PENDING_RETRY_MS = 5000;
+async function selectPendingLiteProton(attempt = 1) {
+    let selected = false;
+    let waiting = false;
+    for (const id of await getLiteProtonPending()) {
+        const current = await getLaunchOptions(parseInt(id, 10)).catch(() => "");
+        if (!fsr4LitePathIn(current)) {
+            // Lite was turned off, unless these are empty because Steam hasn't answered yet.
+            if (current || attempt >= LITE_PENDING_TRIES)
+                await setLiteProtonPending(id, false);
+            else
+                waiting = true;
+            continue;
+        }
+        const status = await getLiteStatus(id);
+        const done = status.takes_dll_path ? status : await selectLiteProton(id, status);
+        if (done) {
+            await setLiteProtonPending(id, false);
+            selected = selected || !status.takes_dll_path;
+        }
+        else {
+            waiting = true;
+        }
+    }
+    if (selected)
+        toaster.toast({ title: "Jedi ReFrameShade4All", body: "FSR 4.1.2 Lite Proton set." });
+    if (waiting && attempt < LITE_PENDING_TRIES)
+        setTimeout(() => void selectPendingLiteProton(attempt + 1).catch((e) => logError$4(`selectPendingLiteProton: ${String(e)}`)), LITE_PENDING_RETRY_MS);
 }
 // Asks the user to check the game's Proton: with any other Proton the Lite DLL isn't loaded.
 function showLiteProtonModal(status) {
@@ -511,7 +615,7 @@ function showLiteProtonModal(status) {
         DFL.showModal(window.SP_REACT.createElement(DFL.ConfirmModal, { strTitle: "Check the Proton", strDescription: `Confirm "${status.tool_label}" is selected in the game's Properties → Compatibility.`, strOKButtonText: "Done", bAlertDialog: true }));
         return;
     }
-    DFL.showModal(window.SP_REACT.createElement(DFL.ConfirmModal, { strTitle: "Restart Steam", strDescription: `"${status?.lite_proton}" installed. Restart Steam, then reopen this game here.`, strOKButtonText: "Restart Steam", strCancelButtonText: "Later", onOK: () => SteamClient.User.StartRestart(false) }));
+    DFL.showModal(window.SP_REACT.createElement(DFL.ConfirmModal, { strTitle: "Restart Steam", strDescription: `"${status?.lite_proton}" installed. Restart Steam to finish.`, strOKButtonText: "Restart Steam", strCancelButtonText: "Later", onOK: () => SteamClient.User.StartRestart(false) }));
 }
 // Proton-CachyOS variables the toggles add as NAME=1.
 const FSR4_UPGRADE_ENV = "FSR4_UPGRADE";
@@ -794,13 +898,6 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, }) {
                 setResult(`❌ ${r.message || "Could not save the target FPS."}`);
         }, LSFG_SAVE_DEBOUNCE_MS);
     };
-    const getLiteStatus = async (id) => {
-        const [r, live] = await Promise.all([
-            getCachyosFsr4Status(id).catch((e) => logError$4(`SteamGameCombinedSection -> cachyos status: ${String(e)}`).then(() => null)),
-            liveCompatTool(parseInt(id, 10)),
-        ]);
-        return withLiveCompatTool(r, live);
-    };
     const loadCachyos = async (id) => {
         setCachyos(null);
         try {
@@ -818,10 +915,7 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, }) {
             setFsr4LitePath(litePath);
             // Lite on but the game isn't on the Lite Proton yet: switch it once Steam lists it (after a restart).
             if (litePath && !r.takes_dll_path) {
-                const selected = await Promise.race([
-                    selectLiteProton(id, r),
-                    new Promise((resolve) => setTimeout(() => resolve(null), 3000)),
-                ]).catch((e) => logError$4(`SteamGameCombinedSection -> selectLiteProton: ${String(e)}`).then(() => null));
+                const selected = await selectLiteProton(id, r);
                 if (selected) {
                     setCachyos(selected);
                     showLiteProtonModal(selected);
@@ -852,7 +946,7 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, }) {
                 setResult(`✅ Launch options: ${next || "(empty)"}`);
                 if (cachyos?.lite_tool_name && (cachyos.tool_name || "").endsWith(LITE_TOOL_SUFFIX) && cachyos.previous_tool !== null && cachyos.previous_tool !== undefined) {
                     SteamClient.Apps.SpecifyCompatTool(parseInt(appid, 10), cachyos.previous_tool);
-                    setCachyos({ ...cachyos, tool_name: cachyos.previous_tool, tool_label: cachyos.previous_tool || "Steam default", takes_dll_path: false });
+                    setCachyos({ ...cachyos, supported: isCachyosTool(cachyos.previous_tool, ""), tool_name: cachyos.previous_tool, tool_label: cachyos.previous_tool || "Steam default", takes_dll_path: false });
                     setResult("✅ FSR 4.1.2 Lite off.");
                 }
                 return;
@@ -874,8 +968,11 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, }) {
                 return;
             }
             let status = await getLiteStatus(appid);
-            if (!status.takes_dll_path)
+            if (!status.takes_dll_path) {
                 status = (await selectLiteProton(appid, status)) || status;
+                if (!status.takes_dll_path)
+                    await setLiteProtonPending(appid, true);
+            }
             const next = await applyProtonFsr4(r.path);
             setCachyos(status);
             const note = inst.message ? `\n${inst.message}` : inst.updated ? `\nLite Proton updated: ${inst.tool_label}.` : "";
@@ -887,21 +984,6 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, }) {
         catch (e) {
             setResult(`❌ ${String(e)}`);
             await logError$4(`SteamGameCombinedSection -> fsr4Lite: ${String(e)}`);
-        }
-        finally {
-            setBusy(false);
-        }
-    };
-    const handleUninstallProtonLite = async () => {
-        try {
-            setBusy(true);
-            const r = await uninstallProtonLite();
-            setResult(r.status === "success" ? "✅ Lite Proton removed." : `❌ ${r.message || "Remove failed."}`);
-            await loadCachyos(appid);
-        }
-        catch (e) {
-            setResult(`❌ ${String(e)}`);
-            await logError$4(`SteamGameCombinedSection -> uninstallProtonLite: ${String(e)}`);
         }
         finally {
             setBusy(false);
@@ -1064,20 +1146,18 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, }) {
         status && appid && status.helixsr && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: () => void loadStatus(appid), disabled: busy }, "\ud83d\udd04 Check HelixSR again"))),
         appid && (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
-            // FSR4 and the watermark: for Proton-CachyOS games, or while their variable is still set.
-            (cachyos?.supported || fsr4Upgrade) && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+            // FSR4 and the watermark: for Proton-CachyOS games, games on Lite, or while their variable is still set.
+            (cachyos?.supported || fsr4LitePath || fsr4Upgrade) && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.ToggleField, { label: "Proton-CachyOS FSR4", description: `Turns on FSR4${cachyos?.tool_label ? ` (${cachyos.tool_label})` : ""}.`, checked: fsr4Upgrade, disabled: busy, onChange: (v) => void handleLaunchEnvToggle(FSR4_UPGRADE_ENV, v, setFsr4Upgrade) }))),
             // Lite brings its own Proton, so it shows for every game.
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.ToggleField, { label: "Proton FSR4 → 4.1.2 Lite", description: "FSR 4.1.2 Lite via its own Proton-CachyOS. FSR 3.1, DX12 games.", checked: !!fsr4LitePath, disabled: busy || !cachyos, onChange: (v) => void handleFsr4LiteToggle(v) })),
             // The patched Proton is installed but Steam doesn't list it yet: it needs a restart.
             fsr4LitePath && cachyos && !cachyos.takes_dll_path && cachyos.lite_tool_name && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement("div", { style: { fontSize: "0.82em", color: "#ffb84d" } }, "⚠️ Restart Steam, then reopen this game here."))),
+                window.SP_REACT.createElement("div", { style: { fontSize: "0.82em", color: "#ffb84d" } }, "⚠️ Restart Steam to finish."))),
             fsr4LitePath && cachyos && !cachyos.takes_dll_path && cachyos.lite_tool_name && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: () => SteamClient.User.StartRestart(false), disabled: busy }, "🔄 Restart Steam"))),
-            cachyos?.lite_tool_name && !fsr4LitePath && cachyos.tool_name !== cachyos.lite_tool_name && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleUninstallProtonLite, disabled: busy }, "🗑️ Remove Lite Proton"))),
-            (cachyos?.supported || fsr4Indicator) && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+            (cachyos?.supported || fsr4LitePath || fsr4Indicator) && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.ToggleField, { label: "Show FSR watermark", description: "Shows which FSR runs, top left.", checked: fsr4Indicator, disabled: busy, onChange: (v) => void handleLaunchEnvToggle(FSR4_INDICATOR_ENV, v, setFsr4Indicator) }))),
             window.SP_REACT.createElement(HelixSRPanel, null),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
@@ -2129,16 +2209,19 @@ function MainContent() {
             window.SP_REACT.createElement(ReShadeInstallerSection, { appid: selectedAppid }))),
         window.SP_REACT.createElement(PluginUpdateSection, null)));
 }
-var index = definePlugin(() => ({
-    name: "Jedi ReFrameShade4All",
-    titleView: window.SP_REACT.createElement("div", null, "Jedi ReFrameShade4All"),
-    alwaysRender: true,
-    content: window.SP_REACT.createElement(MainContent, null),
-    icon: window.SP_REACT.createElement(MdOutlineAutoAwesomeMotion, null),
-    onDismount() {
-        console.log("Jedi ReFrameShade4All Plugin unmounted");
-    },
-}));
+var index = definePlugin(() => {
+    void selectPendingLiteProton().catch((e) => logError$4(`selectPendingLiteProton: ${String(e)}`));
+    return {
+        name: "Jedi ReFrameShade4All",
+        titleView: window.SP_REACT.createElement("div", null, "Jedi ReFrameShade4All"),
+        alwaysRender: true,
+        content: window.SP_REACT.createElement(MainContent, null),
+        icon: window.SP_REACT.createElement(MdOutlineAutoAwesomeMotion, null),
+        onDismount() {
+            console.log("Jedi ReFrameShade4All Plugin unmounted");
+        },
+    };
+});
 
 export { index as default };
 //# sourceMappingURL=index.js.map

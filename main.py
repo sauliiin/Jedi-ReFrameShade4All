@@ -6262,13 +6262,26 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin, _LsfgMixin):
             decky.logger.error(f"[ProtonLite] remember_compat_tool failed: {exc}")
             return {"status": "error", "message": str(exc)}
 
-    async def uninstall_proton_lite(self) -> dict:
+    def _proton_lite_pending_file(self) -> Path:
+        return Path(decky.HOME) / PROTON_FSR4_LITE_DIRNAME / "pending_compat_tools.json"
+
+    async def get_lite_proton_pending(self) -> list:
+        """Games with the Lite toggle on that wait for Steam to list the Lite Proton (it does after a restart)."""
+        return list(self._read_json_file(self._proton_lite_pending_file()))
+
+    async def set_lite_proton_pending(self, appid, pending: bool) -> dict:
         try:
-            for old in self._proton_lite_installs():
-                shutil.rmtree(old)
+            path = self._proton_lite_pending_file()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            games = self._read_json_file(path)
+            if pending:
+                games[str(appid)] = True
+            else:
+                games.pop(str(appid), None)
+            self._write_json_file(path, games)
             return {"status": "success"}
         except Exception as exc:
-            decky.logger.error(f"[ProtonLite] uninstall failed: {exc}")
+            decky.logger.error(f"[ProtonLite] set_lite_proton_pending failed: {exc}")
             return {"status": "error", "message": str(exc)}
 
     async def get_combined_game_status(self, appid) -> dict:
