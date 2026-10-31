@@ -220,8 +220,6 @@ const PROXY_DLL_OPTIONS = [
 const DEFAULT_PROXY_DLL = "dxgi.dll";
 // 4.0.2c, 4.1.1, 4.1.2 Lite and HLX DLSS in one game, picked in OptiScaler's menu.
 const DEFAULT_FSR4_VARIANT = "deck-all";
-// Without 4.1.1: OptiScaler 0.9.4 and FSR 4.0.2c only, for games that crash with the setup above.
-const NO_411_FSR4_VARIANT = "rdna23-int8";
 // Common timeout values
 const TIMEOUTS = {
     resultDisplay: 5000, // 5 seconds
@@ -797,7 +795,7 @@ function getLaunchOptions(appId) {
 function gameOptionLabel(game) {
     return game.non_steam ? `${game.name} · non-Steam` : game.name;
 }
-function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid, }) {
+function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, }) {
     const [games, setGames] = SP_REACT.useState([]);
     const [status, setStatus] = SP_REACT.useState(null);
     const [addon, setAddon] = SP_REACT.useState(true);
@@ -987,10 +985,6 @@ function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid
             await logError$4(`SteamGameCombinedSection -> status: ${String(e)}`);
         }
     };
-    // The 4.1.1 toggle starts on what the picked game has installed.
-    SP_REACT.useEffect(() => {
-        setFsr4Variant(status?.optiscaler_variant === NO_411_FSR4_VARIANT ? NO_411_FSR4_VARIANT : DEFAULT_FSR4_VARIANT);
-    }, [status?.appid, status?.optiscaler_variant]);
     SP_REACT.useEffect(() => {
         (async () => {
             try {
@@ -1126,8 +1120,6 @@ function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid
             window.SP_REACT.createElement(HelixSRPanel, null),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.ToggleField, { label: "ReShade add-ons", description: "Enables add-on support (avoid in anti-cheat online games).", checked: addon, onChange: setAddon })),
-            window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.ToggleField, { label: "Include FSR 4.1.1", description: "Off can fix crashes: FSR 4.0.2c only. Press Patch All.", checked: fsr4Variant !== NO_411_FSR4_VARIANT, disabled: busy, onChange: (v) => setFsr4Variant(v ? DEFAULT_FSR4_VARIANT : NO_411_FSR4_VARIANT) })),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handlePatchAll, disabled: busy }, busy ? "Working…" : "🚀 Patch All (FrameGen + ReShade)")),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
@@ -2149,8 +2141,8 @@ function MainContent() {
     const [pathExists, setPathExists] = SP_REACT.useState(null);
     const [fgmodInfo, setFgmodInfo] = SP_REACT.useState(null);
     const [advanced, setAdvanced] = SP_REACT.useState(false);
-    // The FSR4 runtime Patch All installs, shared with the advanced OptiScaler controls.
-    const [fsr4Variant, setFsr4Variant] = SP_REACT.useState(DEFAULT_FSR4_VARIANT);
+    // One FSR4 runtime for every game, shared with the advanced OptiScaler controls.
+    const fsr4Variant = DEFAULT_FSR4_VARIANT;
     // The game is also picked once at the top and reused by the advanced sections.
     const [selectedAppid, setSelectedAppid] = SP_REACT.useState("");
     SP_REACT.useEffect(() => {
@@ -2166,7 +2158,7 @@ function MainContent() {
         return () => clearInterval(intervalId);
     }, []);
     return (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
-        window.SP_REACT.createElement(SteamGameCombinedSection, { fsr4Variant: fsr4Variant, setFsr4Variant: setFsr4Variant, appid: selectedAppid, setAppid: setSelectedAppid }),
+        window.SP_REACT.createElement(SteamGameCombinedSection, { fsr4Variant: fsr4Variant, appid: selectedAppid, setAppid: setSelectedAppid }),
         window.SP_REACT.createElement(DFL.PanelSection, null,
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.ToggleField, { label: "Advanced controls", description: "Per-engine install, proxy DLL, ReShade shaders/AutoHDR.", checked: advanced, onChange: setAdvanced }))),
