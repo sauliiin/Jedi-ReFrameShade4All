@@ -77,11 +77,12 @@ OPTISCALER_V10_ASSET = {
 }
 
 # OptiScaler 10 built from optiscaler/OptiScaler master de2626f: loads upscalers from custom/<name>/dlss even on
-# GPUs it doesn't consider DLSS capable, which is how HelixSR 3.x's HLX DLSS (an NGX runtime) runs on AMD.
+# GPUs it doesn't consider DLSS capable, which is how HelixSR 3.x's HLX DLSS (an NGX runtime) runs on AMD. Our patch
+# (attached to its release) also takes driver DLLs in custom/<name>/ffx, which is how Valve's 4.1.1 sits next to 4.1.2.
 OPTISCALER_HLX_ASSET = {
-    "name": "OptiScaler_10.0.0-master.de2626f.dll",
-    "sha256": "7bd7525bfbe0d6d54f36c2719b633d29f9fa9927386c35abe0d19097adf5b26e",
-    "version": "10.0.0-master.de2626f",
+    "name": "OptiScaler_10.0.0-de2626f-jedi1.dll",
+    "sha256": "ddddce19f5e60f1897573fbafb1eaa2703b58a6d172d470ce71a6731f533b95a",
+    "version": "10.0.0-de2626f-jedi1",
 }
 
 OPTIPATCHER_ASSET = {
@@ -228,16 +229,19 @@ FSR4_VARIANTS = {
     },
 }
 HELIXSR_VARIANT = "helixsr"
-# 4.0.2c, 4.1.2 Lite and HLX DLSS in one game, picked in OptiScaler's menu. The game gets the Lite runtime (FSR 4,
-# from the Lite folder of the bundle) with the OptiScaler 10 build that loads custom upscalers (OPTISCALER_HLX_ASSET),
-# 4.0.2c's upscaler as custom/FSR 4.0.2c/ffx and, when HelixSR 3.x is installed, HLX DLSS as custom/HLX DLSS/dlss.
+# 4.0.2c, 4.1.1, 4.1.2 Lite and HLX DLSS in one game, picked in OptiScaler's menu. The game gets the Lite runtime
+# (FSR 4, from the Lite folder of the bundle) with the OptiScaler 10 build that loads custom upscalers
+# (OPTISCALER_HLX_ASSET), 4.0.2c's upscaler as custom/FSR 4.0.2c/ffx, Valve's 4.1.1 driver DLL as custom/FSR 4.1.1/ffx
+# and, when HelixSR 3.x is installed, HLX DLSS as custom/HLX DLSS/dlss.
 COMBINED_VARIANT = "deck-all"
 FSR4_VARIANTS[COMBINED_VARIANT] = {
     **FSR4_VARIANTS["lite-412-i8"],
-    "label": "4.0.2c + 4.1.2 Lite + HLX DLSS",
+    "label": "4.0.2c + 4.1.1 + 4.1.2 Lite + HLX DLSS",
     "combined": True,
 }
 CUSTOM_402C_NAME = "FSR 4.0.2c"
+CUSTOM_411_NAME = "FSR 4.1.1"
+CUSTOM_411_DLL = "amdxcffx64_valve.dll"   # OptiScaler keeps the AMD vendor id for DLLs named amdxcffx64*
 CUSTOM_UPSCALER_MARKER = "jedi-custom.json"
 VARIANT_EXTRA_FILENAMES = sorted(
     {
@@ -1931,7 +1935,7 @@ class _OptiScalerMixin:
 
             helixsr_note = ""
             if not selected_variant_info.get("combined"):
-                self._remove_custom_402c(directory)
+                self._remove_custom_upscalers(directory)
             if use_helixsr:
                 helixsr_note = f" {self._helixsr_apply_to_game(directory, destination_dll)}"
             elif selected_variant_info.get("combined"):
@@ -2011,8 +2015,8 @@ class _OptiScalerMixin:
             # OptiScaler.ini is removed above (LEGACY_FILES), so only HelixSR's folder goes.
             if self._helixsr_remove_from_game(directory, restore_ini=False):
                 decky.logger.info(f"Removed HelixSR folder from {directory}")
-            if self._remove_custom_402c(directory):
-                decky.logger.info(f"Removed {CUSTOM_402C_NAME} folder from {directory}")
+            if self._remove_custom_upscalers(directory):
+                decky.logger.info(f"Removed the custom upscaler folders from {directory}")
 
             restored_backups = []
             for dll in dict.fromkeys(RESTORABLE_BACKUP_FILES):
@@ -5283,30 +5287,28 @@ class _HelixSRMixin:
     def _custom_402c_folder(self, directory: Path) -> Path:
         return Path(directory) / "custom" / CUSTOM_402C_NAME
 
-    def _remove_custom_402c(self, directory: Path) -> bool:
-        folder = self._custom_402c_folder(directory)
-        if not (folder / CUSTOM_UPSCALER_MARKER).exists():
-            return False
-        shutil.rmtree(folder, ignore_errors=True)
-        try:
-            folder.parent.rmdir()   # custom/, when nothing else is in it
-        except OSError:
-            pass
-        return True
+    def _remove_custom_upscalers(self, directory: Path) -> bool:
+        removed = False
+        for name in (CUSTOM_402C_NAME, CUSTOM_411_NAME):
+            folder = Path(directory) / "custom" / name
+            if (folder / CUSTOM_UPSCALER_MARKER).exists():
+                shutil.rmtree(folder, ignore_errors=True)
+                removed = True
+        if removed:
+            try:
+                (Path(directory) / "custom").rmdir()   # when nothing else is in it
+            except OSError:
+                pass
+        return removed
 
-    def _apply_combined_upscalers(self, directory: Path, fgmod_path: Path, injector: Path) -> str:
-        """COMBINED_VARIANT: OptiScaler 10 (de2626f) lists custom/<name>/ffx and custom/<name>/dlss next to its own
-        FSR 4 (the Lite runtime the patch put in): 4.0.2c's upscaler as "FSR 4.0.2c" and, when HelixSR 3.x is
-        installed, HLX DLSS. FSR 4 stays the selected upscaler."""
-        self._copy_hlx_injector(injector)
-        source = self._fsr4_variant_path(fgmod_path, "rdna23-int8")
+    def _install_custom_upscaler(self, directory: Path, name: str, source: Path, dll_name: str) -> None:
         if not source.exists():
             raise FileNotFoundError(f"Prepared FSR4 variant missing: {source}")
-        folder = self._custom_402c_folder(directory)
+        folder = Path(directory) / "custom" / name
         created = not folder.exists()
         try:
             (folder / "ffx").mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, folder / "ffx" / FSR4_UPSCALER_FILENAME)
+            shutil.copy2(source, folder / "ffx" / dll_name)
             self._write_json_file(folder / CUSTOM_UPSCALER_MARKER, {
                 "sha256": self._file_sha256(source),
                 "optiscaler": OPTISCALER_HLX_ASSET["version"],
@@ -5316,7 +5318,23 @@ class _HelixSRMixin:
             if created:
                 shutil.rmtree(folder, ignore_errors=True)
             raise
-        names = ["FSR 4 (4.1.2 Lite)", CUSTOM_402C_NAME]
+
+    def _apply_combined_upscalers(self, directory: Path, fgmod_path: Path, injector: Path) -> str:
+        """COMBINED_VARIANT: OptiScaler 10 (de2626f + driver DLLs as custom upscalers) lists custom/<name>/ffx and
+        custom/<name>/dlss next to its own FSR 4 (the Lite runtime the patch put in): 4.0.2c's upscaler as "FSR 4.0.2c",
+        Valve's 4.1.1 driver DLL as "FSR 4.1.1" and, when HelixSR 3.x is installed, HLX DLSS. FSR 4 stays the selected
+        upscaler."""
+        self._copy_hlx_injector(injector)
+        self._install_custom_upscaler(
+            directory, CUSTOM_402C_NAME, self._fsr4_variant_path(fgmod_path, "rdna23-int8"), FSR4_UPSCALER_FILENAME
+        )
+        self._install_custom_upscaler(
+            directory,
+            CUSTOM_411_NAME,
+            self._fsr4_variant_extra_file_path(fgmod_path, "rdna2-valve-411-pre10", FSR4_DRIVER_OVERRIDE_FILENAME),
+            CUSTOM_411_DLL,
+        )
+        names = ["FSR 4 (4.1.2 Lite)", CUSTOM_402C_NAME, CUSTOM_411_NAME]
         installed = self._helixsr_installed()
         if installed and installed["built"] and installed["kind"] == "hlx":
             self._helixsr_remove_ffx_route(directory)

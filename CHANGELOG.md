@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.26
+
+### Added
+- **FSR 4.1.1** (experimental) in OptiScaler's menu (Insert), next to **FSR 4** (4.1.2), **FSR 4.0.2c** and **HLX DLSS**: Valve's `amdxcffx64.dll` 2.3.0.2913, the old **4.1.1 Valve RDNA2 Compatibility** runtime, in `custom/FSR 4.1.1/ffx/`. Press Patch All again to get it. Valve's `amdxc64.dll` isn't installed with it.
+
+### Changed
+- Patch All's injector is now OptiScaler `de2626f` plus [a small patch](https://github.com/sauliiin/Jedi-ReFrameShade4All/releases/tag/optiscaler-10-de2626f-jedi1): `custom/<name>/ffx` also takes AMD driver DLLs, and a module without the selected INT8 model runs its own INT8. Backend: `OPTISCALER_HLX_ASSET`, `_install_custom_upscaler`, `_remove_custom_upscalers`.
+
 ## 1.1.25
 
 ### Fixed

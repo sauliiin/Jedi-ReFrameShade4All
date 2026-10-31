@@ -220,7 +220,7 @@ const PROXY_DLL_OPTIONS = [
     { value: "OptiScaler.asi", label: "OptiScaler.asi", hint: "For ASI loaders. Requires an ASI loader already installed in the game." },
 ];
 const DEFAULT_PROXY_DLL = "dxgi.dll";
-// 4.0.2c, 4.1.2 Lite and HLX DLSS in one game, picked in OptiScaler's menu.
+// 4.0.2c, 4.1.1, 4.1.2 Lite and HLX DLSS in one game, picked in OptiScaler's menu.
 const DEFAULT_FSR4_VARIANT = "deck-all";
 // Common timeout values
 const TIMEOUTS = {
