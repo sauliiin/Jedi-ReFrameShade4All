@@ -170,7 +170,7 @@ PY
 selected_fsr4_variant="$(resolve_fsr4_variant)"
 variant_dir=""
 variant_extra_files=()
-variant_ini_overrides=()
+variant_ini_overrides=("Hotfix.CheckForUpdate=false")
 case "$selected_fsr4_variant" in
   rdna4-native)
     variant_dir="$fgmod_path/fsr4-rdna4"

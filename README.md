@@ -4,7 +4,7 @@
 
 It fuses two mature Decky plugins into a single panel:
 
-- **Frame Generation / upscaling** — based on [Decky‑Framegen](https://github.com/xXJSONDeruloXx/Decky-Framegen). Ships the complete bundled, hash‑verified OptiScaler `0.9.4` build (FFX 2.3 SDK / FSR 4.1.1); GitHub auto‑update is **opt‑in**.
+- **Frame Generation / upscaling** — based on [Decky‑Framegen](https://github.com/xXJSONDeruloXx/Decky-Framegen). Ships the complete bundled, hash‑verified OptiScaler `0.9.4` build (FFX 2.3 SDK / FSR 4.1.1). The plugin pins OptiScaler's builds: it doesn't check for OptiScaler updates, and OptiScaler's own check is off (`CheckForUpdate=false`).
 - **ReShade with add‑ons** — based on [LetMeReShade(All)](https://github.com/itsOwen/LetMeReShade) (downloads ReShade from reshade.me, shader packs, AutoHDR).
 
 > ⚠️ **Community fan‑merge.** This is an unofficial combination of two separate projects. It builds cleanly and the UI/back‑end are wired together, but the two injectors were never designed to coexist — **test it per game** and read the *Coexistence* and *Safety* sections below.
@@ -80,19 +80,20 @@ At runtime both mods hook the DXGI swap‑chain — ReShade for post‑processin
 - Same files as the standalone Jedi LSFG-VK plugin, so games turned on there show as on here. Uninstalling the standalone plugin from Decky removes those profiles: turn the toggle on again afterwards. Flatpak apps aren't supported here.
 
 **Frame Generation / OptiScaler** (FRAMEGEN MANAGEMENT)
-- Install/uninstall with an **installed vs. latest** version widget (same style as ReShade); precise *up to date / update available* and a one‑click **Update**.
+- Install, reinstall and uninstall, showing the installed version.
 - **One upscaler setup for every game**, picked in OptiScaler's menu (Insert): Patch All gives the game an OptiScaler 10 injector built from master `de2626f` plus [a small patch](https://github.com/sauliiin/Jedi-ReFrameShade4All/releases/tag/optiscaler-10-de2626f-jedi1) that also takes AMD driver DLLs, which loads custom upscalers from `custom/<name>/ffx` and `custom/<name>/dlss` next to `OptiScaler.ini`. The menu then lists:
   - **FSR 4** — FSR 4.1.2 from AMD's unmodified, signed `amdxcffx64.dll` / `amdvkffx64.dll` 2.4.0.4370 (Adrenalin 26.10.1) with the 4.1.1 SDK upscaler. It starts on the INT8 Lite model made for APUs (`FSR.Fsr4GpuSupport=4`, `FSR.Fsr4Model=3`); that DLL also has the full INT8 and the RDNA2 INT8 models, which OptiScaler's **FSR4 Model** combo switches to in the game. It is the selected upscaler after patching (`Upscalers.Dx12Upscaler=ffx`, `FSR.UpscalerIndex=0`).
   - **FSR 4.0.2c** — the bundled INT8 4.0.2c upscaler, in `custom/FSR 4.0.2c/ffx/`.
   - **FSR 4.1.1** (experimental) — Valve's `amdxcffx64.dll` 2.3.0.2913 (the old **4.1.1 Valve RDNA2 Compatibility** runtime), in `custom/FSR 4.1.1/ffx/`. It runs its INT8 model even with INT8 Lite selected, as it has no Lite model. Valve's `amdxc64.dll` isn't installed with it.
   - **HLX DLSS** (experimental, when HelixSR 3.x is installed) — [HelixSR](https://github.com/lonewolf0622/HelixSR) runs NVIDIA's DLSS Model E network as D3D12 compute shaders (DX12 games only), in `custom/HLX DLSS/dlss/`. Releases ship no NVIDIA files, so the panel only checks whether the **newest** HelixSR release (pre-releases included) is installed, showing releases by their full name (e.g. *HelixSR 3.2.0 (pre-release)*; a zip uploaded again under the same tag shows as *re-uploaded <date>*) and, if not, downloads it (verified against GitHub's SHA256) and runs HelixSR's own setup, which builds the network on the device (about 7–10 minutes on a Steam Deck; downloads NVIDIA's DLSS DLL after you confirm). The build lives in `~/fgmod-helixsr/current` and replaces the older one only once it succeeds. After installing or updating HelixSR, press **Patch All** again.
   - Frame generation is Nukems FG (`FGInput=NvngxFG` + `FGNvngxReplacement=Nukems`). Unpatching removes the `custom/` folders and puts back the previous values. Games patched with an older runtime keep it until they are patched again.
+- **Include FSR 4.1.1** toggle, above Patch All (on by default). Off, Patch All gives the game OptiScaler `0.9.4` and FSR 4.0.2c only (runtime `rdna23-int8`): no FSR 4.1.1, FSR 4.1.2 or HLX DLSS, and none of their files in the game folder. It can fix games that crash with the full setup. The toggle starts on what the picked game has installed, and turning it back on needs Patch All too.
   - FSR 4 can silently fall back to FSR3 on unsupported hardware; set `FSR_Fsr4EnableWatermark=true` to confirm the active path (`FSR4`, `FSR4-i8`, `FSR4L-i8` or `FSR3`).
 - **Proton-CachyOS FSR4** toggle: when Steam runs the game with Proton-CachyOS, it adds `FSR4_UPGRADE=1` to the launch options (`FSR4_UPGRADE=1 %command%`); turning it off removes only that. Nothing is downloaded.
 - **Show FSR watermark** toggle (below it): adds `PROTON_FSR4_INDICATOR=1`, so AMD's FSR watermark shows top left which FSR runs. Both toggles only show for games Steam runs with Proton-CachyOS or with the Lite toggle on. With OptiScaler, its own watermark is `FSR_Fsr4EnableWatermark=true`.
 - **Proton FSR4 → 4.1.2 Lite** toggle (experimental, any Proton, no need to have Proton-CachyOS installed): runs the game with FSR 4.1.2 Lite (`FSR4L-i8`) without OptiScaler. Released Proton-CachyOS ignores a DLL path in `PROTON_FSR4_UPGRADE`, so the toggle installs the newest Proton-CachyOS release (x86_64, about 330 MB, SHA-512 checked) into `compatibilitytools.d` as **Proton-CachyOS … (FSR4 Lite)**, with `protonfixes/upscalers.py` patched to copy that DLL into the prefix. Each time the toggle is turned on it checks Proton-CachyOS's newest release: when it's newer than the copy, it downloads it, patches it the same way and replaces the copy (skipped while a game runs on it; offline, or if the new release can't be patched, the working copy stays). The copy's internal name is always `proton-cachyos-jedi-fsr4lite`, so Steam lists one **Proton-CachyOS … (FSR4 Lite)** and games set to it keep it after an update; its label shows the new release after a Steam restart. The toggle then sets that Proton for the game and adds `PROTON_FSR4_UPGRADE=<Lite DLL>` to the launch options (that Proton turns `FSR4_UPGRADE` on by itself, so **Proton-CachyOS FSR4** and the watermark stay their own toggles). A dialog asks you to check the game's Proton in **Properties → Compatibility**. Steam lists a new Proton only after a restart, so the first time the dialog offers **Restart Steam**, and the plugin sets the Proton by itself when it loads after that restart. Turning it off removes the variable and puts back the game's previous Proton; the copy stays in `compatibilitytools.d/proton-cachyos-jedi-fsr4lite`. Games with native FSR 3.1, DX12 only.
 - Per‑game patch/unpatch.
-- Default install uses the complete bundled `0.9.4`; Update force‑downloads and verifies the newest upstream archive.
+- Installs always use the complete bundled `0.9.4`.
 
 **ReShade**
 - ReShade **with add‑on support** (toggle) and optional **AutoHDR** (OLED‑oriented).
@@ -133,7 +134,7 @@ See [Building](#building) below, then zip the folder (with `bin/` + `dist/`) and
 
 > **Patch All puts ReShade on `dxgi`**, which covers DX11/DX12 (most games). For DX9/Vulkan/OpenGL titles, use **Advanced → ReShade**, which auto‑detects the API.
 
-> Auto‑update for OptiScaler is **opt‑in** — set `DECKY_OPTISCALER_AUTO_UPDATE=1`. By default the complete bundled `0.9.4` build is used. An explicit update is downloaded and verified before it replaces the installed bundle.
+> OptiScaler is never updated from GitHub: new builds arrive with plugin releases.
 
 ---
 
@@ -178,7 +179,7 @@ The panel is two parallel sections under an **Advanced controls** toggle — **F
 
 **Back‑end architecture:** the two original `main.py` files are combined into one Decky‑safe `Plugin` class using mixins (`_OptiScalerMixin`, `_ReShadeMixin`). Method‑name collisions (`_main`, `_unload`, `list_installed_games`, `log_error`) are resolved in the final `Plugin`, which also adds the one‑button flow (`patch_all_game` / `unpatch_all_game`) and the coexistence layer (`patch_game` slot override, `get_combined_game_status`, `set_slots_manual`). `patch_all_game` applies Frame Generation (winmm) **before** ReShade (dxgi) so OptiScaler's proxy cleanup can't displace ReShade's DLL.
 
-**OptiScaler updates** are *precise*: `get_optiscaler_update_status` compares the **installed archive asset name** (from the install manifest) against the newest GitHub release asset. The **Update** button (`update_optiscaler`) downloads and verifies that archive in a staging directory, then replaces the installed bundle only after validation; plain install/reinstall uses the hash-pinned bundled build.
+**OptiScaler updates** arrive with plugin releases: install and reinstall use the hash-pinned bundled build, and the plugin makes no OptiScaler update requests.
 
 ---
 

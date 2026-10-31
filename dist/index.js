@@ -92,8 +92,6 @@ function MdOutlineAutoAwesomeMotion (props) {
   return GenIcon({"tag":"svg","attr":{"viewBox":"0 0 24 24"},"child":[{"tag":"path","attr":{"fill":"none","d":"M0 0h24v24H0z"},"child":[]},{"tag":"path","attr":{"d":"M14 2H4c-1.1 0-2 .9-2 2v10h2V4h10V2zm4 4H8c-1.1 0-2 .9-2 2v10h2V8h10V6zm2 4h-8c-1.1 0-2 .9-2 2v8c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2v-8c0-1.1-.9-2-2-2zm0 10h-8v-8h8v8z"},"child":[]}]})(props);
 }
 
-const getOptiScalerUpdateStatus = callable("get_optiscaler_update_status");
-const updateOptiScaler = callable("update_optiscaler");
 const runInstallFGMod$1 = callable("run_install_fgmod");
 const runUninstallFGMod = callable("run_uninstall_fgmod");
 const checkFGModPath$1 = callable("check_fgmod_path");
@@ -222,6 +220,8 @@ const PROXY_DLL_OPTIONS = [
 const DEFAULT_PROXY_DLL = "dxgi.dll";
 // 4.0.2c, 4.1.1, 4.1.2 Lite and HLX DLSS in one game, picked in OptiScaler's menu.
 const DEFAULT_FSR4_VARIANT = "deck-all";
+// Without 4.1.1: OptiScaler 0.9.4 and FSR 4.0.2c only, for games that crash with the setup above.
+const NO_411_FSR4_VARIANT = "rdna23-int8";
 // Common timeout values
 const TIMEOUTS = {
     resultDisplay: 5000, // 5 seconds
@@ -260,35 +260,20 @@ function OptiScalerControls({ pathExists, setPathExists, fgmodInfo, fsr4Variant 
     const [removingOnly, setRemovingOnly] = SP_REACT.useState(false);
     const [result, setResult] = SP_REACT.useState("");
     const [dllName, setDllName] = SP_REACT.useState(DEFAULT_PROXY_DLL);
-    const [updateStatus, setUpdateStatus] = SP_REACT.useState(null);
-    const refreshUpdateStatus = async () => {
-        try {
-            setUpdateStatus(await getOptiScalerUpdateStatus());
-        }
-        catch (e) {
-            console.error(e);
-        }
-    };
-    SP_REACT.useEffect(() => {
-        void refreshUpdateStatus();
-    }, [pathExists]);
     SP_REACT.useEffect(() => {
         if (result) {
             return createAutoCleanupTimer(() => setResult(""), TIMEOUTS.resultDisplay);
         }
         return () => { };
     }, [result]);
-    const handleInstallOrUpdate = async () => {
+    const handleInstall = async () => {
         try {
             setInstalling(true);
-            const doUpdate = pathExists === true && Boolean(updateStatus?.update_available);
-            setResult(doUpdate ? "Updating OptiScaler…" : "Installing OptiScaler…");
-            const r = doUpdate ? await updateOptiScaler(fsr4Variant) : await runInstallFGMod$1(fsr4Variant);
+            setResult("Installing OptiScaler…");
+            const r = await runInstallFGMod$1(fsr4Variant);
             setResult(r.status === "success" ? `✅ ${r.output || r.message || "Done"}` : `❌ ${r.message || "Failed"}`);
-            if (r.status === "success") {
+            if (r.status === "success")
                 setPathExists?.(true);
-                await refreshUpdateStatus();
-            }
         }
         catch (e) {
             setResult(`❌ ${String(e)}`);
@@ -369,10 +354,8 @@ function OptiScalerControls({ pathExists, setPathExists, fgmodInfo, fsr4Variant 
             setUninstalling(true);
             const r = await runUninstallFGMod();
             setResult(r.status === "success" ? "✅ OptiScaler removed." : `❌ ${r.message || "Failed"}`);
-            if (r.status === "success") {
+            if (r.status === "success")
                 setPathExists?.(false);
-                setUpdateStatus(null);
-            }
         }
         catch (e) {
             console.error(e);
@@ -384,9 +367,7 @@ function OptiScalerControls({ pathExists, setPathExists, fgmodInfo, fsr4Variant 
     const installButtonText = installing
         ? "Working…"
         : pathExists === true
-            ? updateStatus?.update_available
-                ? "🔧 Update OptiScaler"
-                : "🔧 Reinstall OptiScaler"
+            ? "🔧 Reinstall OptiScaler"
             : "🔧 Install OptiScaler";
     return (window.SP_REACT.createElement(DFL.PanelSection, { title: "Framegen Management" },
         pathExists !== null && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
@@ -394,13 +375,9 @@ function OptiScalerControls({ pathExists, setPathExists, fgmodInfo, fsr4Variant 
                 "\uD83D\uDFE2 OptiScaler Is Installed",
                 fgmodInfo?.version && (window.SP_REACT.createElement("div", { style: { fontSize: "0.9em", opacity: 0.8, marginTop: "4px" } },
                     "Installed version: ",
-                    fgmodInfo.version)),
-                updateStatus?.status === "success" && updateStatus.latest_version && (window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", opacity: 0.7, marginTop: "2px" } },
-                    "Latest upstream: ",
-                    updateStatus.latest_version,
-                    updateStatus.update_available ? " (update available)" : " (up to date)")))) : ("🔴 OptiScaler Not Installed")))),
+                    fgmodInfo.version)))) : ("🔴 OptiScaler Not Installed")))),
         window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleInstallOrUpdate, disabled: installing }, installButtonText)),
+            window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleInstall, disabled: installing }, installButtonText)),
         pathExists === true && (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.DropdownItem, { layout: "below", label: "Proxy DLL name", description: PROXY_DLL_OPTIONS.find((o) => o.value === dllName)?.hint, menuLabel: "Proxy DLL name", selectedOption: dllName, rgOptions: PROXY_DLL_OPTIONS.map((o) => ({ data: o.value, label: o.label })), onChange: (option) => setDllName(String(option.data)) })),
@@ -425,7 +402,6 @@ function OptiScalerControls({ pathExists, setPathExists, fgmodInfo, fsr4Variant 
 }
 
 const listInstalledGames = callable("list_installed_games");
-const getEnginesStatus = callable("get_engines_status");
 const getCombinedGameStatus$1 = callable("get_combined_game_status");
 const patchAllGame = callable("patch_all_game");
 const unpatchAllGame = callable("unpatch_all_game");
@@ -821,9 +797,8 @@ function getLaunchOptions(appId) {
 function gameOptionLabel(game) {
     return game.non_steam ? `${game.name} · non-Steam` : game.name;
 }
-function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, }) {
+function SteamGameCombinedSection({ fsr4Variant, setFsr4Variant, appid, setAppid, }) {
     const [games, setGames] = SP_REACT.useState([]);
-    const [engines, setEngines] = SP_REACT.useState(null);
     const [status, setStatus] = SP_REACT.useState(null);
     const [addon, setAddon] = SP_REACT.useState(true);
     const [busy, setBusy] = SP_REACT.useState(false);
@@ -1004,14 +979,6 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, }) {
             await logError$4(`SteamGameCombinedSection -> ${name}: ${String(e)}`);
         }
     };
-    const refreshEngines = async () => {
-        try {
-            setEngines(await getEnginesStatus());
-        }
-        catch (e) {
-            await logError$4(`SteamGameCombinedSection -> engines: ${String(e)}`);
-        }
-    };
     const loadStatus = async (id) => {
         try {
             setStatus(await getCombinedGameStatus$1(id));
@@ -1020,6 +987,10 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, }) {
             await logError$4(`SteamGameCombinedSection -> status: ${String(e)}`);
         }
     };
+    // The 4.1.1 toggle starts on what the picked game has installed.
+    SP_REACT.useEffect(() => {
+        setFsr4Variant(status?.optiscaler_variant === NO_411_FSR4_VARIANT ? NO_411_FSR4_VARIANT : DEFAULT_FSR4_VARIANT);
+    }, [status?.appid, status?.optiscaler_variant]);
     SP_REACT.useEffect(() => {
         (async () => {
             try {
@@ -1031,7 +1002,6 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, }) {
                 await logError$4(`SteamGameCombinedSection -> list: ${String(e)}`);
             }
         })();
-        void refreshEngines();
     }, []);
     const handlePatchAll = async () => {
         if (!appid) {
@@ -1063,7 +1033,6 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, }) {
             else {
                 setResult(`❌ ${r.message || "Failed"}`);
             }
-            await refreshEngines();
             await loadStatus(appid);
         }
         catch (e) {
@@ -1113,11 +1082,6 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, }) {
                 "Pick a game and press ",
                 window.SP_REACT.createElement("b", null, "Patch All"),
                 ": OptiScaler + ReShade, launch options included.")),
-        engines && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement("div", { style: { fontSize: "0.82em", opacity: 0.7 } },
-                engines.optiscaler_installed ? `🟢 OptiScaler ${engines.optiscaler_version || ""}` : "⚪ OptiScaler not installed",
-                "  •  ",
-                engines.reshade_installed ? `🟢 ReShade ${engines.reshade_version || ""}` : "⚪ ReShade not installed"))),
         window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement(DFL.DropdownItem, { rgOptions: games.map((g) => ({ data: g.appid, label: gameOptionLabel(g) })), selectedOption: appid, onChange: (o) => {
                     setAppid(o.data);
@@ -1162,6 +1126,8 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, }) {
             window.SP_REACT.createElement(HelixSRPanel, null),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.ToggleField, { label: "ReShade add-ons", description: "Enables add-on support (avoid in anti-cheat online games).", checked: addon, onChange: setAddon })),
+            window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+                window.SP_REACT.createElement(DFL.ToggleField, { label: "Include FSR 4.1.1", description: "Off can fix crashes: FSR 4.0.2c only. Press Patch All.", checked: fsr4Variant !== NO_411_FSR4_VARIANT, disabled: busy, onChange: (v) => setFsr4Variant(v ? DEFAULT_FSR4_VARIANT : NO_411_FSR4_VARIANT) })),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handlePatchAll, disabled: busy }, busy ? "Working…" : "🚀 Patch All (FrameGen + ReShade)")),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
@@ -2183,8 +2149,8 @@ function MainContent() {
     const [pathExists, setPathExists] = SP_REACT.useState(null);
     const [fgmodInfo, setFgmodInfo] = SP_REACT.useState(null);
     const [advanced, setAdvanced] = SP_REACT.useState(false);
-    // One FSR4 runtime for every game, shared with the advanced OptiScaler controls.
-    const fsr4Variant = DEFAULT_FSR4_VARIANT;
+    // The FSR4 runtime Patch All installs, shared with the advanced OptiScaler controls.
+    const [fsr4Variant, setFsr4Variant] = SP_REACT.useState(DEFAULT_FSR4_VARIANT);
     // The game is also picked once at the top and reused by the advanced sections.
     const [selectedAppid, setSelectedAppid] = SP_REACT.useState("");
     SP_REACT.useEffect(() => {
@@ -2200,7 +2166,7 @@ function MainContent() {
         return () => clearInterval(intervalId);
     }, []);
     return (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
-        window.SP_REACT.createElement(SteamGameCombinedSection, { fsr4Variant: fsr4Variant, appid: selectedAppid, setAppid: setSelectedAppid }),
+        window.SP_REACT.createElement(SteamGameCombinedSection, { fsr4Variant: fsr4Variant, setFsr4Variant: setFsr4Variant, appid: selectedAppid, setAppid: setSelectedAppid }),
         window.SP_REACT.createElement(DFL.PanelSection, null,
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.ToggleField, { label: "Advanced controls", description: "Per-engine install, proxy DLL, ReShade shaders/AutoHDR.", checked: advanced, onChange: setAdvanced }))),

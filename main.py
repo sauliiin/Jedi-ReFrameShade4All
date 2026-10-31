@@ -251,13 +251,9 @@ VARIANT_EXTRA_FILENAMES = sorted(
     }
 )
 
-# OptiScaler auto-update: fetch the newest release archive from GitHub, falling back
-# to the bundled, hash-verified OPTISCALER_ARCHIVE_ASSET when offline/unavailable.
-OPTISCALER_LATEST_RELEASE_API = "https://api.github.com/repos/optiscaler/OptiScaler/releases/latest"
-OPTISCALER_RELEASES_API = "https://api.github.com/repos/optiscaler/OptiScaler/releases"
-OPTISCALER_ASSET_NAME_RE = re.compile(r"OptiScaler.*\.7z$|Optiscaler.*\.7z$", re.IGNORECASE)
 OPTISCALER_DOWNLOAD_TIMEOUT = 45
-OPTISCALER_LATEST_CACHE_SECONDS = 900
+# Every game's OptiScaler.ini: the plugin pins OptiScaler's builds, so OptiScaler doesn't look for or announce updates.
+OPTISCALER_BASE_CONFIG_OVERRIDES = {"Hotfix.CheckForUpdate": "false"}
 
 # Plugin self-update: the newest release of this plugin on GitHub, installed by Decky's own installer.
 PLUGIN_RELEASES_API = "https://api.github.com/repos/sauliiin/Jedi-ReFrameShade4All/releases?per_page=20"
@@ -506,8 +502,6 @@ from urllib.request import Request, urlopen
 
 # ===== OptiScaler / Frame Generation backend =====
 class _OptiScalerMixin:
-    _latest_optiscaler_release_cache = None
-
     def _create_renamed_copies(self, source_file, renames_dir):
         """Create renamed copies of the OptiScaler.dll file"""
         try:
@@ -768,7 +762,7 @@ class _OptiScalerMixin:
     def _fsr4_variant_config_overrides(self, fsr4_variant: str | None) -> dict:
         variant = self._fsr4_variant_info(fsr4_variant)
         overrides = variant.get("config_overrides") or {}
-        return dict(overrides) if isinstance(overrides, dict) else {}
+        return {**OPTISCALER_BASE_CONFIG_OVERRIDES, **(overrides if isinstance(overrides, dict) else {})}
 
     def _split_ini_override_key(self, raw_key: str) -> tuple[str | None, str]:
         key = str(raw_key).strip()
@@ -1053,6 +1047,9 @@ class _OptiScalerMixin:
                 updated_content = re.sub(r'(?m)^Path\s*=\s*auto', 'Path=plugins', updated_content)
                 updated_content = self._repair_plugins_path_values(updated_content)
 
+                # OptiScaler doesn't look for or announce updates: the plugin pins its builds
+                updated_content = re.sub(r'CheckForUpdate\s*=\s*auto', 'CheckForUpdate=false', updated_content)
+
                 # Disable new HQ font auto mode to avoid missing font assertions on Proton
                 updated_content = re.sub(r'UseHQFont\s*=\s*auto', 'UseHQFont=false', updated_content)
                 
@@ -1068,7 +1065,7 @@ class _OptiScalerMixin:
             decky.logger.error(f"Failed to modify OptiScaler.ini: {e}")
             return False
 
-    # ── OptiScaler auto-update (GitHub Releases) ──────────────────────────────
+    # ── GitHub requests ───────────────────────────────────────────────────────
 
     def _request_text(self, url):
         request = urllib.request.Request(
@@ -1146,124 +1143,9 @@ class _OptiScalerMixin:
 
         raise RuntimeError("; ".join(errors))
 
-    def _select_optiscaler_release_asset(self, release):
-        for asset in release.get("assets", []):
-            name = asset.get("name", "")
-            if OPTISCALER_ASSET_NAME_RE.search(name) and "BUNDLE" not in name.upper():
-                download_url = asset.get("browser_download_url")
-                if download_url:
-                    return asset
-        return None
-
-    def _include_optiscaler_prereleases(self):
-        include_prereleases = os.environ.get(
-            "DECKY_OPTISCALER_INCLUDE_PRERELEASES", "false"
-        ).lower() in ("1", "true", "yes")
-        return include_prereleases
-
-    def _optiscaler_release_metadata(self, release):
-        asset = self._select_optiscaler_release_asset(release)
-        if not asset:
-            return None
-        digest = str(asset.get("digest") or "")
-        sha256 = digest.split(":", 1)[1] if digest.lower().startswith("sha256:") else None
-        return {
-            "version": release.get("tag_name") or asset["name"].replace(".7z", ""),
-            "release_url": release.get("html_url"),
-            "asset_name": asset["name"],
-            "download_url": asset["browser_download_url"],
-            "size": asset.get("size"),
-            "sha256": sha256,
-        }
-
-    def _get_latest_optiscaler_release(self, use_cache=True):
-        """Return metadata for the newest usable OptiScaler release archive."""
-        include_prereleases = self._include_optiscaler_prereleases()
-        cache_key = "with-prereleases" if include_prereleases else "stable"
-        now = datetime.now(timezone.utc).timestamp()
-
-        if use_cache and self._latest_optiscaler_release_cache:
-            cached_key, cached_at, cached_release = self._latest_optiscaler_release_cache
-            if cached_key == cache_key and now - cached_at < OPTISCALER_LATEST_CACHE_SECONDS:
-                return cached_release
-
-        if not include_prereleases:
-            try:
-                latest_release = self._request_json(OPTISCALER_LATEST_RELEASE_API)
-                if not isinstance(latest_release, dict):
-                    raise RuntimeError("Unexpected GitHub latest release response")
-                release_metadata = self._optiscaler_release_metadata(latest_release)
-                if release_metadata:
-                    self._latest_optiscaler_release_cache = (cache_key, now, release_metadata)
-                    return release_metadata
-                decky.logger.warning(
-                    f"No OptiScaler .7z asset found in latest release {latest_release.get('tag_name')}"
-                )
-            except Exception as e:
-                decky.logger.warning(f"GitHub latest release endpoint failed: {e}")
-
-        releases = self._request_json(OPTISCALER_RELEASES_API)
-        if not isinstance(releases, list):
-            raise RuntimeError("Unexpected GitHub releases response")
-
-        for release in releases:
-            if release.get("draft"):
-                continue
-            if release.get("prerelease") and not include_prereleases:
-                continue
-
-            release_metadata = self._optiscaler_release_metadata(release)
-            if not release_metadata:
-                decky.logger.warning(
-                    f"No OptiScaler .7z asset found in release {release.get('tag_name')}"
-                )
-                continue
-
-            self._latest_optiscaler_release_cache = (cache_key, now, release_metadata)
-            return release_metadata
-
-        raise RuntimeError("No suitable OptiScaler release archive found")
-
-    def _download_latest_optiscaler_archive(self, download_dir):
-        """Download the newest OptiScaler release archive from GitHub Releases.
-
-        By default this skips prereleases, matching GitHub's stable "latest release"
-        behavior. Set DECKY_OPTISCALER_INCLUDE_PRERELEASES=true to allow prereleases.
-        """
-        release = self._get_latest_optiscaler_release(use_cache=False)
-        archive_path = download_dir / release["asset_name"]
-        decky.logger.info(
-            f"Downloading OptiScaler {release['version']} from {release['download_url']}"
-        )
-        self._download_file(release["download_url"], archive_path)
-        expected_size = release.get("size")
-        if expected_size and archive_path.stat().st_size != int(expected_size):
-            raise RuntimeError(
-                f"Downloaded OptiScaler size mismatch: expected {expected_size}, "
-                f"got {archive_path.stat().st_size}"
-            )
-        archive_sha256 = self._file_sha256(archive_path)
-        expected_sha256 = release.get("sha256")
-        if expected_sha256 and archive_sha256.lower() != expected_sha256.lower():
-            raise RuntimeError(
-                f"Downloaded OptiScaler hash mismatch: expected {expected_sha256}, got {archive_sha256}"
-            )
-        return {
-            "path": archive_path,
-            "version": release["version"],
-            "release_url": release.get("release_url"),
-            "sha256": archive_sha256,
-        }
-
-    async def extract_static_optiscaler(self, selected_default_variant: str = DEFAULT_FSR4_VARIANT, force_download: bool = False) -> dict:
-        """Prepare the shared ~/fgmod bundle with all bundled FSR4 runtime variants.
-
-        force_download=True fetches the newest OptiScaler archive from GitHub (used by the
-        "Update" action); otherwise the install uses the complete bundled archive unless
-        DECKY_OPTISCALER_AUTO_UPDATE is set.
-        """
+    async def extract_static_optiscaler(self, selected_default_variant: str = DEFAULT_FSR4_VARIANT) -> dict:
+        """Prepare the shared ~/fgmod bundle with all bundled FSR4 runtime variants."""
         staging_path = None
-        temp_download_dir = None
         try:
             decky.logger.info("Starting extract_static_optiscaler method")
 
@@ -1322,62 +1204,20 @@ class _OptiScalerMixin:
                 self._verify_bundled_asset(required_path, asset["sha256"], asset["name"])
 
             # ── Stage A: obtain the base OptiScaler archive ───────────────────────
-            # Prefer the newest release published on GitHub (auto-update). Fall back to
-            # the bundled, pinned 0.9.4-final archive when the download is unavailable
-            # or offline. Stage B below always layers the plugin optimizations on top.
             bundled_archive = bin_path / OPTISCALER_ARCHIVE_ASSET["name"]
+            if not bundled_archive.exists():
+                return {
+                    "status": "error",
+                    "message": f"OptiScaler archive unavailable (bundled missing: {bundled_archive.name})",
+                }
+            self._verify_bundled_asset(
+                bundled_archive,
+                OPTISCALER_ARCHIVE_ASSET["sha256"],
+                OPTISCALER_ARCHIVE_ASSET["name"],
+            )
+            optiscaler_archive = bundled_archive
             optiscaler_version = OPTISCALER_ARCHIVE_ASSET["version"]
             optiscaler_archive_sha256 = OPTISCALER_ARCHIVE_ASSET["sha256"]
-            archive_is_pinned = True
-            optiscaler_archive = None
-
-            # Auto-update is OPT-IN. Default installs use the complete, hash-pinned archive
-            # bundled with the plugin; the Update action explicitly requests GitHub latest.
-            auto_update = os.environ.get(
-                "DECKY_OPTISCALER_AUTO_UPDATE", "false"
-            ).lower() in ("1", "true", "yes")
-
-            if force_download or auto_update:
-                try:
-                    temp_download_dir = tempfile.TemporaryDirectory()
-                    release_metadata = self._download_latest_optiscaler_archive(
-                        Path(temp_download_dir.name)
-                    )
-                    optiscaler_archive = release_metadata["path"]
-                    optiscaler_version = release_metadata["version"]
-                    optiscaler_archive_sha256 = release_metadata["sha256"]
-                    archive_is_pinned = False
-                    decky.logger.info(
-                        f"Using latest OptiScaler archive from GitHub: {optiscaler_archive.name} "
-                        f"({optiscaler_version})"
-                    )
-                except Exception as download_error:
-                    fallback_note = "" if force_download else "; falling back to bundled archive"
-                    decky.logger.warning(f"OptiScaler download failed{fallback_note}: {download_error}")
-                    if temp_download_dir is not None:
-                        temp_download_dir.cleanup()
-                        temp_download_dir = None
-                    if force_download:
-                        raise RuntimeError(f"Could not download the latest OptiScaler release: {download_error}")
-
-            if optiscaler_archive is None:
-                if not bundled_archive.exists():
-                    return {
-                        "status": "error",
-                        "message": (
-                            "OptiScaler archive unavailable "
-                            f"(download failed and bundled missing: {bundled_archive.name})"
-                        ),
-                    }
-                self._verify_bundled_asset(
-                    bundled_archive,
-                    OPTISCALER_ARCHIVE_ASSET["sha256"],
-                    OPTISCALER_ARCHIVE_ASSET["name"],
-                )
-                optiscaler_archive = bundled_archive
-                optiscaler_version = OPTISCALER_ARCHIVE_ASSET["version"]
-                optiscaler_archive_sha256 = OPTISCALER_ARCHIVE_ASSET["sha256"]
-                archive_is_pinned = True
 
             final_extract_path.parent.mkdir(parents=True, exist_ok=True)
             staging_path = Path(
@@ -1386,13 +1226,7 @@ class _OptiScalerMixin:
             staging_path.chmod(0o755)
             extract_path = staging_path
 
-            try:
-                self._extract_archive(optiscaler_archive, extract_path)
-            finally:
-                # The archive is only needed during extraction; release the download now.
-                if temp_download_dir is not None:
-                    temp_download_dir.cleanup()
-                    temp_download_dir = None
+            self._extract_archive(optiscaler_archive, extract_path)
 
             source_file = extract_path / "OptiScaler.dll"
             renames_dir = extract_path / "renames"
@@ -1421,20 +1255,12 @@ class _OptiScalerMixin:
             native_upscaler_root = extract_path / FSR4_UPSCALER_FILENAME
 
             if native_upscaler_root.exists():
-                if archive_is_pinned:
-                    # Pinned bundle: enforce the known-good RDNA4-native hash.
-                    native_upscaler_sha256 = self._verify_bundled_asset(
-                        native_upscaler_root,
-                        FSR4_VARIANTS["rdna4-native"]["sha256"],
-                        "Archive-native FSR4 upscaler",
-                    )
-                else:
-                    # Downloaded build: hash is unknown, record it but do not assert.
-                    native_upscaler_sha256 = self._file_sha256(native_upscaler_root)
-                    decky.logger.warning(
-                        "RDNA4-native FSR4 variant integrity not verified (downloaded build): "
-                        f"sha256={native_upscaler_sha256}"
-                    )
+                # Pinned bundle: enforce the known-good RDNA4-native hash.
+                native_upscaler_sha256 = self._verify_bundled_asset(
+                    native_upscaler_root,
+                    FSR4_VARIANTS["rdna4-native"]["sha256"],
+                    "Archive-native FSR4 upscaler",
+                )
                 shutil.copy2(native_upscaler_root, rdna4_upscaler)
             else:
                 # Some OptiScaler archives may not ship the native upscaler; keep the
@@ -1449,12 +1275,11 @@ class _OptiScalerMixin:
             official_411_dir.mkdir(parents=True, exist_ok=True)
             official_411_upscaler = official_411_dir / FSR4_UPSCALER_FILENAME
             shutil.copy2(native_upscaler_root if native_upscaler_root.exists() else rdna4_upscaler, official_411_upscaler)
-            if archive_is_pinned:
-                self._verify_bundled_asset(
-                    official_411_upscaler,
-                    FSR4_VARIANTS["rdna34-official-411"]["sha256"],
-                    "Prepared rdna34-official-411 FSR4 upscaler",
-                )
+            self._verify_bundled_asset(
+                official_411_upscaler,
+                FSR4_VARIANTS["rdna34-official-411"]["sha256"],
+                "Prepared rdna34-official-411 FSR4 upscaler",
+            )
             self._verify_bundled_asset(
                 fsr4_official_411_src,
                 FSR4_OFFICIAL_411_ASSET["sha256"],
@@ -1472,12 +1297,11 @@ class _OptiScalerMixin:
             rdna2_valve_dir.mkdir(parents=True, exist_ok=True)
             rdna2_valve_upscaler = rdna2_valve_dir / FSR4_UPSCALER_FILENAME
             shutil.copy2(native_upscaler_root if native_upscaler_root.exists() else rdna4_upscaler, rdna2_valve_upscaler)
-            if archive_is_pinned:
-                self._verify_bundled_asset(
-                    rdna2_valve_upscaler,
-                    FSR4_VARIANTS["rdna2-valve-411-pre10"]["sha256"],
-                    "Prepared rdna2-valve-411-pre10 FSR4 upscaler",
-                )
+            self._verify_bundled_asset(
+                rdna2_valve_upscaler,
+                FSR4_VARIANTS["rdna2-valve-411-pre10"]["sha256"],
+                "Prepared rdna2-valve-411-pre10 FSR4 upscaler",
+            )
             self._verify_bundled_asset(
                 fsr4_valve_411_src,
                 FSR4_VALVE_411_ASSET["sha256"],
@@ -1521,12 +1345,11 @@ class _OptiScalerMixin:
             lite_412_dir.mkdir(parents=True, exist_ok=True)
             lite_412_upscaler = lite_412_dir / FSR4_UPSCALER_FILENAME
             shutil.copy2(native_upscaler_root if native_upscaler_root.exists() else rdna4_upscaler, lite_412_upscaler)
-            if archive_is_pinned:
-                self._verify_bundled_asset(
-                    lite_412_upscaler,
-                    FSR4_VARIANTS["lite-412-i8"]["sha256"],
-                    "Prepared lite-412-i8 FSR4 upscaler",
-                )
+            self._verify_bundled_asset(
+                lite_412_upscaler,
+                FSR4_VARIANTS["lite-412-i8"]["sha256"],
+                "Prepared lite-412-i8 FSR4 upscaler",
+            )
             for source, destination_name, asset in [
                 (fsr4_lite_412_src, FSR4_DRIVER_OVERRIDE_FILENAME, FSR4_LITE_412_ASSET),
                 (fsr4_lite_412_vk_src, FSR4_VK_DRIVER_OVERRIDE_FILENAME, FSR4_LITE_412_VK_ASSET),
@@ -1565,7 +1388,7 @@ class _OptiScalerMixin:
                     "asset_name": optiscaler_archive.name,
                     "version": optiscaler_version,
                     "sha256": optiscaler_archive_sha256,
-                    "source": "bundled" if archive_is_pinned else "github-latest",
+                    "source": "bundled",
                     "native_upscaler_sha256": native_upscaler_sha256,
                 },
                 "optipatcher": {
@@ -1639,8 +1462,6 @@ class _OptiScalerMixin:
             decky.logger.error(f"Traceback: {traceback.format_exc()}")
             return {"status": "error", "message": f"Extract failed: {str(e)}"}
         finally:
-            if temp_download_dir is not None:
-                temp_download_dir.cleanup()
             if staging_path is not None and staging_path.exists():
                 shutil.rmtree(staging_path, ignore_errors=True)
 
@@ -6331,68 +6152,6 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin, _LsfgMixin):
         }
 
     # ── OptiScaler version/update status (mirrors get_reshade_update_status) ──
-    async def get_optiscaler_update_status(self) -> dict:
-        """Precise update check: compare the INSTALLED archive asset name against the
-        newest release asset on GitHub, avoiding false updates caused by tag/display-name
-        differences."""
-        fgmod_path = Path(decky.HOME) / "fgmod"
-        installed_version = self._fgmod_version(fgmod_path) if fgmod_path.exists() else None
-
-        # asset name actually installed (from the install manifest), with the bundled
-        # asset as the fallback so a fresh/legacy install still compares sensibly.
-        installed_asset = None
-        if fgmod_path.exists():
-            manifest = self._load_install_manifest(fgmod_path)
-            opti = manifest.get("optiscaler") if isinstance(manifest, dict) else None
-            if isinstance(opti, dict):
-                installed_asset = opti.get("asset_name")
-        if not installed_asset and fgmod_path.exists():
-            # A legacy install without a manifest must never inherit the current bundled
-            # asset name, otherwise an old bundle looks current after the pin is updated.
-            installed_asset = f"legacy:{installed_version or 'unknown'}"
-        elif not installed_asset:
-            installed_asset = OPTISCALER_ARCHIVE_ASSET["name"]
-
-        try:
-            latest_meta = self._get_latest_optiscaler_release()
-        except Exception as exc:
-            return {
-                "status": "success",
-                "installed_version": installed_version,
-                "latest_version": None,
-                "update_available": False,
-                "message": f"Could not reach GitHub: {exc}",
-            }
-
-        latest_asset = latest_meta.get("asset_name") if isinstance(latest_meta, dict) else None
-        latest_version = latest_meta.get("version") if isinstance(latest_meta, dict) else None
-        update_available = bool(
-            fgmod_path.exists() and installed_asset and latest_asset and installed_asset != latest_asset
-        )
-        return {
-            "status": "success",
-            "installed_version": installed_version,
-            "latest_version": latest_version,
-            "update_available": update_available,
-        }
-
-    async def update_optiscaler(self, selected_default_variant: str = DEFAULT_FSR4_VARIANT) -> dict:
-        """Download the newest OptiScaler archive from GitHub and reinstall ~/fgmod."""
-        try:
-            selected_default_variant = self._normalize_fsr4_variant(selected_default_variant)
-            result = await self.extract_static_optiscaler(selected_default_variant, force_download=True)
-            if result.get("status") != "success":
-                return {"status": "error", "message": f"OptiScaler update failed: {result.get('message')}"}
-            return {
-                "status": "success",
-                "output": f"Updated OptiScaler to {result.get('version', '')}.",
-                "version": result.get("version"),
-                "selected_default_variant": result.get("selected_default_variant", selected_default_variant),
-            }
-        except Exception as exc:
-            decky.logger.error(f"[JediReFrameShade] update_optiscaler failed: {exc}")
-            return {"status": "error", "message": str(exc)}
-
     # ── Plugin self-update (GitHub releases → Decky's installer) ─────────────
     _plugin_update_cache = None   # (fetched_at, release)
 

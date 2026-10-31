@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.1.27
+
+### Added
+- **Include FSR 4.1.1** toggle above Patch All, on by default. Off, Patch All installs OptiScaler `0.9.4` and FSR 4.0.2c only (runtime `rdna23-int8`), which can fix games that crash with the full setup: there is no FSR 4.1.1, FSR 4.1.2 or HLX DLSS in that game. The toggle starts on what the picked game has installed.
+
+### Changed
+- OptiScaler no longer checks for or announces updates: patching sets `Hotfix.CheckForUpdate=false` in the game's `OptiScaler.ini`. Games already patched get it the next time Patch All runs.
+
+### Removed
+- The plugin's OptiScaler update check: `get_optiscaler_update_status`, `update_optiscaler`, the **Update OptiScaler** button, the "Latest upstream" line and `DECKY_OPTISCALER_AUTO_UPDATE`. New OptiScaler builds arrive with plugin releases.
+- The OptiScaler and ReShade version badges at the top of the panel. **Advanced controls** still shows the installed versions.
+
 ## 1.1.26
 
 ### Added
