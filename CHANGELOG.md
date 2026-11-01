@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.31
+
+### Changed
+- Light cyberpunk look: soft cyan, pink and yellow for state, purple section titles with a thin gradient line, and buttons with small cut corners. The focused button is filled, and toggles, sliders and dropdowns keep Steam's look.
+- HelixSR's installed version only shows when an update is available.
+
+### Removed
+- HelixSR's upscaling resolution and `helixsr.log` time lines.
+
 ## 1.1.30
 
 ### Changed

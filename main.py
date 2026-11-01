@@ -3923,20 +3923,12 @@ class _HelixSRMixin:
             log_status = "running"
         else:
             log_status = "loaded"
-        last_upscale = None
-        for line in lines:
-            # up to 2.0 "dispatch 12: render AxB -> CxD", 3.0+ "input: ... -> NGX: render AxB output CxD"
-            match = re.search(r"(?:dispatch \d+|NGX): render (\d+)x(\d+) (?:->|output) (\d+)x(\d+)", line)
-            if match and "dry run" not in line:
-                last_upscale = f"{match.group(1)}x{match.group(2)} -> {match.group(3)}x{match.group(4)}"
         errors = [line.strip() for line in lines if "HelixSR ERROR" in line or "NOT RUNNING" in line][-2:]
         return {
             "version": self._helixsr_dll_version(dll) if dll.exists() else None,
             "configured": configured,
             "selectable": selectable,
             "log_status": log_status,
-            "log_time": datetime.fromtimestamp(log.stat().st_mtime).strftime("%Y-%m-%d %H:%M") if lines else None,
-            "last_upscale": last_upscale,
             "errors": errors,
         }
 

@@ -191,8 +191,28 @@ function setLaunchOptionsKeepingLsfg(appId, options, current) {
 
 // Shared constants for the application
 const PLUGIN_TITLE = "Jedi ReFrameShade4All";
-// The only colors the panel uses, and only for state.
-const COLORS = { ok: "#59bf40", warn: "#ffb84d", error: "#ff6b6b", muted: "#9aa7bd" };
+// The panel's palette: state colors, section titles and the two main buttons' outline. Regular text keeps Steam's color.
+const COLORS = { ok: "#22d3ee", warn: "#fde047", error: "#ff5c93", title: "#c084fc", muted: "#9aa7bd" };
+// Scoped to the panel's wrapper: the Quick Access menu is shared with other plugins. If a Steam update renames its
+// classes, these parts just go back to Steam's look. The focused button is filled, so the controller's focus reads.
+function panelCss() {
+    const title = DFL.quickAccessControlsClasses?.PanelSectionTitle;
+    const button = (scope = "", state = "") => `.jedi-panel ${scope} .DialogButton:not(.DialogDropDown)${state}`;
+    const focused = (scope = "", suffix = "") => `${button(scope, `.gpfocus${suffix}`)}, ${button(scope, `:focus${suffix}`)}`;
+    const corners = (size) => `polygon(0 0, calc(100% - ${size}) 0, 100% ${size}, 100% 100%, ${size} 100%, 0 calc(100% - ${size}))`;
+    return `
+${title ? `.jedi-panel .${title} { color: ${COLORS.title} !important; padding-bottom: 4px; border-bottom: 1px solid transparent; border-image: linear-gradient(90deg, ${COLORS.ok}, ${COLORS.error}) 1; }` : ""}
+${button()} { --jedi-accent: rgba(192, 132, 252, 0.55); --jedi-tint: rgba(192, 132, 252, 0.08), rgba(192, 132, 252, 0.08); position: relative; isolation: isolate; background: var(--jedi-accent) !important; color: #e8ebf0 !important; border: none !important; border-radius: 0 !important; letter-spacing: 0.3px; clip-path: ${corners("9px")}; }
+${button("", "::before")} { content: ""; position: absolute; inset: 1px; z-index: -1; background: linear-gradient(90deg, var(--jedi-tint)), #171a21; clip-path: ${corners("8.6px")}; }
+${button(".jedi-cta")} { --jedi-accent: ${COLORS.ok}; --jedi-tint: rgba(34, 211, 238, 0.24), rgba(34, 211, 238, 0.06); color: ${COLORS.ok} !important; font-weight: 600; }
+${button(".jedi-cta-danger")} { --jedi-accent: ${COLORS.error}; --jedi-tint: rgba(255, 92, 147, 0.2), rgba(255, 92, 147, 0.05); color: ${COLORS.error} !important; font-weight: 600; }
+${focused()} { --jedi-accent: ${COLORS.ok}; color: #0b0f1a !important; }
+${focused(".jedi-cta-danger")} { --jedi-accent: ${COLORS.error}; color: #0b0f1a !important; }
+${focused("", "::before")} { background: transparent; }
+${focused("", " *")} { color: inherit !important; }
+${button("", "[disabled]")}, ${button("", ".Disabled")} { opacity: 0.5; }
+`;
+}
 // What happened stays in the panel until the next action. `done` also shows a toast, for long operations that can
 // finish with the menu closed.
 function useNotice() {
@@ -580,23 +600,19 @@ function HelixSRGameStatus({ info }) {
     if (!info.configured) {
         lines.push({ color: COLORS.warn, text: "OptiScaler.ini no longer points at HelixSR. Press Patch All." });
     }
-    if (info.log_status === "running") {
-        lines.push({ color: COLORS.ok, text: `HelixSR ${info.version || ""} upscaling${info.last_upscale ? `: ${info.last_upscale}` : ""}` });
-    }
-    else if (info.log_status === "error") {
+    if (info.log_status === "error") {
         lines.push({ color: COLORS.error, text: `HelixSR loaded, but its network isn't running.${info.errors?.length ? `\n${info.errors.join("\n")}` : ""}` });
     }
     else if (info.log_status === "loaded") {
         lines.push({ color: undefined, text: `HelixSR ${info.version || ""} loaded. Pick it in OptiScaler (Insert).` });
     }
-    else {
+    else if (info.log_status !== "running") {
         lines.push({ color: undefined, text: info.selectable
                 ? `HelixSR ${info.version || ""} ready. Pick HLX DLSS in OptiScaler (Insert).`
                 : `HelixSR ${info.version || ""} ready. Start the game and pick DLSS.` });
     }
-    if (info.log_time) {
-        lines.push({ color: undefined, text: `helixsr.log: ${info.log_time}` });
-    }
+    if (!lines.length)
+        return null;
     return (window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", whiteSpace: "pre-wrap", wordBreak: "break-word" } }, lines.map((l, i) => (window.SP_REACT.createElement("div", { key: i, style: { color: l.color, opacity: l.color ? 1 : 0.8 } }, l.text)))));
 }
 const getHelixSRStatus = callable("get_helixsr_status");
@@ -673,15 +689,15 @@ function HelixSRPanel() {
     // Full release names: "HelixSR 3.2.0 (pre-release)", or "(re-uploaded …)" for a new zip under the same tag.
     const installedName = info?.installed_label || `HelixSR ${info?.installed_version || ""}`.trim();
     const updateWaiting = Boolean(info?.installed && !info.up_to_date && info.latest_label);
+    // Up to date, there's nothing to say: this only shows for an update or when HelixSR isn't installed.
     const installedLine = !info
-        ? "Checking HelixSR…"
+        ? ""
         : info.installed
-            ? info.up_to_date
-                ? `${installedName} installed (latest)`
-                : info.latest_label
-                    ? `${installedName} installed — ${info.latest_label} available`
-                    : `${installedName} installed`
+            ? updateWaiting
+                ? `${installedName} installed — ${info.latest_label} available`
+                : ""
             : `HelixSR not installed${info.latest_label ? ` (latest: ${info.latest_label})` : ""}`;
+    const hasStatus = installedLine || info?.message || setup?.state === "failed" || download?.error || setup?.state === "stopped";
     const showInstallButton = info && !busy && !info.up_to_date;
     const mb = (bytes) => `${((bytes || 0) / 1048576).toFixed(0)} MB`;
     const downloadText = !downloading
@@ -699,16 +715,16 @@ function HelixSRPanel() {
             ? (download.total ? Math.min(99, Math.floor((download.bytes / download.total) * 100)) : 0)
             : 100;
     return (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
-        window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+        hasStatus && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement("div", { style: { fontSize: "0.85em" } },
-                window.SP_REACT.createElement("div", { style: { color: updateWaiting ? COLORS.warn : undefined } }, installedLine),
+                installedLine && window.SP_REACT.createElement("div", { style: { color: updateWaiting ? COLORS.warn : undefined } }, installedLine),
                 info?.message && window.SP_REACT.createElement("div", { style: { opacity: 0.7, marginTop: "2px" } }, info.message),
                 setup?.state === "failed" && (window.SP_REACT.createElement("div", { style: { color: COLORS.error, marginTop: "4px", whiteSpace: "pre-wrap", wordBreak: "break-word" } },
                     "The last HelixSR build failed.",
                     (setup.errors || []).length > 0 ? `\n${setup.errors.join("\n")}` : "",
                     `\nLog: ${setup.log_path}`)),
                 download?.error && (window.SP_REACT.createElement("div", { style: { color: COLORS.error, marginTop: "4px", whiteSpace: "pre-wrap", wordBreak: "break-word" } }, `${download.label || `HelixSR ${download.version || ""}`} download failed: ${download.error}`)),
-                setup?.state === "stopped" && (window.SP_REACT.createElement("div", { style: { opacity: 0.7, marginTop: "4px" } }, "The last build was interrupted. Start it again.")))),
+                setup?.state === "stopped" && (window.SP_REACT.createElement("div", { style: { opacity: 0.7, marginTop: "4px" } }, "The last build was interrupted. Start it again."))))),
         downloading && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement(DFL.ProgressBarWithInfo, { layout: "below", bottomSeparator: "none", indeterminate: download.phase === "downloading" && !download.total,nProgress: downloadProgress, sOperationText: downloadText, description: "You can close this menu." }))),
         building && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
@@ -1047,9 +1063,11 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, addon, advance
                 window.SP_REACT.createElement(DFL.ToggleField, { label: "Show FSR watermark", description: "Shows which FSR runs, top left.", checked: fsr4Indicator, disabled: busy, onChange: (v) => void handleLaunchEnvToggle(FSR4_INDICATOR_ENV, v, setFsr4Indicator) }))),
             window.SP_REACT.createElement(HelixSRPanel, null),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handlePatchAll, disabled: busy }, busy ? "Working…" : "Patch All (FrameGen + ReShade)")),
+                window.SP_REACT.createElement("div", { className: "jedi-cta" },
+                    window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handlePatchAll, disabled: busy }, busy ? "Working…" : "Patch All (FrameGen + ReShade)"))),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleRemoveAll, disabled: busy }, "Remove All")))),
+                window.SP_REACT.createElement("div", { className: "jedi-cta-danger" },
+                    window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleRemoveAll, disabled: busy }, "Remove All"))))),
         window.SP_REACT.createElement(NoticeRow, { notice: notice }),
         window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement("div", { style: { fontSize: "0.8em", opacity: 0.6 } }, "In-game: press HOME for the ReShade overlay or INSERT for OptiScaler."))));
@@ -1815,7 +1833,8 @@ function MainContent() {
             }
         });
     }, [advanced, engineCheck]);
-    return (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
+    return (window.SP_REACT.createElement("div", { className: "jedi-panel" },
+        window.SP_REACT.createElement("style", null, panelCss()),
         window.SP_REACT.createElement(SteamGameCombinedSection, { fsr4Variant: fsr4Variant, appid: selectedAppid, setAppid: setSelectedAppid, addon: addon, advanced: advanced, onEnginesChanged: onEnginesChanged }),
         window.SP_REACT.createElement(DFL.PanelSection, null,
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
