@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.32
+
+### Fixed
+- **Patch All** and **Remove All** had unreadable text and the other buttons were fully filled on the device: the outline no longer depends on an extra layer that didn't show. **Patch All** and **Remove All** have a soft tint, and the other buttons only a colored border.
+
 ## 1.1.31
 
 ### Changed

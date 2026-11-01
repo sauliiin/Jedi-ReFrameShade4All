@@ -194,21 +194,22 @@ const PLUGIN_TITLE = "Jedi ReFrameShade4All";
 // The panel's palette: state colors, section titles and the two main buttons' outline. Regular text keeps Steam's color.
 const COLORS = { ok: "#22d3ee", warn: "#fde047", error: "#ff5c93", title: "#c084fc", muted: "#9aa7bd" };
 // Scoped to the panel's wrapper: the Quick Access menu is shared with other plugins. If a Steam update renames its
-// classes, these parts just go back to Steam's look. The focused button is filled, so the controller's focus reads.
+// classes, these parts just go back to Steam's look. The outline is an image on the button's own border: a ::before
+// layer doesn't show on the device, and without its dark fill the button is all accent and its text can't be read.
 function panelCss() {
     const title = DFL.quickAccessControlsClasses?.PanelSectionTitle;
     const button = (scope = "", state = "") => `.jedi-panel ${scope} .DialogButton:not(.DialogDropDown)${state}`;
     const focused = (scope = "", suffix = "") => `${button(scope, `.gpfocus${suffix}`)}, ${button(scope, `:focus${suffix}`)}`;
-    const corners = (size) => `polygon(0 0, calc(100% - ${size}) 0, 100% ${size}, 100% 100%, ${size} 100%, 0 calc(100% - ${size}))`;
+    const corners = "polygon(0 0, calc(100% - 9px) 0, 100% 9px, 100% 100%, 9px 100%, 0 calc(100% - 9px))";
+    const outline = (color) => `url("data:image/svg+xml,${encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' width='30' height='30'><path d='M.5 .5H20.5L29.5 9.5V29.5H9.5L.5 20.5Z' fill='none' stroke='${color}'/></svg>`)}") 9 / 9px`;
     return `
 ${title ? `.jedi-panel .${title} { color: ${COLORS.title} !important; padding-bottom: 4px; border-bottom: 1px solid transparent; border-image: linear-gradient(90deg, ${COLORS.ok}, ${COLORS.error}) 1; }` : ""}
-${button()} { --jedi-accent: rgba(192, 132, 252, 0.55); --jedi-tint: rgba(192, 132, 252, 0.08), rgba(192, 132, 252, 0.08); position: relative; isolation: isolate; background: var(--jedi-accent) !important; color: #e8ebf0 !important; border: none !important; border-radius: 0 !important; letter-spacing: 0.3px; clip-path: ${corners("9px")}; }
-${button("", "::before")} { content: ""; position: absolute; inset: 1px; z-index: -1; background: linear-gradient(90deg, var(--jedi-tint)), #171a21; clip-path: ${corners("8.6px")}; }
-${button(".jedi-cta")} { --jedi-accent: ${COLORS.ok}; --jedi-tint: rgba(34, 211, 238, 0.24), rgba(34, 211, 238, 0.06); color: ${COLORS.ok} !important; font-weight: 600; }
-${button(".jedi-cta-danger")} { --jedi-accent: ${COLORS.error}; --jedi-tint: rgba(255, 92, 147, 0.2), rgba(255, 92, 147, 0.05); color: ${COLORS.error} !important; font-weight: 600; }
-${focused()} { --jedi-accent: ${COLORS.ok}; color: #0b0f1a !important; }
-${focused(".jedi-cta-danger")} { --jedi-accent: ${COLORS.error}; color: #0b0f1a !important; }
-${focused("", "::before")} { background: transparent; }
+${button()} { background: transparent !important; color: #e8ebf0 !important; border: 1px solid transparent !important; border-image: ${outline(COLORS.title)} !important; border-radius: 0 !important; box-shadow: none !important; letter-spacing: 0.3px; clip-path: ${corners}; }
+${button(".jedi-cta")} { background: linear-gradient(90deg, rgba(34, 211, 238, 0.24), rgba(34, 211, 238, 0.06)) !important; color: ${COLORS.ok} !important; border-image: ${outline(COLORS.ok)} !important; font-weight: 600; }
+${button(".jedi-cta-danger")} { background: linear-gradient(90deg, rgba(255, 92, 147, 0.2), rgba(255, 92, 147, 0.05)) !important; color: ${COLORS.error} !important; border-image: ${outline(COLORS.error)} !important; font-weight: 600; }
+${focused()} { background: ${COLORS.ok} !important; color: #0b0f1a !important; border-image: none !important; }
+${focused(".jedi-cta")} { background: ${COLORS.ok} !important; color: #0b0f1a !important; border-image: none !important; }
+${focused(".jedi-cta-danger")} { background: ${COLORS.error} !important; color: #0b0f1a !important; border-image: none !important; }
 ${focused("", " *")} { color: inherit !important; }
 ${button("", "[disabled]")}, ${button("", ".Disabled")} { opacity: 0.5; }
 `;
