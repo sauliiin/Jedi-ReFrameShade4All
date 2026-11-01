@@ -728,7 +728,7 @@ function HelixSRPanel() {
 function gameOptionLabel(game) {
     return game.non_steam ? `${game.name} · non-Steam` : game.name;
 }
-function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, addon, setAddon, advanced, onEnginesChanged, }) {
+function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, addon, advanced, onEnginesChanged, }) {
     const [games, setGames] = SP_REACT.useState([]);
     const [status, setStatus] = SP_REACT.useState(null);
     const [busy, setBusy] = SP_REACT.useState(false);
@@ -1031,8 +1031,6 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, addon, setAddo
                     "ReShade: ",
                     window.SP_REACT.createElement("span", { style: { color: status.reshade_present ? COLORS.ok : undefined } }, status.reshade_present ? (advanced && status.reshade_slot ? `On · ${status.reshade_slot}` : "On") : "Off")),
                 status.helixsr && window.SP_REACT.createElement(HelixSRGameStatus, { info: status.helixsr })))),
-        status && appid && status.helixsr && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: () => void loadStatus(appid), disabled: busy }, "Check HelixSR again"))),
         appid && (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
             // FSR4 and the watermark: for Proton-CachyOS games, games on Lite, or while their variable is still set.
             (cachyos?.supported || fsr4LitePath || fsr4Upgrade) && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
@@ -1048,8 +1046,6 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, addon, setAddo
             (cachyos?.supported || fsr4LitePath || fsr4Indicator) && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.ToggleField, { label: "Show FSR watermark", description: "Shows which FSR runs, top left.", checked: fsr4Indicator, disabled: busy, onChange: (v) => void handleLaunchEnvToggle(FSR4_INDICATOR_ENV, v, setFsr4Indicator) }))),
             window.SP_REACT.createElement(HelixSRPanel, null),
-            window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.ToggleField, { label: "ReShade add-ons", description: "Avoid in anti-cheat online games.", checked: addon, onChange: setAddon })),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handlePatchAll, disabled: busy }, busy ? "Working…" : "Patch All (FrameGen + ReShade)")),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
@@ -1355,7 +1351,7 @@ const buildSteamLaunchOptions = (reshadeApi, optiscalerSlot) => {
     });
     return `WINEDLLOVERRIDES="${parts.join(";")}" SteamDeck=0 %command%`;
 };
-function ReShadeInstallerSection({ appid, addon, engineCheck, onEnginesChanged }) {
+function ReShadeInstallerSection({ appid, addon, setAddon, engineCheck, onEnginesChanged }) {
     const [installing, setInstalling] = SP_REACT.useState(false);
     const [uninstalling, setUninstalling] = SP_REACT.useState(false);
     const [applyingToSteamGame, setApplyingToSteamGame] = SP_REACT.useState(false);
@@ -1685,6 +1681,8 @@ function ReShadeInstallerSection({ appid, addon, engineCheck, onEnginesChanged }
                     updateStatus?.update_available && updateStatus.latest_version ? ` · ${updateStatus.latest_version} available` : "")))) : "ReShade not installed"))),
         pathExists === false && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleManageShaders }, "Select Packages to Install"))),
+        window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+            window.SP_REACT.createElement(DFL.ToggleField, { label: "ReShade add-ons", description: "Avoid in anti-cheat online games.", checked: addon, onChange: setAddon })),
         addon && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement(DFL.ToggleField, { label: "Include AutoHDR", description: "For OLED HDR (DX10/11/12).", checked: autoHdrEnabled, onChange: handleAutoHdrToggle }))),
         pathExists === true && appid && (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
@@ -1800,18 +1798,12 @@ function MainContent() {
     // Bumped after anything installs or removes an engine, so the Advanced sections read it again.
     const [engineCheck, setEngineCheck] = SP_REACT.useState(0);
     const onEnginesChanged = () => setEngineCheck((n) => n + 1);
-    // One toggle for the Patch All install and the Advanced section; follows what's installed.
+    // ReShade add-ons, on by default: the toggle is in ReShade Management, and Patch All installs with this value too.
     const [addon, setAddon] = SP_REACT.useState(true);
     // One FSR4 runtime for every game, shared with the advanced OptiScaler controls.
     const fsr4Variant = DEFAULT_FSR4_VARIANT;
     // The game is also picked once at the top and reused by the advanced sections.
     const [selectedAppid, setSelectedAppid] = SP_REACT.useState("");
-    SP_REACT.useEffect(() => {
-        void safeAsyncOperation(async () => await checkReShadePath(), 'MainContent -> addon').then((result) => {
-            if (result?.exists)
-                setAddon(result.is_addon);
-        });
-    }, []);
     // Only the Advanced section reads this. The panel stays mounted with the menu closed, so no polling.
     SP_REACT.useEffect(() => {
         if (!advanced)
@@ -1824,13 +1816,13 @@ function MainContent() {
         });
     }, [advanced, engineCheck]);
     return (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
-        window.SP_REACT.createElement(SteamGameCombinedSection, { fsr4Variant: fsr4Variant, appid: selectedAppid, setAppid: setSelectedAppid, addon: addon, setAddon: setAddon, advanced: advanced, onEnginesChanged: onEnginesChanged }),
+        window.SP_REACT.createElement(SteamGameCombinedSection, { fsr4Variant: fsr4Variant, appid: selectedAppid, setAppid: setSelectedAppid, addon: addon, advanced: advanced, onEnginesChanged: onEnginesChanged }),
         window.SP_REACT.createElement(DFL.PanelSection, null,
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.ToggleField, { label: "Advanced controls", description: "Per-engine install, proxy DLL, shaders.", checked: advanced, onChange: setAdvanced }))),
         advanced && (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
             window.SP_REACT.createElement(OptiScalerControls, { pathExists: pathExists, onEnginesChanged: onEnginesChanged, fgmodInfo: fgmodInfo, fsr4Variant: fsr4Variant, appid: selectedAppid }),
-            window.SP_REACT.createElement(ReShadeInstallerSection, { appid: selectedAppid, addon: addon, engineCheck: engineCheck, onEnginesChanged: onEnginesChanged }))),
+            window.SP_REACT.createElement(ReShadeInstallerSection, { appid: selectedAppid, addon: addon, setAddon: setAddon, engineCheck: engineCheck, onEnginesChanged: onEnginesChanged }))),
         window.SP_REACT.createElement(PluginUpdateSection, { advanced: advanced })));
 }
 var index = definePlugin(() => {

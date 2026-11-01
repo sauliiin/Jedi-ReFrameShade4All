@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.30
+
+### Changed
+- **ReShade add-ons** is on by default and only shows in **Advanced controls** → **ReShade Management**, above **Include AutoHDR**. Patch All uses its value when it installs ReShade.
+
+### Removed
+- The **Check HelixSR again** button.
+
 ## 1.1.29
 
 ### Changed

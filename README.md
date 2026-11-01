@@ -121,12 +121,12 @@ See [Building](#building) below, then zip the folder (with `bin/` + `dist/`) and
 
 **The simple path — one button:**
 
-1. **Steam Game — Patch All**: pick a game, (optionally) toggle *ReShade add‑ons*, then press **Patch All**. It installs OptiScaler and ReShade if they aren't yet, applies both to the game, and sets the launch options automatically. **Remove All** reverts it.
+1. **Steam Game — Patch All**: pick a game, then press **Patch All**. It installs OptiScaler and ReShade if they aren't yet, applies both to the game, and sets the launch options automatically. **Remove All** reverts it.
 2. In‑game: press **HOME** for the ReShade overlay.
 
 **Advanced controls** (toggle near the top) expose the original per‑engine UIs when you need them:
 - OptiScaler: install/uninstall, proxy DLL, **Apply only OptiScaler** / **Remove only OptiScaler**.
-- ReShade: AutoHDR toggle, shader pack selection, **Apply only ReShade** / **Remove only ReShade**.
+- ReShade: add‑ons (on by default) and AutoHDR toggles, shader pack selection, **Apply only ReShade** / **Remove only ReShade**.
 - Coexistence / DLL slots: inspect what's active and override the Frame Generation slot per game.
 
 > **Removing one mod keeps the other one working.** OptiScaler's cleanup puts back the game DLLs it had set aside, so **Remove only OptiScaler** re‑links ReShade afterwards; both partial removals then rewrite the launch options for whatever stays behind (and give back your own when nothing does). Removing ReShade also deletes `ReShadePreset.ini`.
