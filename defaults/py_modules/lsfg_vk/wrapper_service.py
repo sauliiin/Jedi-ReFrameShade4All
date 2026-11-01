@@ -387,40 +387,6 @@ class WrapperService(BaseService):
                 "wrapper_path": self.WRAPPER_TOKEN,
             }
 
-    def purge(self) -> Dict[str, Any]:
-        """Remove the plugin-owned wrapper and its sidecar during uninstall.
-
-        This is deliberately separate from ``remove``: normal profile removal
-        leaves a safe passthrough wrapper for the remaining profiles, while an
-        uninstall should remove the wrapper entirely.  Both files are
-        validated before anything is removed so a user's replacement wrapper
-        or damaged state is left untouched.
-        """
-        removed = []
-        try:
-            with self._lock:
-                _document, sidecar_exists, _ = self._read_document()
-                wrapper_owned = self._assert_wrapper_owned_or_absent()
-                if wrapper_owned:
-                    self.wrapper_path.unlink()
-                    removed.append(str(self.wrapper_path))
-                if sidecar_exists:
-                    self.sidecar_path.unlink()
-                    removed.append(str(self.sidecar_path))
-            return {
-                "success": True,
-                "message": "Removed workaround state",
-                "error": None,
-                "removed_files": removed,
-            }
-        except Exception as error:
-            return {
-                "success": False,
-                "message": "",
-                "error": str(error),
-                "removed_files": removed or None,
-            }
-
     def neutralize(self) -> Dict[str, Any]:
         """Leave an owned passthrough wrapper for Decky-level uninstall.
 

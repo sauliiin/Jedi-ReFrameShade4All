@@ -5,8 +5,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .base_service import BaseService
-from .config_schema import ConfigurationManager
-from .constants import CLI_FILENAME, LOSSLESS_DLL_FILENAME
+from .constants import CLI_FILENAME
 
 
 class RuntimeService(BaseService):
@@ -70,19 +69,3 @@ class RuntimeService(BaseService):
             if temporary_path is not None:
                 temporary_path.unlink(missing_ok=True)
 
-    def check_lossless_scaling(self) -> dict[str, Any]:
-        """Report whether the configured Lossless.dll is readable."""
-        if not self.config_file_path.is_file():
-            return {"installed": False, "status": "Configuration is not installed"}
-        try:
-            data = ConfigurationManager.parse_toml_content_multi_profile(
-                self.config_file_path.read_text(encoding="utf-8")
-            )
-        except Exception as error:
-            return {"installed": False, "status": str(error)}
-        dll = data["global_config"].get("dll") or ""
-        if not dll:
-            return {"installed": False, "status": f"Lossless Scaling's {LOSSLESS_DLL_FILENAME} was not found"}
-        if not Path(dll).is_file():
-            return {"installed": False, "status": f"{LOSSLESS_DLL_FILENAME} does not exist: {dll}"}
-        return {"installed": True, "status": "Lossless Scaling detected"}

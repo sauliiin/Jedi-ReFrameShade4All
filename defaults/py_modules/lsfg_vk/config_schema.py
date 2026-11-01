@@ -16,7 +16,6 @@ import json
 import tomllib
 from typing import Any, Dict, TypedDict
 
-ConfigurationData = Dict[str, Any]
 
 
 class ProfileData(TypedDict):

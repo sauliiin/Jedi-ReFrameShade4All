@@ -121,12 +121,12 @@ See [Building](#building) below, then zip the folder (with `bin/` + `dist/`) and
 
 **The simple path — one button:**
 
-1. **Steam Game — Patch All**: pick a game, (optionally) toggle *ReShade add‑ons*, then press **🚀 Patch All**. It installs OptiScaler and ReShade if they aren't yet, applies both to the game, and sets the launch options automatically. **Remove All** reverts it.
+1. **Steam Game — Patch All**: pick a game, (optionally) toggle *ReShade add‑ons*, then press **Patch All**. It installs OptiScaler and ReShade if they aren't yet, applies both to the game, and sets the launch options automatically. **Remove All** reverts it.
 2. In‑game: press **HOME** for the ReShade overlay.
 
 **Advanced controls** (toggle near the top) expose the original per‑engine UIs when you need them:
-- OptiScaler: install/uninstall, FSR4 variant, proxy DLL, **Apply only OptiScaler** / **🗑️ Remove only OptiScaler**.
-- ReShade: add‑on/AutoHDR toggles, shader pack selection, **Apply only ReShade** / **🗑️ Remove only ReShade**.
+- OptiScaler: install/uninstall, proxy DLL, **Apply only OptiScaler** / **Remove only OptiScaler**.
+- ReShade: AutoHDR toggle, shader pack selection, **Apply only ReShade** / **Remove only ReShade**.
 - Coexistence / DLL slots: inspect what's active and override the Frame Generation slot per game.
 
 > **Removing one mod keeps the other one working.** OptiScaler's cleanup puts back the game DLLs it had set aside, so **Remove only OptiScaler** re‑links ReShade afterwards; both partial removals then rewrite the launch options for whatever stays behind (and give back your own when nothing does). Removing ReShade also deletes `ReShadePreset.ini`.
@@ -159,24 +159,15 @@ Jedi-ReFrameShade4All/
 ├─ main.py                  # merged back-end: _OptiScalerMixin + _ReShadeMixin + _HelixSRMixin + _LsfgMixin → Plugin
 ├─ defaults/py_modules/lsfg_vk/  # LSFG-VK services from Jedi LSFG-VK (MAKO install, profiles, ~/.jedi-lsfg wrapper)
 ├─ plugin.json              # Decky manifest (name/id: Jedi-ReFrameShade4All)
-├─ package.json             # deps + merged remote_binary list
-├─ src/                     # React/TSX frontend
-│  ├─ index.tsx                     # composes sections, shared FSR4 state, Advanced toggle
-│  ├─ SteamGameCombinedSection.tsx  # primary one-button "Patch All" (both mods)
-│  ├─ ConflictSlotSection.tsx       # coexistence + manual slot picker (Advanced)
-│  ├─ ReShadeInstallerSection.tsx   # "ReShade Management" — install/version/update/add-ons/shaders
-│  ├─ ShaderSelectionModal.tsx      # ReShade shader pack picker
-│  ├─ components/                   # "Framegen Management" — OptiScalerControls + helpers
-│  ├─ api/index.ts                  # typed backend callables
-│  └─ utils/, types/               # helpers, constants, type decls
+├─ package.json             # version and remote_binary list
 ├─ defaults/assets/         # fgmod*.sh + reshade-*.sh install/patch scripts
 ├─ bin/                     # OptiScaler binaries (gitignored; via remote_binary)
-└─ dist/                    # build output (gitignored)
+└─ dist/index.js            # the frontend, edited directly (no build step)
 ```
 
-The panel is two parallel sections under an **Advanced controls** toggle — **FRAMEGEN MANAGEMENT** (`components/OptiScalerControls.tsx`) and **RESHADE MANAGEMENT** (`ReShadeInstallerSection.tsx`) — each showing install state, version, and *up to date / update available* with an Install/Update button.
+The panel is two parallel sections under an **Advanced controls** toggle — **FRAMEGEN MANAGEMENT** and **RESHADE MANAGEMENT** — each showing install state, version, and *up to date / update available* with an Install/Update button.
 
-**Back‑end architecture:** the two original `main.py` files are combined into one Decky‑safe `Plugin` class using mixins (`_OptiScalerMixin`, `_ReShadeMixin`). Method‑name collisions (`_main`, `_unload`, `list_installed_games`, `log_error`) are resolved in the final `Plugin`, which also adds the one‑button flow (`patch_all_game` / `unpatch_all_game`) and the coexistence layer (`patch_game` slot override, `get_combined_game_status`, `set_slots_manual`). `patch_all_game` applies Frame Generation (winmm) **before** ReShade (dxgi) so OptiScaler's proxy cleanup can't displace ReShade's DLL.
+**Back‑end architecture:** the two original `main.py` files are combined into one Decky‑safe `Plugin` class using mixins (`_OptiScalerMixin`, `_ReShadeMixin`). Method‑name collisions (`_main`, `_unload`, `list_installed_games`, `log_error`) are resolved in the final `Plugin`, which also adds the one‑button flow (`patch_all_game` / `unpatch_all_game`) and the coexistence layer (`patch_game` slot override, `get_combined_game_status`). `patch_all_game` applies Frame Generation (winmm) **before** ReShade (dxgi) so OptiScaler's proxy cleanup can't displace ReShade's DLL.
 
 **OptiScaler updates** arrive with plugin releases: install and reinstall use the hash-pinned bundled build, and the plugin makes no OptiScaler update requests.
 

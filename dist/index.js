@@ -92,24 +92,13 @@ function MdOutlineAutoAwesomeMotion (props) {
   return GenIcon({"tag":"svg","attr":{"viewBox":"0 0 24 24"},"child":[{"tag":"path","attr":{"fill":"none","d":"M0 0h24v24H0z"},"child":[]},{"tag":"path","attr":{"d":"M14 2H4c-1.1 0-2 .9-2 2v10h2V4h10V2zm4 4H8c-1.1 0-2 .9-2 2v10h2V8h10V6zm2 4h-8c-1.1 0-2 .9-2 2v8c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2v-8c0-1.1-.9-2-2-2zm0 10h-8v-8h8v8z"},"child":[]}]})(props);
 }
 
-const runInstallFGMod$1 = callable("run_install_fgmod");
+const runInstallFGMod = callable("run_install_fgmod");
 const runUninstallFGMod = callable("run_uninstall_fgmod");
-const checkFGModPath$1 = callable("check_fgmod_path");
-callable("list_installed_games");
-const logError$5 = callable("log_error");
+const checkFGModPath = callable("check_fgmod_path");
+const logError = callable("log_error");
 const patchGame = callable("patch_game");
 const removeOptiScalerOnly = callable("remove_optiscaler_only");
 
-/**
- * Utility for creating a timer that automatically clears after specified timeout
- * @param callback Function to call when timer completes
- * @param timeout Timeout in milliseconds
- * @returns Cleanup function that can be used in useEffect
- */
-const createAutoCleanupTimer = (callback, timeout) => {
-    const timer = setTimeout(callback, timeout);
-    return () => clearTimeout(timer);
-};
 /**
  * Safe wrapper for async operations to handle errors consistently
  * @param operation Async operation to perform
@@ -120,45 +109,52 @@ const safeAsyncOperation = async (operation, errorContext) => {
         return await operation();
     }
     catch (e) {
-        logError$5(`${errorContext}: ${String(e)}`);
-        console.error(e);
+        logError(`${errorContext}: ${String(e)}`);
         return undefined;
     }
 };
 
 // Helpers shared by the OptiScaler/ReShade sections for reading and writing Steam
 // launch options.
-/** Read the current launch options for a Steam app id. */
-function getLaunchOptions$1(appId) {
-    return new Promise((resolve) => {
+// Steam's cached details for an app, which can lag behind; null when it has none.
+function cachedAppDetails(appId) {
+    try {
+        return window.appDetailsStore?.GetAppDetails?.(appId) || null;
+    }
+    catch (e) {
+        return null;
+    }
+}
+/** Read the current launch options for a Steam app id. Rejects when Steam doesn't say: "" would wipe them on the next write. */
+function getLaunchOptions(appId) {
+    return new Promise((resolve, reject) => {
+        let done = false;
+        let reg = null;
+        let timer = null;
+        const finish = (details) => {
+            if (done)
+                return;
+            done = true;
+            clearTimeout(timer);
+            try {
+                reg?.unregister();
+            }
+            catch (e) { }
+            if (details)
+                resolve(details.strLaunchOptions || "");
+            else
+                reject(new Error("Steam didn't return the launch options. Try again."));
+        };
+        timer = setTimeout(() => finish(cachedAppDetails(appId)), 1500);
         try {
-            const reg = SteamClient.Apps.RegisterForAppDetails(appId, (details) => {
-                resolve(details?.strLaunchOptions || "");
-                try {
-                    reg.unregister();
-                }
-                catch {
-                    /* noop */
-                }
-            });
-            setTimeout(() => {
-                try {
-                    reg.unregister();
-                }
-                catch {
-                    /* noop */
-                }
-                resolve("");
-            }, 1500);
+            reg = SteamClient.Apps.RegisterForAppDetails(appId, finish);
+            if (done)
+                reg?.unregister();
         }
-        catch {
-            resolve("");
+        catch (e) {
+            finish(cachedAppDetails(appId));
         }
     });
-}
-/** Write launch options for a Steam app id. */
-function setLaunchOptions(appId, options) {
-    SteamClient.Apps.SetAppLaunchOptions(appId, options);
 }
 // The LSFG-VK launch wrapper; Steam runs it in front of the game.
 const LSFG_WRAPPER = "~/.jedi-lsfg";
@@ -187,26 +183,38 @@ function withLsfgWrapper(opts, enabled) {
     return next === "%command%" ? "" : next;
 }
 // For writers that rebuild the launch options from scratch: keeps ~/.jedi-lsfg when the game had it.
-async function setLaunchOptionsKeepingLsfg(appId, options) {
-    const current = await getLaunchOptions$1(appId);
+function setLaunchOptionsKeepingLsfg(appId, options, current) {
     const next = hasLsfgWrapper(current) ? withLsfgWrapper(options, true) : options;
     SteamClient.Apps.SetAppLaunchOptions(appId, next);
     return next;
 }
 
 // Shared constants for the application
-// Common style definitions
-const STYLES = {
-    instructionCard: {
-        padding: '14px',
-        backgroundColor: 'var(--decky-selected-ui-bg)',
-        borderRadius: '8px',
-        border: '1px solid var(--decky-border-color)',
-        marginTop: '8px',
-        fontSize: '13px',
-        lineHeight: '1.4'
-    }
-};
+const PLUGIN_TITLE = "Jedi ReFrameShade4All";
+// The only colors the panel uses, and only for state.
+const COLORS = { ok: "#59bf40", warn: "#ffb84d", error: "#ff6b6b", muted: "#9aa7bd" };
+// What happened stays in the panel until the next action. `done` also shows a toast, for long operations that can
+// finish with the menu closed.
+function useNotice() {
+    const [notice, setNotice] = SP_REACT.useState(null);
+    const ok = (text) => setNotice({ text, success: true });
+    return [notice, {
+            progress: (text) => setNotice({ text }),
+            ok,
+            done: (text) => {
+                ok(text);
+                toaster.toast({ title: PLUGIN_TITLE, body: text.split("\n")[0] });
+            },
+            fail: (text) => setNotice({ text, error: true }),
+            clear: () => setNotice(null),
+        }];
+}
+function NoticeRow({ notice }) {
+    if (!notice)
+        return null;
+    return (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+        window.SP_REACT.createElement("div", { style: { padding: "12px", marginTop: "8px", backgroundColor: "var(--decky-selected-ui-bg)", borderRadius: "4px", whiteSpace: "pre-wrap", wordBreak: "break-word", color: notice.error ? COLORS.error : notice.success ? COLORS.ok : undefined } }, `${notice.error ? "❌ " : notice.success ? "✅ " : ""}${notice.text}`)));
+}
 // Proxy DLL name options for OptiScaler injection
 const PROXY_DLL_OPTIONS = [
     { value: "dxgi.dll", label: "dxgi.dll (default)", hint: "Works for most DX12 games. Default." },
@@ -220,62 +228,38 @@ const PROXY_DLL_OPTIONS = [
 const DEFAULT_PROXY_DLL = "dxgi.dll";
 // 4.0.2c, 4.1.1, 4.1.2 Lite and HLX DLSS in one game, picked in OptiScaler's menu.
 const DEFAULT_FSR4_VARIANT = "deck-all";
-// Common timeout values
-const TIMEOUTS = {
-    resultDisplay: 5000, // 5 seconds
-    pathCheck: 3000 // 3 seconds
-};
-// Message strings
-const MESSAGES = {
-    uninstalling: "Removing OptiScaler...",
-    uninstallButton: "Remove OptiScaler Mod",
-    instructionText: "For extended OptiScaler options, assign a back button to a keyboard's 'Insert' key."
-};
-
-function InstructionCard({ pathExists }) {
-    if (pathExists !== true)
-        return null;
-    return (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-        window.SP_REACT.createElement("div", { style: STYLES.instructionCard },
-            window.SP_REACT.createElement("div", { style: { whiteSpace: 'pre-line' } }, MESSAGES.instructionText))));
-}
 
 function UninstallButton({ pathExists, uninstalling, onUninstallClick }) {
     if (pathExists !== true)
         return null;
     return (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
         window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: onUninstallClick, disabled: uninstalling },
-            window.SP_REACT.createElement("div", { style: {
-                    color: '#ef4444',
-                    fontWeight: 'bold'
-                } }, uninstalling ? MESSAGES.uninstalling : MESSAGES.uninstallButton))));
+            window.SP_REACT.createElement("div", { style: { color: COLORS.error } }, uninstalling ? "Removing…" : "Remove OptiScaler Mod"))));
 }
 
-function OptiScalerControls({ pathExists, setPathExists, fgmodInfo, fsr4Variant = DEFAULT_FSR4_VARIANT, appid = "", targetExePath = "", }) {
+function OptiScalerControls({ pathExists, onEnginesChanged, fgmodInfo, fsr4Variant = DEFAULT_FSR4_VARIANT, appid = "", }) {
     const [installing, setInstalling] = SP_REACT.useState(false);
     const [uninstalling, setUninstalling] = SP_REACT.useState(false);
     const [applying, setApplying] = SP_REACT.useState(false);
     const [removingOnly, setRemovingOnly] = SP_REACT.useState(false);
-    const [result, setResult] = SP_REACT.useState("");
+    const [notice, say] = useNotice();
     const [dllName, setDllName] = SP_REACT.useState(DEFAULT_PROXY_DLL);
-    SP_REACT.useEffect(() => {
-        if (result) {
-            return createAutoCleanupTimer(() => setResult(""), TIMEOUTS.resultDisplay);
-        }
-        return () => { };
-    }, [result]);
     const handleInstall = async () => {
         try {
             setInstalling(true);
-            setResult("Installing OptiScaler…");
-            const r = await runInstallFGMod$1(fsr4Variant);
-            setResult(r.status === "success" ? `✅ ${r.output || r.message || "Done"}` : `❌ ${r.message || "Failed"}`);
-            if (r.status === "success")
-                setPathExists?.(true);
+            say.progress("Installing OptiScaler…");
+            const r = await runInstallFGMod(fsr4Variant);
+            if (r.status === "success") {
+                say.done("OptiScaler installed.");
+                onEnginesChanged?.();
+            }
+            else {
+                say.fail(r.message || "Failed");
+            }
         }
         catch (e) {
-            setResult(`❌ ${String(e)}`);
-            console.error(e);
+            say.fail(String(e));
+            await logError(`OptiScalerControls: ${String(e)}`);
         }
         finally {
             setInstalling(false);
@@ -286,28 +270,21 @@ function OptiScalerControls({ pathExists, setPathExists, fgmodInfo, fsr4Variant 
             return;
         try {
             setApplying(true);
-            setResult("Applying OptiScaler to the selected game…");
-            const current = await getLaunchOptions$1(parseInt(appid, 10));
-            const r = await patchGame(appid, dllName, current, fsr4Variant, targetExePath || "");
+            say.progress("Applying OptiScaler…");
+            const current = await getLaunchOptions(parseInt(appid, 10));
+            const r = await patchGame(appid, dllName, current, fsr4Variant);
             if (r.status === "success") {
-                if (r.launch_options) {
-                    try {
-                        r.launch_options = await setLaunchOptionsKeepingLsfg(parseInt(appid, 10), r.launch_options);
-                    }
-                    catch (e) {
-                        console.error(e);
-                    }
-                }
-                setResult(`✅ ${r.message || "OptiScaler applied."}` +
-                    (r.launch_options ? `\n\nLaunch options set automatically:\n${r.launch_options}` : ""));
+                if (r.launch_options)
+                    setLaunchOptionsKeepingLsfg(parseInt(appid, 10), r.launch_options, current);
+                say.done(`OptiScaler applied.${r.launch_options ? "\nLaunch options set." : ""}`);
             }
             else {
-                setResult(`❌ ${r.message || "Failed"}`);
+                say.fail(r.message || "Failed");
             }
         }
         catch (e) {
-            setResult(`❌ ${String(e)}`);
-            console.error(e);
+            say.fail(String(e));
+            await logError(`OptiScalerControls: ${String(e)}`);
         }
         finally {
             setApplying(false);
@@ -320,28 +297,20 @@ function OptiScalerControls({ pathExists, setPathExists, fgmodInfo, fsr4Variant 
             return;
         try {
             setRemovingOnly(true);
-            setResult("Removing OptiScaler from the selected game…");
-            const current = await getLaunchOptions$1(parseInt(appid, 10));
-            const r = await removeOptiScalerOnly(appid, targetExePath || "", current);
+            say.progress("Removing OptiScaler…");
+            const current = await getLaunchOptions(parseInt(appid, 10));
+            const r = await removeOptiScalerOnly(appid, current);
             if (r.status === "success") {
-                try {
-                    r.launch_options = await setLaunchOptionsKeepingLsfg(parseInt(appid, 10), r.launch_options || "");
-                }
-                catch (e) {
-                    console.error(e);
-                }
-                setResult(`✅ ${r.message || "OptiScaler removed."}` +
-                    (r.launch_options
-                        ? `\n\nLaunch options updated automatically:\n${r.launch_options}`
-                        : "\n\nLaunch options cleared."));
+                setLaunchOptionsKeepingLsfg(parseInt(appid, 10), r.launch_options || "", current);
+                say.done(`${r.message || "OptiScaler removed."}\nLaunch options ${r.launch_options ? "updated" : "cleared"}.`);
             }
             else {
-                setResult(`❌ ${r.message || "Failed"}`);
+                say.fail(r.message || "Failed");
             }
         }
         catch (e) {
-            setResult(`❌ ${String(e)}`);
-            console.error(e);
+            say.fail(String(e));
+            await logError(`OptiScalerControls: ${String(e)}`);
         }
         finally {
             setRemovingOnly(false);
@@ -351,12 +320,17 @@ function OptiScalerControls({ pathExists, setPathExists, fgmodInfo, fsr4Variant 
         try {
             setUninstalling(true);
             const r = await runUninstallFGMod();
-            setResult(r.status === "success" ? "✅ OptiScaler removed." : `❌ ${r.message || "Failed"}`);
-            if (r.status === "success")
-                setPathExists?.(false);
+            if (r.status === "success") {
+                say.done("OptiScaler removed.");
+                onEnginesChanged?.();
+            }
+            else {
+                say.fail(r.message || "Failed");
+            }
         }
         catch (e) {
-            console.error(e);
+            say.fail(String(e));
+            await logError(`OptiScalerControls: ${String(e)}`);
         }
         finally {
             setUninstalling(false);
@@ -365,15 +339,13 @@ function OptiScalerControls({ pathExists, setPathExists, fgmodInfo, fsr4Variant 
     const installButtonText = installing
         ? "Working…"
         : pathExists === true
-            ? "🔧 Reinstall OptiScaler"
-            : "🔧 Install OptiScaler";
+            ? "Reinstall OptiScaler"
+            : "Install OptiScaler";
     return (window.SP_REACT.createElement(DFL.PanelSection, { title: "Framegen Management" },
         pathExists !== null && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement("div", { style: { color: pathExists ? "green" : "red" } }, pathExists ? (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
-                "\uD83D\uDFE2 OptiScaler Is Installed",
-                fgmodInfo?.version && (window.SP_REACT.createElement("div", { style: { fontSize: "0.9em", opacity: 0.8, marginTop: "4px" } },
-                    "Installed version: ",
-                    fgmodInfo.version)))) : ("🔴 OptiScaler Not Installed")))),
+            window.SP_REACT.createElement("div", { style: { color: pathExists ? COLORS.ok : COLORS.warn } }, pathExists ? (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
+                "OptiScaler installed",
+                fgmodInfo?.version && (window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", color: COLORS.muted, marginTop: "4px" } }, fgmodInfo.version)))) : "OptiScaler not installed"))),
         window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleInstall, disabled: installing }, installButtonText)),
         pathExists === true && (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
@@ -381,26 +353,16 @@ function OptiScalerControls({ pathExists, setPathExists, fgmodInfo, fsr4Variant 
                 window.SP_REACT.createElement(DFL.DropdownItem, { layout: "below", label: "Proxy DLL name", description: PROXY_DLL_OPTIONS.find((o) => o.value === dllName)?.hint, menuLabel: "Proxy DLL name", selectedOption: dllName, rgOptions: PROXY_DLL_OPTIONS.map((o) => ({ data: o.value, label: o.label })), onChange: (option) => setDllName(String(option.data)) })),
             appid ? (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
                 window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                    window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", opacity: 0.7, wordBreak: "break-all" } }, targetExePath ? `Target: ${targetExePath}` : "Target: automatic detection")),
-                window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                     window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleApplyOnlyOpti, disabled: applying || removingOnly }, applying ? "Applying…" : "Apply only OptiScaler")),
                 window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                    window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleRemoveOnlyOpti, disabled: applying || removingOnly }, removingOnly ? "Removing…" : "🗑️ Remove only OptiScaler")))) : (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+                    window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleRemoveOnlyOpti, disabled: applying || removingOnly }, removingOnly ? "Removing…" : "Remove only OptiScaler")))) : (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", opacity: 0.7 } }, "Pick a game above to apply or remove it."))))),
-        window.SP_REACT.createElement(InstructionCard, { pathExists: pathExists }),
-        result && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement("div", { style: {
-                    padding: "12px",
-                    marginTop: "8px",
-                    backgroundColor: "var(--decky-selected-ui-bg)",
-                    borderRadius: "4px",
-                    whiteSpace: "pre-wrap",
-                } }, result))),
+        window.SP_REACT.createElement(NoticeRow, { notice: notice }),
         window.SP_REACT.createElement(UninstallButton, { pathExists: pathExists, uninstalling: uninstalling, onUninstallClick: handleUninstallClick })));
 }
 
 const listInstalledGames = callable("list_installed_games");
-const getCombinedGameStatus$1 = callable("get_combined_game_status");
+const getCombinedGameStatus = callable("get_combined_game_status");
 const patchAllGame = callable("patch_all_game");
 const unpatchAllGame = callable("unpatch_all_game");
 const getCachyosFsr4Status = callable("get_cachyos_fsr4_status");
@@ -472,7 +434,7 @@ async function listedCompatTools(appId) {
                 return tools;
         }
         catch (e) {
-            await logError$4(`listedCompatTools: ${String(e)}`).catch(() => null);
+            await logError(`listedCompatTools: ${String(e)}`).catch(() => null);
         }
     }
     return null;
@@ -502,14 +464,7 @@ function liveCompatTool(appId) {
     return new Promise((resolve) => {
         let done = false;
         let reg = null;
-        const cached = () => {
-            try {
-                return window.appDetailsStore?.GetAppDetails?.(appId);
-            }
-            catch (e) {
-                return null;
-            }
-        };
+        const cached = () => cachedAppDetails(appId);
         const finish = (details) => {
             if (done)
                 return;
@@ -546,7 +501,7 @@ function withLiveCompatTool(status, live) {
 }
 async function getLiteStatus(id) {
     const [r, live] = await Promise.all([
-        getCachyosFsr4Status(id).catch((e) => logError$4(`SteamGameCombinedSection -> cachyos status: ${String(e)}`).then(() => null)),
+        getCachyosFsr4Status(id).catch((e) => logError(`SteamGameCombinedSection -> cachyos status: ${String(e)}`).then(() => null)),
         liveCompatTool(parseInt(id, 10)),
     ]);
     return withLiveCompatTool(r, live);
@@ -579,9 +534,9 @@ async function selectPendingLiteProton(attempt = 1) {
         }
     }
     if (selected)
-        toaster.toast({ title: "Jedi ReFrameShade4All", body: "FSR 4.1.2 Lite Proton set." });
+        toaster.toast({ title: PLUGIN_TITLE, body: "FSR 4.1.2 Lite Proton set." });
     if (waiting && attempt < LITE_PENDING_TRIES)
-        setTimeout(() => void selectPendingLiteProton(attempt + 1).catch((e) => logError$4(`selectPendingLiteProton: ${String(e)}`)), LITE_PENDING_RETRY_MS);
+        setTimeout(() => void selectPendingLiteProton(attempt + 1).catch((e) => logError(`selectPendingLiteProton: ${String(e)}`)), LITE_PENDING_RETRY_MS);
 }
 // Asks the user to check the game's Proton: with any other Proton the Lite DLL isn't loaded.
 function showLiteProtonModal(status) {
@@ -619,31 +574,30 @@ function fsr4LitePathIn(opts) {
 function withProtonFsr4(opts, dll) {
     return withLaunchEnv(opts, PROTON_FSR4_UPGRADE_ENV, !!dll, dll);
 }
-const logError$4 = callable("log_error");
 // What the game's HelixSR folder and helixsr.log say (helixsr.log appears once OptiScaler loads HelixSR).
 function HelixSRGameStatus({ info }) {
     const lines = [];
     if (!info.configured) {
-        lines.push({ color: "#ffb84d", text: "⚠️ OptiScaler.ini doesn't point at HelixSR anymore. Press Patch All again." });
+        lines.push({ color: COLORS.warn, text: "OptiScaler.ini no longer points at HelixSR. Press Patch All." });
     }
     if (info.log_status === "running") {
-        lines.push({ color: "green", text: `✅ HelixSR ${info.version || ""} is upscaling${info.last_upscale ? `: ${info.last_upscale}` : ""}` });
+        lines.push({ color: COLORS.ok, text: `HelixSR ${info.version || ""} upscaling${info.last_upscale ? `: ${info.last_upscale}` : ""}` });
     }
     else if (info.log_status === "error") {
-        lines.push({ color: "#ff6b6b", text: `❌ HelixSR loaded but its network isn't running.${info.errors?.length ? `\n${info.errors.join("\n")}` : ""}` });
+        lines.push({ color: COLORS.error, text: `HelixSR loaded, but its network isn't running.${info.errors?.length ? `\n${info.errors.join("\n")}` : ""}` });
     }
     else if (info.log_status === "loaded") {
-        lines.push({ color: undefined, text: `HelixSR ${info.version || ""} was loaded but hasn't upscaled yet. In OptiScaler (Insert), pick "HLX DLSS" (3.x) or "FSR HelixSR" (2.0) as the upscaler.` });
+        lines.push({ color: undefined, text: `HelixSR ${info.version || ""} loaded. Pick it in OptiScaler (Insert).` });
     }
     else {
         lines.push({ color: undefined, text: info.selectable
-                ? `HelixSR ${info.version || ""} is set up. In OptiScaler (Insert), pick "HLX DLSS".`
-                : `HelixSR ${info.version || ""} is set up but hasn't been loaded yet. Start the game and select DLSS as its upscaler.` });
+                ? `HelixSR ${info.version || ""} ready. Pick HLX DLSS in OptiScaler (Insert).`
+                : `HelixSR ${info.version || ""} ready. Start the game and pick DLSS.` });
     }
     if (info.log_time) {
         lines.push({ color: undefined, text: `helixsr.log: ${info.log_time}` });
     }
-    return (window.SP_REACT.createElement("div", { style: { marginTop: "4px", whiteSpace: "pre-wrap", wordBreak: "break-word" } }, lines.map((l, i) => (window.SP_REACT.createElement("div", { key: i, style: { color: l.color, opacity: l.color ? 1 : 0.8 } }, l.text)))));
+    return (window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", whiteSpace: "pre-wrap", wordBreak: "break-word" } }, lines.map((l, i) => (window.SP_REACT.createElement("div", { key: i, style: { color: l.color, opacity: l.color ? 1 : 0.8 } }, l.text)))));
 }
 const getHelixSRStatus = callable("get_helixsr_status");
 const installLatestHelixSR = callable("install_latest_helixsr");
@@ -657,13 +611,13 @@ const formatElapsed = (seconds) => {
 function HelixSRPanel() {
     const [info, setInfo] = SP_REACT.useState(null);
     const [working, setWorking] = SP_REACT.useState(false);
-    const [message, setMessage] = SP_REACT.useState("");
+    const [notice, say] = useNotice();
     const refresh = async () => {
         try {
             setInfo(await getHelixSRStatus(true));
         }
         catch (e) {
-            await logError$4(`HelixSRPanel -> status: ${String(e)}`);
+            await logError(`HelixSRPanel -> status: ${String(e)}`);
         }
     };
     const building = info?.setup?.state === "running";
@@ -682,12 +636,15 @@ function HelixSRPanel() {
     const doInstall = async () => {
         try {
             setWorking(true);
-            setMessage("Checking the latest HelixSR release…");
+            say.progress("Checking the latest HelixSR release…");
             const r = await installLatestHelixSR();
-            setMessage(r.status === "success" ? `✅ ${r.message || "Done"}` : `❌ ${r.message || "Failed"}`);
+            if (r.status === "success")
+                say.done(r.message || "Done");
+            else
+                say.fail(r.message || "Failed");
         }
         catch (e) {
-            setMessage(`❌ ${String(e)}`);
+            say.fail(String(e));
         }
         finally {
             setWorking(false);
@@ -695,15 +652,18 @@ function HelixSRPanel() {
         }
     };
     const handleInstall = () => {
-        DFL.showModal(window.SP_REACT.createElement(DFL.ConfirmModal, { strTitle: `${info?.installed ? "Update to" : "Install"} ${info?.latest_label || "HelixSR"}?`, strDescription: "HelixSR's setup downloads NVIDIA's DLSS 310.7.0 DLL from NVIDIA's GitHub (NVIDIA's license applies), a portable Python and Microsoft's shader compiler, builds the network on this device and deletes NVIDIA's DLL again. It takes about 7-10 minutes on a Steam Deck: keep it plugged in and awake. The installed HelixSR (if any) is replaced once the build succeeds.", strOKButtonText: "Download and build", strCancelButtonText: "Cancel", onOK: () => void doInstall() }));
+        DFL.showModal(window.SP_REACT.createElement(DFL.ConfirmModal, { strTitle: `${info?.installed ? "Update to" : "Install"} ${info?.latest_label || "HelixSR"}?`, strDescription: "Downloads NVIDIA's DLSS DLL (NVIDIA's license applies), builds HelixSR here and deletes the DLL. About 10 minutes: keep the device plugged in and awake.", strOKButtonText: "Download and build", strCancelButtonText: "Cancel", onOK: () => void doInstall() }));
     };
     const handleCancel = async () => {
         try {
             const r = await cancelHelixSRSetup();
-            setMessage(r.status === "success" ? `✅ ${r.message}` : `❌ ${r.message || "Failed"}`);
+            if (r.status === "success")
+                say.done(r.message);
+            else
+                say.fail(r.message || "Failed");
         }
         catch (e) {
-            setMessage(`❌ ${String(e)}`);
+            say.fail(String(e));
         }
         finally {
             await refresh();
@@ -712,15 +672,16 @@ function HelixSRPanel() {
     const setup = info?.setup;
     // Full release names: "HelixSR 3.2.0 (pre-release)", or "(re-uploaded …)" for a new zip under the same tag.
     const installedName = info?.installed_label || `HelixSR ${info?.installed_version || ""}`.trim();
+    const updateWaiting = Boolean(info?.installed && !info.up_to_date && info.latest_label);
     const installedLine = !info
         ? "Checking HelixSR…"
         : info.installed
             ? info.up_to_date
-                ? `🟢 ${installedName} installed (latest)`
+                ? `${installedName} installed (latest)`
                 : info.latest_label
-                    ? `🟡 ${installedName} installed — ${info.latest_label} available`
-                    : `🟢 ${installedName} installed`
-            : `⚪ HelixSR not installed${info.latest_label ? ` (latest: ${info.latest_label})` : ""}`;
+                    ? `${installedName} installed — ${info.latest_label} available`
+                    : `${installedName} installed`
+            : `HelixSR not installed${info.latest_label ? ` (latest: ${info.latest_label})` : ""}`;
     const showInstallButton = info && !busy && !info.up_to_date;
     const mb = (bytes) => `${((bytes || 0) / 1048576).toFixed(0)} MB`;
     const downloadText = !downloading
@@ -739,68 +700,39 @@ function HelixSRPanel() {
             : 100;
     return (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
         window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", padding: "8px", backgroundColor: "rgba(255,255,255,0.05)", borderRadius: "4px" } },
-                window.SP_REACT.createElement("div", null, installedLine),
+            window.SP_REACT.createElement("div", { style: { fontSize: "0.85em" } },
+                window.SP_REACT.createElement("div", { style: { color: updateWaiting ? COLORS.warn : undefined } }, installedLine),
                 info?.message && window.SP_REACT.createElement("div", { style: { opacity: 0.7, marginTop: "2px" } }, info.message),
-                setup?.state === "failed" && (window.SP_REACT.createElement("div", { style: { color: "#ff6b6b", marginTop: "4px", whiteSpace: "pre-wrap", wordBreak: "break-word" } },
-                    "❌ The last HelixSR build failed.",
+                setup?.state === "failed" && (window.SP_REACT.createElement("div", { style: { color: COLORS.error, marginTop: "4px", whiteSpace: "pre-wrap", wordBreak: "break-word" } },
+                    "The last HelixSR build failed.",
                     (setup.errors || []).length > 0 ? `\n${setup.errors.join("\n")}` : "",
                     `\nLog: ${setup.log_path}`)),
-                download?.error && (window.SP_REACT.createElement("div", { style: { color: "#ff6b6b", marginTop: "4px", whiteSpace: "pre-wrap", wordBreak: "break-word" } }, `❌ ${download.label || `HelixSR ${download.version || ""}`} download failed: ${download.error}`)),
-                setup?.state === "stopped" && (window.SP_REACT.createElement("div", { style: { opacity: 0.7, marginTop: "4px" } }, "The last HelixSR build was interrupted (sleep or restart). Start it again.")))),
+                download?.error && (window.SP_REACT.createElement("div", { style: { color: COLORS.error, marginTop: "4px", whiteSpace: "pre-wrap", wordBreak: "break-word" } }, `${download.label || `HelixSR ${download.version || ""}`} download failed: ${download.error}`)),
+                setup?.state === "stopped" && (window.SP_REACT.createElement("div", { style: { opacity: 0.7, marginTop: "4px" } }, "The last build was interrupted. Start it again.")))),
         downloading && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement(DFL.ProgressBarWithInfo, { layout: "below", bottomSeparator: "none", indeterminate: download.phase === "downloading" && !download.total,nProgress: downloadProgress, sOperationText: downloadText, description: `${download.label || `HelixSR ${download.version || ""}`}: the build starts right after. You can close this menu.` }))),
+            window.SP_REACT.createElement(DFL.ProgressBarWithInfo, { layout: "below", bottomSeparator: "none", indeterminate: download.phase === "downloading" && !download.total,nProgress: downloadProgress, sOperationText: downloadText, description: "You can close this menu." }))),
         building && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement(DFL.ProgressBarWithInfo, { layout: "below", bottomSeparator: "none", nProgress: setup.progress || 0, sOperationText: setup.phase || "Building HelixSR…", sTimeRemaining: setup.elapsed != null ? formatElapsed(setup.elapsed) : undefined, description: `Building HelixSR ${setup.tag || ""} — about 7-10 minutes on a Steam Deck. You can close this menu.` }))),
+            window.SP_REACT.createElement(DFL.ProgressBarWithInfo, { layout: "below", bottomSeparator: "none", nProgress: setup.progress || 0, sOperationText: setup.phase || "Building HelixSR…", sTimeRemaining: setup.elapsed != null ? formatElapsed(setup.elapsed) : undefined, description: "About 10 minutes. You can close this menu." }))),
         showInstallButton && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleInstall, disabled: working }, working
                 ? "Starting…"
                 : info.installed
-                    ? `⬆️ Update to ${info.latest_label || "the latest HelixSR"}`
-                    : `⬇️ Install ${info.latest_label || "HelixSR"}`))),
+                    ? `Update to ${info.latest_label || "the latest HelixSR"}`
+                    : `Install ${info.latest_label || "HelixSR"}`))),
         building && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleCancel }, "Cancel HelixSR build"))),
         window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement("div", { style: { fontSize: "0.8em", opacity: 0.6 } }, "After installing or updating HelixSR, press Patch All again. In-game: pick HLX DLSS in OptiScaler (Insert).")),
-        message && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", whiteSpace: "pre-wrap", opacity: 0.85 } }, message)))));
-}
-function getLaunchOptions(appId) {
-    return new Promise((resolve) => {
-        try {
-            const reg = SteamClient.Apps.RegisterForAppDetails(appId, (details) => {
-                resolve(details?.strLaunchOptions || "");
-                try {
-                    reg.unregister();
-                }
-                catch {
-                    /* noop */
-                }
-            });
-            setTimeout(() => {
-                try {
-                    reg.unregister();
-                }
-                catch {
-                    /* noop */
-                }
-                resolve("");
-            }, 1500);
-        }
-        catch {
-            resolve("");
-        }
-    });
+            window.SP_REACT.createElement("div", { style: { fontSize: "0.8em", opacity: 0.6 } }, "After installing or updating, press Patch All.")),
+        window.SP_REACT.createElement(NoticeRow, { notice: notice })));
 }
 function gameOptionLabel(game) {
     return game.non_steam ? `${game.name} · non-Steam` : game.name;
 }
-function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, }) {
+function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, addon, setAddon, advanced, onEnginesChanged, }) {
     const [games, setGames] = SP_REACT.useState([]);
     const [status, setStatus] = SP_REACT.useState(null);
-    const [addon, setAddon] = SP_REACT.useState(true);
     const [busy, setBusy] = SP_REACT.useState(false);
-    const [result, setResult] = SP_REACT.useState("");
+    const [notice, say] = useNotice();
     const [cachyos, setCachyos] = SP_REACT.useState(null);
     const [fsr4Upgrade, setFsr4Upgrade] = SP_REACT.useState(false);
     const [fsr4Indicator, setFsr4Indicator] = SP_REACT.useState(false);
@@ -808,21 +740,24 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, }) {
     const [lsfg, setLsfg] = SP_REACT.useState(null);
     const [lsfgFps, setLsfgFps] = SP_REACT.useState(LSFG_FPS_MIN);
     const lsfgSaveTimer = SP_REACT.useRef(null);
+    // The game picked last: an answer for an earlier pick that arrives late is dropped.
+    const pickedGame = SP_REACT.useRef(appid);
     SP_REACT.useEffect(() => () => clearTimeout(lsfgSaveTimer.current), []);
     // On only while the backend has the game's profile and ~/.jedi-lsfg is in its launch options.
     const loadLsfg = async (id) => {
-        setLsfg(null);
         try {
             const [r, current] = await Promise.all([getLsfgStatus(id), getLaunchOptions(parseInt(id, 10)).catch(() => "")]);
+            if (pickedGame.current !== id)
+                return;
             if (r.status !== "success") {
-                await logError$4(`SteamGameCombinedSection -> lsfg status: ${r.message}`);
+                await logError(`SteamGameCombinedSection -> lsfg status: ${r.message}`);
                 return;
             }
             setLsfg({ ...r, enabled: r.enabled && hasLsfgWrapper(current) });
             setLsfgFps(r.target_fps);
         }
         catch (e) {
-            await logError$4(`SteamGameCombinedSection -> lsfg: ${String(e)}`);
+            await logError(`SteamGameCombinedSection -> lsfg: ${String(e)}`);
         }
     };
     const handleLsfgToggle = async (enabled) => {
@@ -831,31 +766,33 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, }) {
         const id = parseInt(appid, 10);
         try {
             setBusy(true);
+            const current = await getLaunchOptions(id);
             if (!enabled) {
-                const next = withLsfgWrapper(await getLaunchOptions(id), false);
-                SteamClient.Apps.SetAppLaunchOptions(id, next);
+                SteamClient.Apps.SetAppLaunchOptions(id, withLsfgWrapper(current, false));
                 setLsfg({ ...lsfg, enabled: false });
                 const r = await disableLsfg(appid);
-                setResult(r.status === "success" ? `✅ Launch options: ${next || "(empty)"}` : `❌ ${r.message || "Could not turn LSFG-VK off."}`);
+                if (r.status === "success")
+                    say.ok("LSFG-VK off.");
+                else
+                    say.fail(r.message || "Could not turn LSFG-VK off.");
                 return;
             }
             if (!lsfg?.renderer_installed)
-                setResult("Installing MAKO Renderer…");
+                say.progress("Installing MAKO Renderer…");
             const nonSteam = !!games.find((g) => g.appid === appid)?.non_steam;
             const r = await enableLsfg(appid, lsfgFps, nonSteam);
             if (r.status !== "success") {
-                setResult(`❌ ${r.message || "Could not turn LSFG-VK on."}`);
+                say.fail(r.message || "Could not turn LSFG-VK on.");
                 return;
             }
-            const next = withLsfgWrapper(await getLaunchOptions(id), true);
-            SteamClient.Apps.SetAppLaunchOptions(id, next);
+            SteamClient.Apps.SetAppLaunchOptions(id, withLsfgWrapper(current, true));
             setLsfg({ ...lsfg, renderer_installed: true, lossless_found: true, enabled: true });
             setLsfgFps(r.target_fps);
-            setResult(`✅ Launch options: ${next}`);
+            say.ok("LSFG-VK on.");
         }
         catch (e) {
-            setResult(`❌ ${String(e)}`);
-            await logError$4(`SteamGameCombinedSection -> lsfg toggle: ${String(e)}`);
+            say.fail(String(e));
+            await logError(`SteamGameCombinedSection -> lsfg toggle: ${String(e)}`);
         }
         finally {
             setBusy(false);
@@ -868,13 +805,14 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, }) {
         lsfgSaveTimer.current = setTimeout(async () => {
             const r = await setLsfgTargetFps(id, value).catch((e) => ({ status: "error", message: String(e) }));
             if (r.status !== "success")
-                setResult(`❌ ${r.message || "Could not save the target FPS."}`);
+                say.fail(r.message || "Could not save the target FPS.");
         }, LSFG_SAVE_DEBOUNCE_MS);
     };
     const loadCachyos = async (id) => {
-        setCachyos(null);
         try {
             let [r, current] = await Promise.all([getLiteStatus(id), getLaunchOptions(parseInt(id, 10)).catch(() => "")]);
+            if (pickedGame.current !== id)
+                return;
             const litePath = fsr4LitePathIn(current);
             // Up to 1.1.22 the Lite toggle also added FSR4_UPGRADE=1, which turned the FSR4 toggle on with it.
             if (litePath && hasLaunchEnv(current, FSR4_UPGRADE_ENV)) {
@@ -889,14 +827,14 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, }) {
             // Lite on but the game isn't on the Lite Proton yet: switch it once Steam lists it (after a restart).
             if (litePath && !r.takes_dll_path) {
                 const selected = await selectLiteProton(id, r);
-                if (selected) {
+                if (selected && pickedGame.current === id) {
                     setCachyos(selected);
                     showLiteProtonModal(selected);
                 }
             }
         }
         catch (e) {
-            await logError$4(`SteamGameCombinedSection -> cachyos: ${String(e)}`);
+            await logError(`SteamGameCombinedSection -> cachyos: ${String(e)}`);
         }
     };
     const applyProtonFsr4 = async (dll) => {
@@ -915,29 +853,28 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, }) {
         try {
             setBusy(true);
             if (!enabled) {
-                const next = await applyProtonFsr4("");
-                setResult(`✅ Launch options: ${next || "(empty)"}`);
+                await applyProtonFsr4("");
+                say.ok("FSR 4.1.2 Lite off.");
                 if (cachyos?.lite_tool_name && (cachyos.tool_name || "").endsWith(LITE_TOOL_SUFFIX) && cachyos.previous_tool !== null && cachyos.previous_tool !== undefined) {
                     SteamClient.Apps.SpecifyCompatTool(parseInt(appid, 10), cachyos.previous_tool);
                     setCachyos({ ...cachyos, supported: isCachyosTool(cachyos.previous_tool, ""), tool_name: cachyos.previous_tool, tool_label: cachyos.previous_tool || "Steam default", takes_dll_path: false });
-                    setResult("✅ FSR 4.1.2 Lite off.");
                 }
                 return;
             }
             const r = await prepareCachyosFsr4Lite();
             if (r.status !== "success" || !r.path) {
-                setResult(`❌ ${r.message || "Could not prepare the FSR 4.1.2 Lite DLL."}`);
+                say.fail(r.message || "Could not prepare the FSR 4.1.2 Lite DLL.");
                 return;
             }
             // Always checks Proton-CachyOS's newest release: a newer one replaces the Lite copy (same name, so
             // games keep it); otherwise the copy already there is reused.
-            setResult("Checking Proton-CachyOS…");
+            say.progress("Checking Proton-CachyOS…");
             const upd = await getProtonLiteUpdateStatus().catch(() => null);
             if (upd?.status === "success" && upd.update_available)
-                setResult(upd.installed ? `Updating the Lite Proton to ${upd.latest} (~330 MB)…` : "Installing the Lite Proton (~330 MB)…");
+                say.progress(upd.installed ? `Updating the Lite Proton to ${upd.latest} (~330 MB)…` : "Installing the Lite Proton (~330 MB)…");
             const inst = await installProtonLite();
             if (inst.status !== "success") {
-                setResult(`❌ ${inst.message || "Could not install the Lite Proton."}`);
+                say.fail(inst.message || "Could not install the Lite Proton.");
                 return;
             }
             let status = await getLiteStatus(appid);
@@ -946,17 +883,15 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, }) {
                 if (!status.takes_dll_path)
                     await setLiteProtonPending(appid, true);
             }
-            const next = await applyProtonFsr4(r.path);
+            await applyProtonFsr4(r.path);
             setCachyos(status);
-            const note = inst.message ? `\n${inst.message}` : inst.updated ? `\nLite Proton updated: ${inst.tool_label}.` : "";
-            setResult(status.takes_dll_path
-                ? `✅ FSR 4.1.2 Lite on.${note}\n\n${next}`
-                : `✅ Lite Proton installed. Restart Steam to finish.${note}\n\n${next}`);
+            const note = inst.message || (inst.updated ? `Lite Proton updated: ${inst.tool_label}.` : "");
+            say.ok(note || (status.takes_dll_path ? "FSR 4.1.2 Lite on." : "Lite Proton installed. Restart Steam to finish."));
             showLiteProtonModal(status);
         }
         catch (e) {
-            setResult(`❌ ${String(e)}`);
-            await logError$4(`SteamGameCombinedSection -> fsr4Lite: ${String(e)}`);
+            say.fail(String(e));
+            await logError(`SteamGameCombinedSection -> fsr4Lite: ${String(e)}`);
         }
         finally {
             setBusy(false);
@@ -967,46 +902,64 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, }) {
             return;
         try {
             const current = await getLaunchOptions(parseInt(appid, 10));
-            const next = withLaunchEnv(current, name, enabled, value);
-            SteamClient.Apps.SetAppLaunchOptions(parseInt(appid, 10), next);
+            SteamClient.Apps.SetAppLaunchOptions(parseInt(appid, 10), withLaunchEnv(current, name, enabled, value));
             setChecked(enabled);
-            setResult(`✅ Launch options: ${next || "(empty)"}`);
+            say.ok(`${name === FSR4_INDICATOR_ENV ? "FSR watermark" : "Proton-CachyOS FSR4"} ${enabled ? "on" : "off"}.`);
         }
         catch (e) {
-            setResult(`❌ ${String(e)}`);
-            await logError$4(`SteamGameCombinedSection -> ${name}: ${String(e)}`);
+            say.fail(String(e));
+            await logError(`SteamGameCombinedSection -> ${name}: ${String(e)}`);
         }
     };
     const loadStatus = async (id) => {
         try {
-            setStatus(await getCombinedGameStatus$1(id));
+            const r = await getCombinedGameStatus(id);
+            if (pickedGame.current === id)
+                setStatus(r);
         }
         catch (e) {
-            await logError$4(`SteamGameCombinedSection -> status: ${String(e)}`);
+            await logError(`SteamGameCombinedSection -> status: ${String(e)}`);
+        }
+    };
+    const pickGame = (id) => {
+        pickedGame.current = id;
+        setAppid(id);
+        say.clear();
+        // Nothing from the previous game stays on screen while this one loads.
+        setStatus(null);
+        setCachyos(null);
+        setLsfg(null);
+        setFsr4Upgrade(false);
+        setFsr4Indicator(false);
+        setFsr4LitePath("");
+        void loadStatus(id);
+        void loadCachyos(id);
+        void loadLsfg(id);
+    };
+    // The panel stays mounted with the menu closed, so the list is read again whenever the dropdown opens.
+    const refreshGames = async () => {
+        try {
+            const r = await listInstalledGames();
+            if (r.status === "success")
+                setGames((current) => (JSON.stringify(current) === JSON.stringify(r.games || []) ? current : r.games || []));
+        }
+        catch (e) {
+            await logError(`SteamGameCombinedSection -> list: ${String(e)}`);
         }
     };
     SP_REACT.useEffect(() => {
-        (async () => {
-            try {
-                const r = await listInstalledGames();
-                if (r.status === "success")
-                    setGames(r.games || []);
-            }
-            catch (e) {
-                await logError$4(`SteamGameCombinedSection -> list: ${String(e)}`);
-            }
-        })();
+        void refreshGames();
     }, []);
     const handlePatchAll = async () => {
         if (!appid) {
-            setResult("Select a game first.");
+            say.fail("Select a game first.");
             return;
         }
         try {
             setBusy(true);
-            setResult("Patching… installing OptiScaler/ReShade if needed — this can take a while.");
+            say.progress("Patching… this can take a while.");
             const current = await getLaunchOptions(parseInt(appid, 10));
-            const r = await patchAllGame(appid, fsr4Variant, addon, current, "");
+            const r = await patchAllGame(appid, fsr4Variant, addon, current);
             if (r.status === "success") {
                 if (r.launch_options && fsr4Upgrade)
                     r.launch_options = withLaunchEnv(r.launch_options, FSR4_UPGRADE_ENV, true);
@@ -1014,24 +967,19 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, }) {
                     r.launch_options = withProtonFsr4(r.launch_options, fsr4LitePath);
                 if (r.launch_options && fsr4Indicator)
                     r.launch_options = withLaunchEnv(r.launch_options, FSR4_INDICATOR_ENV, true);
-                if (r.launch_options) {
-                    try {
-                        r.launch_options = await setLaunchOptionsKeepingLsfg(parseInt(appid, 10), r.launch_options);
-                    }
-                    catch (e) {
-                        await logError$4(`SetAppLaunchOptions: ${String(e)}`);
-                    }
-                }
-                setResult(`✅ ${r.message || "Done"}${r.launch_options ? `\n\nLaunch options set automatically:\n${r.launch_options}` : ""}`);
+                if (r.launch_options)
+                    setLaunchOptionsKeepingLsfg(parseInt(appid, 10), r.launch_options, current);
+                say.done(`${r.message || "Done"}${r.launch_options ? "\nLaunch options set." : ""}`);
+                onEnginesChanged?.();
             }
             else {
-                setResult(`❌ ${r.message || "Failed"}`);
+                say.fail(r.message || "Failed");
             }
             await loadStatus(appid);
         }
         catch (e) {
-            setResult(`❌ ${String(e)}`);
-            await logError$4(`SteamGameCombinedSection -> patchAll: ${String(e)}`);
+            say.fail(String(e));
+            await logError(`SteamGameCombinedSection -> patchAll: ${String(e)}`);
         }
         finally {
             setBusy(false);
@@ -1039,51 +987,34 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, }) {
     };
     const handleRemoveAll = async () => {
         if (!appid) {
-            setResult("Select a game first.");
+            say.fail("Select a game first.");
             return;
         }
         try {
             setBusy(true);
-            setResult("Removing both mods…");
+            say.progress("Removing both mods…");
             const current = await getLaunchOptions(parseInt(appid, 10));
             const r = await unpatchAllGame(appid, current);
             if (r.status === "success") {
-                try {
-                    r.launch_options = await setLaunchOptionsKeepingLsfg(parseInt(appid, 10), r.launch_options || "");
-                }
-                catch (e) {
-                    await logError$4(`SetAppLaunchOptions(remove): ${String(e)}`);
-                }
-                setResult(`✅ ${r.message || "Removed"}` +
-                    (r.launch_options ? `\n\nLaunch options restored:\n${r.launch_options}` : "\n\nLaunch options cleared."));
+                setLaunchOptionsKeepingLsfg(parseInt(appid, 10), r.launch_options || "", current);
+                say.done(`${r.message || "Removed"}\nLaunch options ${r.launch_options ? "restored" : "cleared"}.`);
             }
             else {
-                setResult(`❌ ${r.message || "Failed"}`);
+                say.fail(r.message || "Failed");
             }
             await loadStatus(appid);
         }
         catch (e) {
-            setResult(`❌ ${String(e)}`);
-            await logError$4(`SteamGameCombinedSection -> removeAll: ${String(e)}`);
+            say.fail(String(e));
+            await logError(`SteamGameCombinedSection -> removeAll: ${String(e)}`);
         }
         finally {
             setBusy(false);
         }
     };
-    return (window.SP_REACT.createElement(DFL.PanelSection, { title: "\uD83C\uDFAE Game \u2014 Patch All" },
+    return (window.SP_REACT.createElement(DFL.PanelSection, { title: "Game — Patch All" },
         window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement("div", { style: { fontSize: "0.9em", opacity: 0.85 } },
-                "Pick a game and press ",
-                window.SP_REACT.createElement("b", null, "Patch All"),
-                ": OptiScaler + ReShade, launch options included.")),
-        window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement(DFL.DropdownItem, { rgOptions: games.map((g) => ({ data: g.appid, label: gameOptionLabel(g) })), selectedOption: appid, onChange: (o) => {
-                    setAppid(o.data);
-                    setResult("");
-                    void loadStatus(o.data);
-                    void loadCachyos(o.data);
-                    void loadLsfg(o.data);
-                }, strDefaultLabel: "Select a game..." })),
+            window.SP_REACT.createElement(DFL.DropdownItem, { rgOptions: games.map((g) => ({ data: g.appid, label: gameOptionLabel(g) })), selectedOption: appid, onMenuOpened: () => void refreshGames(), onChange: (o) => pickGame(o.data), strDefaultLabel: "Select a game..." })),
         appid && lsfg && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement(DFL.ToggleField, { label: "LSFG-VK", description: lsfg.lossless_found ? "Lossless Scaling frame generation." : "Needs Lossless Scaling on Steam.", checked: lsfg.enabled, disabled: busy, onChange: (v) => void handleLsfgToggle(v) }))),
         appid && lsfg?.enabled && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
@@ -1092,17 +1023,16 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, }) {
             window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", padding: "8px", backgroundColor: "rgba(255,255,255,0.05)", borderRadius: "4px" } },
                 window.SP_REACT.createElement("div", null,
                     "Frame Generation: ",
-                    status.optiscaler_patched ? `on (${status.optiscaler_slot})` : "off"),
+                    window.SP_REACT.createElement("span", { style: { color: status.optiscaler_patched ? COLORS.ok : undefined } }, status.optiscaler_patched ? (advanced && status.optiscaler_slot ? `On · ${status.optiscaler_slot}` : "On") : "Off")),
                 status.optiscaler_patched && status.optiscaler_variant_label && (window.SP_REACT.createElement("div", null,
-                    "Upscaler runtime: ",
+                    "Upscaler: ",
                     status.optiscaler_variant_label)),
                 window.SP_REACT.createElement("div", null,
                     "ReShade: ",
-                    status.reshade_present ? `on (${status.reshade_slot})` : "off"),
-                status.both_active && window.SP_REACT.createElement("div", { style: { color: "green", marginTop: "2px" } }, "\u2705 Both active and coexisting"),
+                    window.SP_REACT.createElement("span", { style: { color: status.reshade_present ? COLORS.ok : undefined } }, status.reshade_present ? (advanced && status.reshade_slot ? `On · ${status.reshade_slot}` : "On") : "Off")),
                 status.helixsr && window.SP_REACT.createElement(HelixSRGameStatus, { info: status.helixsr })))),
         status && appid && status.helixsr && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: () => void loadStatus(appid), disabled: busy }, "\ud83d\udd04 Check HelixSR again"))),
+            window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: () => void loadStatus(appid), disabled: busy }, "Check HelixSR again"))),
         appid && (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
             // FSR4 and the watermark: for Proton-CachyOS games, games on Lite, or while their variable is still set.
             (cachyos?.supported || fsr4LitePath || fsr4Upgrade) && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
@@ -1112,27 +1042,19 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, }) {
                 window.SP_REACT.createElement(DFL.ToggleField, { label: "Proton FSR4 → 4.1.2 Lite", description: "FSR 4.1.2 Lite via its own Proton-CachyOS. FSR 3.1, DX12 games.", checked: !!fsr4LitePath, disabled: busy || !cachyos, onChange: (v) => void handleFsr4LiteToggle(v) })),
             // The patched Proton is installed but Steam doesn't list it yet: it needs a restart.
             fsr4LitePath && cachyos && !cachyos.takes_dll_path && cachyos.lite_tool_name && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement("div", { style: { fontSize: "0.82em", color: "#ffb84d" } }, "⚠️ Restart Steam to finish."))),
+                window.SP_REACT.createElement("div", { style: { fontSize: "0.82em", color: COLORS.warn } }, "Restart Steam to finish."))),
             fsr4LitePath && cachyos && !cachyos.takes_dll_path && cachyos.lite_tool_name && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: () => SteamClient.User.StartRestart(false), disabled: busy }, "🔄 Restart Steam"))),
+                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: () => SteamClient.User.StartRestart(false), disabled: busy }, "Restart Steam"))),
             (cachyos?.supported || fsr4LitePath || fsr4Indicator) && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.ToggleField, { label: "Show FSR watermark", description: "Shows which FSR runs, top left.", checked: fsr4Indicator, disabled: busy, onChange: (v) => void handleLaunchEnvToggle(FSR4_INDICATOR_ENV, v, setFsr4Indicator) }))),
             window.SP_REACT.createElement(HelixSRPanel, null),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.ToggleField, { label: "ReShade add-ons", description: "Enables add-on support (avoid in anti-cheat online games).", checked: addon, onChange: setAddon })),
+                window.SP_REACT.createElement(DFL.ToggleField, { label: "ReShade add-ons", description: "Avoid in anti-cheat online games.", checked: addon, onChange: setAddon })),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handlePatchAll, disabled: busy }, busy ? "Working…" : "🚀 Patch All (FrameGen + ReShade)")),
+                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handlePatchAll, disabled: busy }, busy ? "Working…" : "Patch All (FrameGen + ReShade)")),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleRemoveAll, disabled: busy }, "\uD83D\uDDD1\uFE0F Remove All")))),
-        result && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement("div", { style: {
-                    padding: "12px",
-                    marginTop: "8px",
-                    backgroundColor: "var(--decky-selected-ui-bg)",
-                    borderRadius: "4px",
-                    whiteSpace: "pre-wrap",
-                    fontSize: "0.85em",
-                } }, result))),
+                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleRemoveAll, disabled: busy }, "Remove All")))),
+        window.SP_REACT.createElement(NoticeRow, { notice: notice }),
         window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement("div", { style: { fontSize: "0.8em", opacity: 0.6 } }, "In-game: press HOME for the ReShade overlay or INSERT for OptiScaler."))));
 }
@@ -1140,7 +1062,6 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, }) {
 // src/ShaderSelectionModal.tsx
 
 const getAvailableShaders = callable("get_available_shaders");
-const logError$3 = callable("log_error");
 const ShaderSelectionModal = ({ onConfirm, onCancel, addonEnabled, autoHdrEnabled, closeModal, mode = 'install', initialSelectedShaders = [] }) => {
     const [shaderPackages, setShaderPackages] = SP_REACT.useState([]);
     const [selectedShaders, setSelectedShaders] = SP_REACT.useState(new Set());
@@ -1185,7 +1106,7 @@ const ShaderSelectionModal = ({ onConfirm, onCancel, addonEnabled, autoHdrEnable
         catch (err) {
             const errorMsg = err instanceof Error ? err.message : String(err);
             setError(`Error loading shaders: ${errorMsg}`);
-            await logError$3(`ShaderSelectionModal -> loadAvailableShaders: ${errorMsg}`);
+            await logError(`ShaderSelectionModal -> loadAvailableShaders: ${errorMsg}`);
         }
         finally {
             setLoading(false);
@@ -1275,14 +1196,14 @@ const ShaderSelectionModal = ({ onConfirm, onCancel, addonEnabled, autoHdrEnable
                 paddingRight: '8px'
             } }, loading ? (window.SP_REACT.createElement("div", { style: { padding: '20px', textAlign: 'center' } }, "Loading shader packages...")) : error ? (window.SP_REACT.createElement("div", { style: {
                 padding: '12px',
-                backgroundColor: '#ff6b6b',
+                backgroundColor: COLORS.error,
                 borderRadius: '4px',
                 color: 'white',
                 marginBottom: '12px',
                 fontSize: '0.85em'
             } }, error)) : (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
             window.SP_REACT.createElement("div", { style: { marginBottom: '12px', fontSize: '0.85em', opacity: 0.8 } }, isManageMode
-                ? "Configure your preferred shader packages. These selections will be automatically used for future ReShade installations."
+                ? "The packages future installs use."
                 : "Choose which shader packages to install. You can add more later."),
             window.SP_REACT.createElement("div", { style: {
                     marginBottom: '12px',
@@ -1393,20 +1314,17 @@ const ShaderSelectionModal = ({ onConfirm, onCancel, addonEnabled, autoHdrEnable
     return (window.SP_REACT.createElement(DFL.ConfirmModal, { strTitle: getModalTitle(), strDescription: getDescription(), strOKButtonText: loading ? "Loading..." : getConfirmButtonText(), strCancelButtonText: "Cancel", onOK: handleConfirm, onCancel: handleCancel, bOKDisabled: loading || error !== '' || selectedShaders.size === 0 }));
 };
 
-const runInstallReShade$1 = callable("run_install_reshade");
+const runInstallReShade = callable("run_install_reshade");
 const runUninstallReShade = callable("run_uninstall_reshade");
-const checkReShadePath$1 = callable("check_reshade_path");
+const checkReShadePath = callable("check_reshade_path");
 const getReShadeUpdateStatus = callable("get_reshade_update_status");
 const detectSteamDeckModel = callable("detect_steam_deck_model");
-const logError$2 = callable("log_error");
 const saveShaderPreferences = callable("save_shader_preferences");
 const loadShaderPreferences = callable("load_shader_preferences");
-const hasShaderPreferences = callable("has_shader_preferences");
 const saveAutoHdrPreference = callable("save_autohdr_preference");
 const loadAutoHdrPreference = callable("load_autohdr_preference");
 const loadInstalledConfiguration = callable("load_installed_configuration");
 const manageGameReShade = callable("manage_game_reshade");
-const getCombinedGameStatus = callable("get_combined_game_status");
 const removeReShadeOnly = callable("remove_reshade_only");
 const RESHADE_DLL_OPTIONS = [
     { data: "auto", label: "Automatic (Detect API)" },
@@ -1437,41 +1355,28 @@ const buildSteamLaunchOptions = (reshadeApi, optiscalerSlot) => {
     });
     return `WINEDLLOVERRIDES="${parts.join(";")}" SteamDeck=0 %command%`;
 };
-function ReShadeInstallerSection({ appid, targetExePath = "" }) {
+function ReShadeInstallerSection({ appid, addon, engineCheck, onEnginesChanged }) {
     const [installing, setInstalling] = SP_REACT.useState(false);
     const [uninstalling, setUninstalling] = SP_REACT.useState(false);
     const [applyingToSteamGame, setApplyingToSteamGame] = SP_REACT.useState(false);
     const [removingFromGame, setRemovingFromGame] = SP_REACT.useState(false);
-    const [installResult, setInstallResult] = SP_REACT.useState(null);
-    const [uninstallResult, setUninstallResult] = SP_REACT.useState(null);
-    const [steamGameResult, setSteamGameResult] = SP_REACT.useState(null);
+    const [notice, say] = useNotice();
     const [pathExists, setPathExists] = SP_REACT.useState(null);
-    const [addonEnabled, setAddonEnabled] = SP_REACT.useState(false);
     const [autoHdrEnabled, setAutoHdrEnabled] = SP_REACT.useState(false);
     const [selectedSteamGameApi, setSelectedSteamGameApi] = SP_REACT.useState("auto");
     const [currentVersionInfo, setCurrentVersionInfo] = SP_REACT.useState(null);
     const [updateStatus, setUpdateStatus] = SP_REACT.useState(null);
-    const [initialLoad, setInitialLoad] = SP_REACT.useState(true);
-    const [showingAddonDialog, setShowingAddonDialog] = SP_REACT.useState(false);
-    const [pendingAddonState, setPendingAddonState] = SP_REACT.useState(false);
-    const [deckModel, setDeckModel] = SP_REACT.useState(null);
-    const [modelLoading, setModelLoading] = SP_REACT.useState(true);
     const [installedConfig, setInstalledConfig] = SP_REACT.useState(null);
     const [configChanged, setConfigChanged] = SP_REACT.useState(false);
-    const [hasPreferences, setHasPreferences] = SP_REACT.useState(false);
-    const [preferencesInfo, setPreferencesInfo] = SP_REACT.useState(null);
-    const refreshLocalInstallState = async (syncAddonState = false) => {
+    const refreshLocalInstallState = async () => {
         try {
-            const result = await checkReShadePath$1();
+            const result = await checkReShadePath();
             setPathExists(result.exists);
             setCurrentVersionInfo(result.exists ? result.version_info || null : null);
-            if (syncAddonState) {
-                setAddonEnabled(result.is_addon);
-            }
             return result;
         }
         catch (e) {
-            await logError$2(`refreshLocalInstallState: ${String(e)}`);
+            await logError(`refreshLocalInstallState: ${String(e)}`);
             return null;
         }
     };
@@ -1491,7 +1396,7 @@ function ReShadeInstallerSection({ appid, targetExePath = "" }) {
         }
         catch (e) {
             setInstalledConfig(null);
-            await logError$2(`Error loading installed configuration: ${String(e)}`);
+            await logError(`Error loading installed configuration: ${String(e)}`);
         }
     };
     const refreshUpdateState = async (withAddon) => {
@@ -1504,75 +1409,18 @@ function ReShadeInstallerSection({ appid, targetExePath = "" }) {
                 status: "error",
                 message: String(e)
             });
-            await logError$2(`Error loading update status: ${String(e)}`);
+            await logError(`Error loading update status: ${String(e)}`);
         }
     };
     const refreshPostInstallState = async (withAddon) => {
         const localState = await refreshLocalInstallState();
         await refreshInstalledConfig(localState?.exists ?? null);
         await refreshUpdateState(withAddon);
+        onEnginesChanged?.();
     };
     SP_REACT.useEffect(() => {
-        let isMounted = true;
-        const checkPath = async (syncAddonState = false) => {
-            try {
-                const result = await checkReShadePath$1();
-                if (!isMounted)
-                    return;
-                setPathExists(result.exists);
-                setCurrentVersionInfo(result.exists ? result.version_info || null : null);
-                if (syncAddonState) {
-                    setAddonEnabled(result.is_addon);
-                }
-            }
-            catch (e) {
-                await logError$2(`useEffect -> checkPath: ${String(e)}`);
-            }
-        };
-        checkPath(true).finally(() => {
-            if (isMounted) {
-                setInitialLoad(false);
-            }
-        });
-        const intervalId = setInterval(() => {
-            void checkPath(false);
-        }, 3000);
-        return () => {
-            isMounted = false;
-            clearInterval(intervalId);
-        };
-    }, []);
-    SP_REACT.useEffect(() => {
-        const detectDeckModelInfo = async () => {
-            try {
-                setModelLoading(true);
-                const result = await detectSteamDeckModel();
-                setDeckModel(result);
-            }
-            catch (e) {
-                await logError$2(`Steam Deck model detection error: ${String(e)}`);
-            }
-            finally {
-                setModelLoading(false);
-            }
-        };
-        detectDeckModelInfo();
-    }, []);
-    SP_REACT.useEffect(() => {
-        const checkPreferences = async () => {
-            try {
-                const result = await hasShaderPreferences();
-                if (result.status === "success") {
-                    setHasPreferences(result.has_preferences);
-                    setPreferencesInfo(result);
-                }
-            }
-            catch (e) {
-                await logError$2(`Error checking shader preferences: ${String(e)}`);
-            }
-        };
-        checkPreferences();
-    }, []);
+        void refreshLocalInstallState();
+    }, [engineCheck]);
     SP_REACT.useEffect(() => {
         const loadAutoHdrPref = async () => {
             try {
@@ -1582,7 +1430,7 @@ function ReShadeInstallerSection({ appid, targetExePath = "" }) {
                 }
             }
             catch (e) {
-                await logError$2(`Error loading AutoHDR preference: ${String(e)}`);
+                await logError(`Error loading AutoHDR preference: ${String(e)}`);
             }
         };
         loadAutoHdrPref();
@@ -1591,18 +1439,22 @@ function ReShadeInstallerSection({ appid, targetExePath = "" }) {
         void refreshInstalledConfig();
     }, [pathExists]);
     SP_REACT.useEffect(() => {
-        if (initialLoad) {
-            return;
+        void refreshUpdateState(addon);
+        // AutoHDR needs add-on support.
+        if (!addon && autoHdrEnabled) {
+            setAutoHdrEnabled(false);
+            void saveAutoHdrPreference(false).catch(async (e) => {
+                await logError(`Error saving AutoHDR preference: ${String(e)}`);
+            });
         }
-        void refreshUpdateState(addonEnabled);
-    }, [addonEnabled, initialLoad]);
+    }, [addon]);
     SP_REACT.useEffect(() => {
         if (!installedConfig || pathExists !== true) {
             setConfigChanged(false);
             return;
         }
         const currentConfig = {
-            with_addon: addonEnabled,
+            with_addon: addon,
             with_autohdr: autoHdrEnabled,
             selected_shaders: []
         };
@@ -1618,45 +1470,31 @@ function ReShadeInstallerSection({ appid, targetExePath = "" }) {
                 setConfigChanged(hasChanged);
             }
             catch (e) {
-                await logError$2(`Error checking config changes: ${String(e)}`);
+                await logError(`Error checking config changes: ${String(e)}`);
             }
         };
         checkConfigChange();
-    }, [addonEnabled, autoHdrEnabled, installedConfig, pathExists]);
+    }, [addon, autoHdrEnabled, installedConfig, pathExists]);
     SP_REACT.useEffect(() => {
-        if (!installResult)
-            return undefined;
-        const timer = setTimeout(() => setInstallResult(null), 5000);
-        return () => clearTimeout(timer);
-    }, [installResult]);
-    SP_REACT.useEffect(() => {
-        if (!uninstallResult)
-            return undefined;
-        const timer = setTimeout(() => setUninstallResult(null), 5000);
-        return () => clearTimeout(timer);
-    }, [uninstallResult]);
-    SP_REACT.useEffect(() => {
-        if (!steamGameResult)
-            return undefined;
-        const timer = setTimeout(() => setSteamGameResult(null), 8000);
-        return () => clearTimeout(timer);
-    }, [steamGameResult]);
-    SP_REACT.useEffect(() => {
-        setSteamGameResult(null);
+        say.clear();
     }, [appid]);
     const executeInstall = async (selectedShaders) => {
         try {
             setInstalling(true);
-            const result = await runInstallReShade$1(addonEnabled, autoHdrEnabled, selectedShaders);
-            setInstallResult(result);
+            say.clear();
+            const result = await runInstallReShade(addon, autoHdrEnabled, selectedShaders);
             if (result.status === "success") {
-                await refreshPostInstallState(addonEnabled);
+                say.done("ReShade installed.");
+                await refreshPostInstallState(addon);
                 setConfigChanged(false);
+            }
+            else {
+                say.fail(result.message || "Operation failed");
             }
         }
         catch (e) {
-            setInstallResult({ status: "error", message: String(e) });
-            await logError$2(`Install error: ${String(e)}`);
+            say.fail(String(e));
+            await logError(`Install error: ${String(e)}`);
         }
         finally {
             setInstalling(false);
@@ -1673,29 +1511,31 @@ function ReShadeInstallerSection({ appid, targetExePath = "" }) {
                     await executeInstall(selectedShaders);
                 }, onCancel: () => {
                     // Modal closes through closeModal.
-                }, addonEnabled: addonEnabled, autoHdrEnabled: autoHdrEnabled, closeModal: () => modalResult.Close() }));
+                }, addonEnabled: addon, autoHdrEnabled: autoHdrEnabled, closeModal: () => modalResult.Close() }));
         }
         catch (e) {
-            setInstallResult({ status: "error", message: String(e) });
-            await logError$2(`Install error: ${String(e)}`);
+            say.fail(String(e));
+            await logError(`Install error: ${String(e)}`);
         }
     };
     const handleUninstallClick = async () => {
         try {
             setUninstalling(true);
             const result = await runUninstallReShade();
-            setUninstallResult(result);
             if (result.status === "success") {
-                setAddonEnabled(false);
+                say.done("ReShade uninstalled.");
                 setAutoHdrEnabled(false);
                 setInstalledConfig(null);
                 setConfigChanged(false);
-                await refreshPostInstallState(false);
+                await refreshPostInstallState(addon);
+            }
+            else {
+                say.fail(result.message || "Uninstallation failed");
             }
         }
         catch (e) {
-            setUninstallResult({ status: "error", message: String(e) });
-            await logError$2(`Uninstall error: ${String(e)}`);
+            say.fail(String(e));
+            await logError(`Uninstall error: ${String(e)}`);
         }
         finally {
             setUninstalling(false);
@@ -1703,35 +1543,23 @@ function ReShadeInstallerSection({ appid, targetExePath = "" }) {
     };
     const handleApplyReShadeToSteamGame = async () => {
         if (!appid) {
-            setSteamGameResult({
-                status: "error",
-                message: "Pick a game above first."
-            });
+            say.fail("Pick a game above first.");
             return;
         }
         if (!pathExists) {
-            setSteamGameResult({
-                status: "error",
-                message: "Install ReShade first before applying it to a game."
-            });
+            say.fail("Install ReShade first.");
             return;
         }
         try {
             setApplyingToSteamGame(true);
-            setSteamGameResult({
-                status: "success",
-                message: "Applying ReShade to the selected game..."
-            });
-            const result = await manageGameReShade(appid, "install", selectedSteamGameApi, "", targetExePath || "");
+            say.progress("Applying ReShade…");
+            const current = await getLaunchOptions(parseInt(appid, 10));
+            const result = await manageGameReShade(appid, selectedSteamGameApi);
             if (result.status !== "success") {
-                setSteamGameResult({
-                    status: "error",
-                    message: result.message || result.output || "Failed to apply ReShade."
-                });
+                say.fail(result.message || result.output || "Failed to apply ReShade.");
                 return;
             }
             const resolvedApi = getResolvedReShadeApi(result.output, selectedSteamGameApi);
-            const appliedTarget = result.target_executable || result.target_dir;
             let optiscalerSlot = null;
             try {
                 const combinedStatus = await getCombinedGameStatus(appid);
@@ -1740,25 +1568,14 @@ function ReShadeInstallerSection({ appid, targetExePath = "" }) {
                 }
             }
             catch (e) {
-                await logError$2(`ReShadeInstallerSection -> getCombinedGameStatus: ${String(e)}`);
+                await logError(`ReShadeInstallerSection -> getCombinedGameStatus: ${String(e)}`);
             }
-            let launchOptions = buildSteamLaunchOptions(resolvedApi, optiscalerSlot);
-            try {
-                launchOptions = await setLaunchOptionsKeepingLsfg(parseInt(appid, 10), launchOptions);
-            }
-            catch (e) {
-                await logError$2(`ReShadeInstallerSection -> SetAppLaunchOptions: ${String(e)}`);
-            }
-            setSteamGameResult({
-                status: "success",
-                output: `ReShade applied with ${resolvedApi.toUpperCase()}.\n` +
-                    (appliedTarget ? `Target: ${appliedTarget}\n` : "") +
-                    `Launch options set automatically:\n${launchOptions}`
-            });
+            setLaunchOptionsKeepingLsfg(parseInt(appid, 10), buildSteamLaunchOptions(resolvedApi, optiscalerSlot), current);
+            say.done(`ReShade applied (${resolvedApi.toUpperCase()}).\nLaunch options set.`);
         }
         catch (e) {
-            setSteamGameResult({ status: "error", message: String(e) });
-            await logError$2(`ReShadeInstallerSection -> applyToSteamGame: ${String(e)}`);
+            say.fail(String(e));
+            await logError(`ReShadeInstallerSection -> applyToSteamGame: ${String(e)}`);
         }
         finally {
             setApplyingToSteamGame(false);
@@ -1771,33 +1588,19 @@ function ReShadeInstallerSection({ appid, targetExePath = "" }) {
             return;
         try {
             setRemovingFromGame(true);
-            setSteamGameResult({ status: "success", message: "Removing ReShade…" });
-            const current = await getLaunchOptions$1(parseInt(appid, 10));
-            const result = await removeReShadeOnly(appid, targetExePath || "", current);
+            say.progress("Removing ReShade…");
+            const current = await getLaunchOptions(parseInt(appid, 10));
+            const result = await removeReShadeOnly(appid, current);
             if (result.status !== "success") {
-                setSteamGameResult({
-                    status: "error",
-                    message: result.message || result.output || "Failed to remove ReShade."
-                });
+                say.fail(result.message || result.output || "Failed to remove ReShade.");
                 return;
             }
-            try {
-                result.launch_options = await setLaunchOptionsKeepingLsfg(parseInt(appid, 10), result.launch_options || "");
-            }
-            catch (e) {
-                await logError$2(`ReShadeInstallerSection -> SetAppLaunchOptions: ${String(e)}`);
-            }
-            setSteamGameResult({
-                status: "success",
-                output: `${result.message || "ReShade removed."}\n` +
-                    (result.launch_options
-                        ? `Launch options updated automatically:\n${result.launch_options}`
-                        : "Launch options cleared.")
-            });
+            setLaunchOptionsKeepingLsfg(parseInt(appid, 10), result.launch_options || "", current);
+            say.done(`${result.message || "ReShade removed."}\nLaunch options ${result.launch_options ? "updated" : "cleared"}.`);
         }
         catch (e) {
-            setSteamGameResult({ status: "error", message: String(e) });
-            await logError$2(`ReShadeInstallerSection -> removeOnlyReShade: ${String(e)}`);
+            say.fail(String(e));
+            await logError(`ReShadeInstallerSection -> removeOnlyReShade: ${String(e)}`);
         }
         finally {
             setRemovingFromGame(false);
@@ -1812,82 +1615,37 @@ function ReShadeInstallerSection({ appid, targetExePath = "" }) {
             }
         }
         catch (e) {
-            await logError$2(`Error loading preferences: ${String(e)}`);
+            await logError(`Error loading preferences: ${String(e)}`);
         }
         const modalResult = DFL.showModal(window.SP_REACT.createElement(ShaderSelectionModal, { onConfirm: async (selectedShaders) => {
                 try {
                     const result = await saveShaderPreferences(selectedShaders);
                     if (result.status === "success") {
-                        setHasPreferences(true);
-                        setPreferencesInfo({
-                            has_preferences: true,
-                            shader_count: selectedShaders.length,
-                            last_updated: Date.now()
-                        });
-                        setInstallResult({
-                            status: "success",
-                            message: `Shader preferences saved! ${selectedShaders.length} packages selected.`
-                        });
+                        say.done(`${selectedShaders.length} shader packages saved.`);
                     }
                     else {
-                        setInstallResult({
-                            status: "error",
-                            message: result.message || "Failed to save preferences"
-                        });
+                        say.fail(result.message || "Failed to save preferences");
                     }
                 }
                 catch (e) {
-                    setInstallResult({ status: "error", message: String(e) });
-                    await logError$2(`Save preferences error: ${String(e)}`);
+                    say.fail(String(e));
+                    await logError(`Save preferences error: ${String(e)}`);
                 }
             }, onCancel: () => {
                 // Modal closes through closeModal.
-            }, addonEnabled: addonEnabled, autoHdrEnabled: autoHdrEnabled, mode: "manage", initialSelectedShaders: currentPreferences, closeModal: () => modalResult.Close() }));
-    };
-    const handleAddonToggle = () => {
-        if (!addonEnabled) {
-            setShowingAddonDialog(true);
-            setPendingAddonState(true);
-            DFL.showModal(window.SP_REACT.createElement(DFL.ConfirmModal, { strTitle: "Enable ReShade Addon Support?", strDescription: "Using ReShade with addon support is generally not recommended when playing online multiplayer games with anti-cheat systems, as the addon functionality can trigger anti-cheat detection due to its potential for modification beyond just visual post-processing, which could be interpreted as cheating; most anti-cheat systems only whitelist the basic ReShade functionality with limited addons support.", strOKButtonText: "Enable Anyway", strCancelButtonText: "Cancel", onOK: () => {
-                    setAddonEnabled(true);
-                    setShowingAddonDialog(false);
-                    setPendingAddonState(false);
-                }, onCancel: () => {
-                    setShowingAddonDialog(false);
-                    setPendingAddonState(false);
-                } }));
-            return;
-        }
-        setAddonEnabled(false);
-        setAutoHdrEnabled(false);
-        void saveAutoHdrPreference(false).catch(async (e) => {
-            await logError$2(`Error saving AutoHDR preference: ${String(e)}`);
-        });
+            }, addonEnabled: addon, autoHdrEnabled: autoHdrEnabled, mode: "manage", initialSelectedShaders: currentPreferences, closeModal: () => modalResult.Close() }));
     };
     const handleAutoHdrToggle = async () => {
         if (!autoHdrEnabled) {
-            let warningTitle = "Enable AutoHDR Components?";
-            let warningMessage = "AutoHDR components will be installed with ReShade. ";
-            if (deckModel) {
-                if (!deckModel.is_oled) {
-                    warningTitle = "LCD Model Warning";
-                    warningMessage += `You have a Steam Deck ${deckModel.model}. AutoHDR is optimized for OLED displays and may not work properly or cause visual issues on LCD models. `;
-                }
-                else {
-                    warningMessage += `Detected Steam Deck ${deckModel.model} - AutoHDR is optimized for your display. `;
-                }
-            }
-            else if (!modelLoading) {
-                warningMessage += "Could not detect Steam Deck model. AutoHDR is optimized for OLED displays. ";
-            }
-            warningMessage += "AutoHDR only works with DirectX 10/11/12 games. Continue?";
-            DFL.showModal(window.SP_REACT.createElement(DFL.ConfirmModal, { strTitle: warningTitle, strDescription: warningMessage, strOKButtonText: "Enable AutoHDR", strCancelButtonText: "Cancel", onOK: async () => {
+            const model = await detectSteamDeckModel().catch(() => null);
+            const description = model?.is_oled ? "DirectX 10/11/12 games only." : "Made for OLED displays, may look wrong on this one. DirectX 10/11/12 games only.";
+            DFL.showModal(window.SP_REACT.createElement(DFL.ConfirmModal, { strTitle: "Enable AutoHDR?", strDescription: description, strOKButtonText: "Enable AutoHDR", strCancelButtonText: "Cancel", onOK: async () => {
                     setAutoHdrEnabled(true);
                     try {
                         await saveAutoHdrPreference(true);
                     }
                     catch (e) {
-                        await logError$2(`Error saving AutoHDR preference: ${String(e)}`);
+                        await logError(`Error saving AutoHDR preference: ${String(e)}`);
                     }
                 } }));
             return;
@@ -1897,158 +1655,56 @@ function ReShadeInstallerSection({ appid, targetExePath = "" }) {
             await saveAutoHdrPreference(false);
         }
         catch (e) {
-            await logError$2(`Error saving AutoHDR preference: ${String(e)}`);
+            await logError(`Error saving AutoHDR preference: ${String(e)}`);
         }
     };
     const getInstallButtonText = () => {
         if (installing) {
             if (pathExists && configChanged)
-                return "Reinstalling ReShade...";
+                return "Reinstalling ReShade…";
             if (pathExists && updateStatus?.update_available)
-                return "Updating ReShade...";
-            return "Installing ReShade...";
+                return "Updating ReShade…";
+            return "Installing ReShade…";
         }
-        let text = "🔧 Install ReShade";
-        if (pathExists && configChanged) {
-            text = "🔧 Reinstall ReShade";
-        }
-        else if (pathExists && updateStatus?.update_available) {
-            text = "🔧 Update ReShade";
-        }
-        if (addonEnabled) {
-            text += " with Addon Support";
-        }
-        if (autoHdrEnabled) {
-            text += " + AutoHDR";
-        }
-        if (hasPreferences && preferencesInfo && preferencesInfo.shader_count > 0) {
-            text += ` (${preferencesInfo.shader_count} shader packages)`;
-        }
-        return text;
-    };
-    const renderDeckModelInfo = () => {
-        if (modelLoading)
-            return null;
-        if (deckModel && deckModel.status === "success") {
-            if (deckModel.model === "Not Steam Deck") {
-                return (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                    window.SP_REACT.createElement("div", { style: {
-                            fontSize: "0.9em",
-                            color: "gray",
-                            marginBottom: "8px"
-                        } }, "Non Steam Deck device detected")));
-            }
-            const isOptimal = deckModel.is_oled;
-            const statusColor = isOptimal ? "green" : "orange";
-            const statusIcon = isOptimal ? "🟢" : "🟡";
-            const displayText = deckModel.model === "OLED" || deckModel.model === "LCD"
-                ? `${statusIcon} Steam Deck ${deckModel.model} detected`
-                : `${statusIcon} ${deckModel.model} detected`;
-            return (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement("div", { style: {
-                        fontSize: "0.9em",
-                        color: statusColor,
-                        marginBottom: "8px"
-                    } },
-                    displayText,
-                    !isOptimal && deckModel.model !== "Not Steam Deck" && (window.SP_REACT.createElement("div", { style: { fontSize: "0.8em", opacity: 0.8, marginTop: "2px" } }, "AutoHDR optimized for OLED")))));
-        }
-        return null;
-    };
-    const renderPreferencesInfo = () => {
-        if (!hasPreferences || !preferencesInfo)
-            return null;
-        return (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement("div", { style: {
-                    padding: "8px",
-                    marginBottom: "8px",
-                    backgroundColor: "rgba(0, 255, 0, 0.1)",
-                    borderRadius: "4px",
-                    border: "1px solid rgba(0, 255, 0, 0.3)",
-                    fontSize: "0.9em"
-                } },
-                "\uD83D\uDCCB Shader preferences saved (",
-                preferencesInfo.shader_count,
-                " packages)",
-                window.SP_REACT.createElement("div", { style: { fontSize: "0.8em", opacity: 0.8, marginTop: "2px" } }, "Will be used automatically for installations"))));
+        if (pathExists && configChanged)
+            return "Reinstall ReShade";
+        if (pathExists && updateStatus?.update_available)
+            return "Update ReShade";
+        return "Install ReShade";
     };
     const shouldShowInstallButton = pathExists === false ||
         configChanged ||
         Boolean(pathExists && updateStatus?.update_available);
     return (window.SP_REACT.createElement(DFL.PanelSection, { title: "ReShade Management" },
         pathExists !== null && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement("div", { style: { color: pathExists ? "green" : "red" } }, pathExists ? (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
-                "\uD83D\uDFE2 ReShade Is Installed",
-                currentVersionInfo && (window.SP_REACT.createElement("div", { style: { fontSize: "0.9em", opacity: 0.8, marginTop: "4px" } },
-                    "Installed version: ",
+            window.SP_REACT.createElement("div", { style: { color: pathExists ? COLORS.ok : COLORS.warn } }, pathExists ? (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
+                "ReShade installed",
+                currentVersionInfo && (window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", color: COLORS.muted, marginTop: "4px" } },
                     currentVersionInfo.version,
-                    currentVersionInfo.addon ? " (with Addon Support)" : "")),
-                updateStatus?.status === "success" && updateStatus.latest_version && (window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", opacity: 0.7, marginTop: "2px" } },
-                    "Latest upstream: ",
-                    updateStatus.latest_version,
-                    updateStatus.update_available ? " (update available)" : " (up to date)")))) : ("🔴 ReShade Not Installed")))),
-        addonEnabled && renderDeckModelInfo(),
+                    currentVersionInfo.addon ? " · add-ons" : "",
+                    updateStatus?.update_available && updateStatus.latest_version ? ` · ${updateStatus.latest_version} available` : "")))) : "ReShade not installed"))),
         pathExists === false && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleManageShaders }, "\uD83D\uDCE6 Select Packages to Install"))),
-        renderPreferencesInfo(),
-        window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement(DFL.ToggleField, { label: "Enable Addon Support", description: pathExists ? "Changes require reinstallation" : "Install ReShade with addon support", checked: showingAddonDialog ? pendingAddonState : addonEnabled, onChange: handleAddonToggle, disabled: showingAddonDialog })),
-        addonEnabled && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement(DFL.ToggleField, { label: "Include AutoHDR Components", description: "For Steam Deck OLED HDR gaming (DX10/11/12 only)", checked: autoHdrEnabled, onChange: handleAutoHdrToggle }))),
+            window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleManageShaders }, "Select Packages to Install"))),
+        addon && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+            window.SP_REACT.createElement(DFL.ToggleField, { label: "Include AutoHDR", description: "For OLED HDR (DX10/11/12).", checked: autoHdrEnabled, onChange: handleAutoHdrToggle }))),
         pathExists === true && appid && (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.DropdownItem, { rgOptions: RESHADE_DLL_OPTIONS, selectedOption: selectedSteamGameApi, onChange: (option) => {
                         setSelectedSteamGameApi(option.data);
-                        setSteamGameResult(null);
+                        say.clear();
                     }, strDefaultLabel: "Game ReShade API" })),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", opacity: 0.7, wordBreak: "break-all" } }, targetExePath ? `Target: ${targetExePath}` : "Target: automatic detection")),
+                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleApplyReShadeToSteamGame, disabled: applyingToSteamGame || removingFromGame || !appid }, applyingToSteamGame ? "Applying…" : "Apply only ReShade")),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleApplyReShadeToSteamGame, disabled: applyingToSteamGame || removingFromGame || !appid }, applyingToSteamGame ? "Applying ReShade..." : "Apply only ReShade")),
-            window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleRemoveOnlyReShade, disabled: applyingToSteamGame || removingFromGame || !appid }, removingFromGame ? "Removing ReShade..." : "🗑️ Remove only ReShade")))),
+                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleRemoveOnlyReShade, disabled: applyingToSteamGame || removingFromGame || !appid }, removingFromGame ? "Removing…" : "Remove only ReShade")))),
         pathExists === true && !appid && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", opacity: 0.7 } }, "Pick a game above to apply or remove it."))),
-        pathExists === true && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement("div", { style: STYLES.instructionCard },
-                "Press HOME key in-game to access the ReShade overlay.",
-                addonEnabled && autoHdrEnabled && (window.SP_REACT.createElement("div", { style: { fontSize: "0.9em", marginTop: "4px", opacity: 0.8 } }, "AutoHDR works with DirectX 10/11/12 games only."))))),
         shouldShowInstallButton && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleInstallClick, disabled: installing }, getInstallButtonText()))),
         pathExists === true && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleUninstallClick, disabled: uninstalling },
-                window.SP_REACT.createElement("div", { style: { color: "#ef4444", fontWeight: "bold" } }, uninstalling ? "Uninstalling..." : "🗑️ Uninstall ReShade")))),
-        installResult && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement("div", { style: {
-                    padding: "12px",
-                    marginTop: "16px",
-                    backgroundColor: "var(--decky-selected-ui-bg)",
-                    borderRadius: "4px",
-                    color: installResult.status === "success" ? "green" : "red"
-                } }, installResult.status === "success"
-                ? `✅ ${installResult.output || installResult.message || "Operation completed successfully!"}`
-                : `❌ Error: ${installResult.message || "Operation failed"}`))),
-        uninstallResult && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement("div", { style: {
-                    padding: "12px",
-                    marginTop: "16px",
-                    backgroundColor: "var(--decky-selected-ui-bg)",
-                    borderRadius: "4px",
-                    color: uninstallResult.status === "success" ? "green" : "red"
-                } }, uninstallResult.status === "success"
-                ? "✅ ReShade uninstalled successfully!"
-                : `❌ Error: ${uninstallResult.message || "Uninstallation failed"}`))),
-        steamGameResult && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement("div", { style: {
-                    padding: "12px",
-                    marginTop: "16px",
-                    backgroundColor: "var(--decky-selected-ui-bg)",
-                    borderRadius: "4px",
-                    color: steamGameResult.status === "success" ? "green" : "red",
-                    whiteSpace: "pre-wrap"
-                } }, steamGameResult.status === "success"
-                ? `✅ ${steamGameResult.output || steamGameResult.message || "Operation completed successfully!"}`
-                : `❌ Error: ${steamGameResult.message || "Operation failed"}`)))));
+                window.SP_REACT.createElement("div", { style: { color: COLORS.error } }, uninstalling ? "Uninstalling…" : "Uninstall ReShade")))),
+        window.SP_REACT.createElement(NoticeRow, { notice: notice })));
 }
 
 const getPluginUpdateStatus = callable("get_plugin_update_status");
@@ -2057,11 +1713,11 @@ const installPluginUpdate = callable("install_plugin_update");
 // release over the plugin and Decky reloads it. (Decky's own install prompt didn't show from the Quick Access menu.)
 // Survives the reload after an update, so the reloaded panel can say it worked.
 const PLUGIN_UPDATED_KEY = "jedi-reframeshade4all-updated-to";
-function PluginUpdateSection() {
+function PluginUpdateSection({ advanced }) {
     const [info, setInfo] = SP_REACT.useState(null);
     const [checking, setChecking] = SP_REACT.useState(false);
     const [updating, setUpdating] = SP_REACT.useState(false);
-    const [message, setMessage] = SP_REACT.useState("");
+    const [notice, say] = useNotice();
     const refresh = async (force = false) => {
         try {
             setChecking(true);
@@ -2074,13 +1730,11 @@ function PluginUpdateSection() {
                     localStorage.removeItem(PLUGIN_UPDATED_KEY);
             }
             catch (e) { }
-            if (updatedTo && updatedTo === status?.installed_version) {
-                setMessage(`✅ Updated to v${updatedTo}.`);
-                toaster.toast({ title: "Jedi ReFrameShade4All", body: `Updated to v${updatedTo}.` });
-            }
+            if (updatedTo && updatedTo === status?.installed_version)
+                say.done(`Updated to v${updatedTo}.`);
         }
         catch (e) {
-            await logError$4(`PluginUpdateSection -> status: ${String(e)}`);
+            await logError(`PluginUpdateSection -> status: ${String(e)}`);
         }
         finally {
             setChecking(false);
@@ -2092,13 +1746,13 @@ function PluginUpdateSection() {
     const handleUpdate = async () => {
         try {
             setUpdating(true);
-            setMessage(`Downloading v${info.latest_version}… this can take a few minutes.`);
+            say.progress(`Downloading v${info.latest_version}…`);
             const r = await installPluginUpdate();
             if (r.status !== "success") {
-                setMessage(`❌ ${r.message || "Update failed."}\n\nOr install it in Decky's settings from URL:\n${info.url}`);
+                say.fail(`${r.message || "Update failed."}\n${info.url}`);
                 return;
             }
-            setMessage(`✅ v${r.version} installed. Reloading the plugin…`);
+            say.progress(`v${r.version} installed. Reloading…`);
             try {
                 localStorage.setItem(PLUGIN_UPDATED_KEY, r.version);
             }
@@ -2107,79 +1761,87 @@ function PluginUpdateSection() {
                 await window.DeckyBackend.call("loader/reload_plugin", r.plugin_name || manifest.name);
             }
             catch (e) {
-                setMessage(`✅ v${r.version} installed. Restart the Steam Deck (or Decky) to load it.`);
-                await logError$4(`PluginUpdateSection -> reload: ${String(e)}`);
+                say.fail(`v${r.version} installed. Restart Decky to load it.`);
+                await logError(`PluginUpdateSection -> reload: ${String(e)}`);
             }
         }
         catch (e) {
-            setMessage(`❌ ${String(e)}`);
-            await logError$4(`PluginUpdateSection -> install: ${String(e)}`);
+            say.fail(String(e));
+            await logError(`PluginUpdateSection -> install: ${String(e)}`);
         }
         finally {
             setUpdating(false);
         }
     };
+    // Up to date, this section only shows under Advanced controls.
+    if (!advanced && !info?.update_available && !notice)
+        return null;
     const statusLine = !info
         ? "Checking for updates…"
         : info.status !== "success"
-            ? `⚠️ ${info.message || "Could not check for updates."}`
+            ? info.message || "Could not check for updates."
             : info.update_available
-                ? `🟡 v${info.installed_version} installed — v${info.latest_version} available`
-                : `🟢 v${info.installed_version || "?"} installed (latest)`;
+                ? `v${info.installed_version} installed — v${info.latest_version} available`
+                : `v${info.installed_version || "?"} installed (latest)`;
     const size = info?.size ? ` (${Math.round(info.size / 1048576)} MB)` : "";
     return (window.SP_REACT.createElement(DFL.PanelSection, { title: "Plugin Update" },
         window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement("div", { style: { fontSize: "0.85em" } }, statusLine)),
+            window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", color: info?.update_available ? COLORS.warn : undefined } }, statusLine)),
         info?.update_available && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleUpdate, disabled: updating }, updating ? "Updating…" : `⬆️ Update to v${info.latest_version}${size}`))),
-        window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: () => void refresh(true), disabled: checking || updating }, checking ? "Checking…" : "🔄 Check for updates")),
-        message && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", whiteSpace: "pre-wrap", wordBreak: "break-all", opacity: 0.85 } }, message)))));
+            window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleUpdate, disabled: updating }, updating ? "Updating…" : `Update to v${info.latest_version}${size}`))),
+        advanced && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+            window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: () => void refresh(true), disabled: checking || updating }, checking ? "Checking…" : "Check for updates"))),
+        window.SP_REACT.createElement(NoticeRow, { notice: notice })));
 }
 function MainContent() {
     const [pathExists, setPathExists] = SP_REACT.useState(null);
     const [fgmodInfo, setFgmodInfo] = SP_REACT.useState(null);
     const [advanced, setAdvanced] = SP_REACT.useState(false);
+    // Bumped after anything installs or removes an engine, so the Advanced sections read it again.
+    const [engineCheck, setEngineCheck] = SP_REACT.useState(0);
+    const onEnginesChanged = () => setEngineCheck((n) => n + 1);
+    // One toggle for the Patch All install and the Advanced section; follows what's installed.
+    const [addon, setAddon] = SP_REACT.useState(true);
     // One FSR4 runtime for every game, shared with the advanced OptiScaler controls.
     const fsr4Variant = DEFAULT_FSR4_VARIANT;
     // The game is also picked once at the top and reused by the advanced sections.
     const [selectedAppid, setSelectedAppid] = SP_REACT.useState("");
     SP_REACT.useEffect(() => {
-        const checkPath = async () => {
-            const result = await safeAsyncOperation(async () => await checkFGModPath$1(), 'MainContent -> checkPath');
+        void safeAsyncOperation(async () => await checkReShadePath(), 'MainContent -> addon').then((result) => {
+            if (result?.exists)
+                setAddon(result.is_addon);
+        });
+    }, []);
+    // Only the Advanced section reads this. The panel stays mounted with the menu closed, so no polling.
+    SP_REACT.useEffect(() => {
+        if (!advanced)
+            return;
+        void safeAsyncOperation(async () => await checkFGModPath(), 'MainContent -> checkPath').then((result) => {
             if (result) {
                 setFgmodInfo(result);
                 setPathExists(result.exists);
             }
-        };
-        checkPath();
-        const intervalId = setInterval(checkPath, TIMEOUTS.pathCheck);
-        return () => clearInterval(intervalId);
-    }, []);
+        });
+    }, [advanced, engineCheck]);
     return (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
-        window.SP_REACT.createElement(SteamGameCombinedSection, { fsr4Variant: fsr4Variant, appid: selectedAppid, setAppid: setSelectedAppid }),
+        window.SP_REACT.createElement(SteamGameCombinedSection, { fsr4Variant: fsr4Variant, appid: selectedAppid, setAppid: setSelectedAppid, addon: addon, setAddon: setAddon, advanced: advanced, onEnginesChanged: onEnginesChanged }),
         window.SP_REACT.createElement(DFL.PanelSection, null,
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.ToggleField, { label: "Advanced controls", description: "Per-engine install, proxy DLL, ReShade shaders/AutoHDR.", checked: advanced, onChange: setAdvanced }))),
+                window.SP_REACT.createElement(DFL.ToggleField, { label: "Advanced controls", description: "Per-engine install, proxy DLL, shaders.", checked: advanced, onChange: setAdvanced }))),
         advanced && (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
-            window.SP_REACT.createElement(OptiScalerControls, { pathExists: pathExists, setPathExists: setPathExists, fgmodInfo: fgmodInfo, fsr4Variant: fsr4Variant, appid: selectedAppid }),
-            window.SP_REACT.createElement(ReShadeInstallerSection, { appid: selectedAppid }))),
-        window.SP_REACT.createElement(PluginUpdateSection, null)));
+            window.SP_REACT.createElement(OptiScalerControls, { pathExists: pathExists, onEnginesChanged: onEnginesChanged, fgmodInfo: fgmodInfo, fsr4Variant: fsr4Variant, appid: selectedAppid }),
+            window.SP_REACT.createElement(ReShadeInstallerSection, { appid: selectedAppid, addon: addon, engineCheck: engineCheck, onEnginesChanged: onEnginesChanged }))),
+        window.SP_REACT.createElement(PluginUpdateSection, { advanced: advanced })));
 }
 var index = definePlugin(() => {
-    void selectPendingLiteProton().catch((e) => logError$4(`selectPendingLiteProton: ${String(e)}`));
+    void selectPendingLiteProton().catch((e) => logError(`selectPendingLiteProton: ${String(e)}`));
     return {
-        name: "Jedi ReFrameShade4All",
-        titleView: window.SP_REACT.createElement("div", null, "Jedi ReFrameShade4All"),
+        name: PLUGIN_TITLE,
+        titleView: window.SP_REACT.createElement("div", null, PLUGIN_TITLE),
         alwaysRender: true,
         content: window.SP_REACT.createElement(MainContent, null),
         icon: window.SP_REACT.createElement(MdOutlineAutoAwesomeMotion, null),
-        onDismount() {
-            console.log("Jedi ReFrameShade4All Plugin unmounted");
-        },
     };
 });
 
 export { index as default };
-//# sourceMappingURL=index.js.map

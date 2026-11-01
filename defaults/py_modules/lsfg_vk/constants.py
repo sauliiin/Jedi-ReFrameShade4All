@@ -1,8 +1,6 @@
 LOCAL_PREFIX = ".local"
 LOCAL_BIN = ".local/bin"
 LOCAL_LIB = ".local/lib"
-LOCAL_LIB32 = ".local/lib32"
-LOCAL_SHARE = ".local/share"
 CONFIG_DIR = ".config/jedi-lsfg-vk"
 
 WRAPPER_FILENAME = ".jedi-lsfg"
@@ -26,9 +24,6 @@ INSTALLER_STATE = "share/mako-render/installer/installed-files.sha256"
 ACTIVE_RENDERER_STATE = "share/mako-render/active-renderer.json"
 
 LOSSLESS_DLL_FILENAME = "Lossless.dll"
-STEAM_LOSSLESS_SCALING_APP_ID = "993090"
-# Suggested branch when Lossless.dll is missing; any branch that ships it works.
-STEAM_LOSSLESS_SCALING_BRANCH = "public"
 
 # Launch-time variables set by the Steam wrapper.
 COMPETING_LSFG_DISABLE_ENVS = ("DISABLE_LSFG", "DISABLE_LSFGVK")

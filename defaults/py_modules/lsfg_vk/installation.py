@@ -18,7 +18,7 @@ from .constants import (
 )
 from .runtime_service import RuntimeService
 from .steam_service import SteamService
-from .types import InstallationCheckResponse, InstallationResponse, UninstallationResponse
+from .types import InstallationResponse, UninstallationResponse
 
 
 class InstallationService(BaseService):
@@ -205,25 +205,6 @@ class InstallationService(BaseService):
             self.log.info("Refreshed MAKO configuration")
         except Exception as error:
             self.log.warning(f"Could not refresh MAKO configuration: {error}")
-
-    def check_installation(self) -> InstallationCheckResponse:
-        try:
-            installed = self._renderer_installed() and self.config_file_path.is_file()
-            self.refresh_config()
-            lossless_scaling = self.runtime_service.check_lossless_scaling()
-            return {
-                "installed": installed,
-                "lossless_scaling_installed": bool(lossless_scaling["installed"]),
-                "lossless_scaling_status": str(lossless_scaling["status"]),
-                "error": None,
-            }
-        except Exception as error:
-            return {
-                "installed": False,
-                "lossless_scaling_installed": False,
-                "lossless_scaling_status": str(error),
-                "error": str(error),
-            }
 
     def uninstall(self) -> UninstallationResponse:
         try:

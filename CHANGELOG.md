@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.1.29
+
+### Changed
+- Cleaner panel, with the same row order: shorter texts and one result box that says what was done or what failed, and stays until the next action. Launch options, the Steam Deck model and the shader preferences card are gone from the panel.
+- **Plugin Update** only shows when there's an update; the installed version and **Check for updates** moved to **Advanced controls**.
+- One **ReShade add-ons** toggle, shared by Patch All and **Advanced controls**.
+- Patching and installing no longer block the plugin's other calls, and the 3-second status checks are gone.
+- Patch All scans the game folder half as often, and far fewer lines go to the log. Script output is only logged when a script fails.
+- The game list refreshes when the dropdown opens.
+
+### Fixed
+- If Steam took too long to answer, a toggle could overwrite the game's launch options. It now shows an error and writes nothing.
+- Switching games could show the previous game's status.
+- A game without an `.exe` could get Frame Generation and ReShade in different folders.
+- A stuck helper command could hold the plugin forever: all of them now time out.
+
+### Security
+- The ReShade page and installer are only downloaded over verified HTTPS. If the certificate fails, the install stops with an error.
+
+### Removed
+- Unused FSR4 runtimes: `rdna4-native`, `rdna34-official-411`, the `amdxc64.dll` override and the 0.10.0-pre1 injector. What Patch All puts in a game didn't change. `~/fgmod` goes from about 1.4 GB to 1 GB after **Reinstall OptiScaler**, and the download is about 160 MB smaller.
+- Unused backend code, script branches, `fgmod-remover.sh`, `dist/index.js.map` and the build setup in `package.json`.
+
 ## 1.1.28
 
 ### Changed

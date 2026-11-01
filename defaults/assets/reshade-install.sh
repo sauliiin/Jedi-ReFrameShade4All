@@ -357,8 +357,7 @@ download_reshade_installer() {
     fi
 
     log_message "Downloading ReShade installer from $RESHADE_DOWNLOAD_URL"
-    curl --fail --location --silent --show-error --retry 2 --connect-timeout 15 --compressed --http1.1 "$RESHADE_DOWNLOAD_URL" -o "$output_path" || \
-    curl --insecure --fail --location --silent --show-error --retry 2 --connect-timeout 15 --compressed --http1.1 "$RESHADE_DOWNLOAD_URL" -o "$output_path" || {
+    curl --fail --location --silent --show-error --retry 2 --connect-timeout 15 --compressed --http1.1 "$RESHADE_DOWNLOAD_URL" -o "$output_path" || {
         log_message "Failed to download ReShade installer"
         removeTempDir
         exit 1
