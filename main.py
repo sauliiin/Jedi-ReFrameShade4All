@@ -61,13 +61,13 @@ OPTISCALER_V10_ASSET = {
     "version": "10.0.0-master.2128299c",
 }
 
-# OptiScaler 10 built from optiscaler/OptiScaler master de2626f: loads upscalers from custom/<name>/dlss even on
+# OptiScaler 10 built from optiscaler/OptiScaler master ab379b2: loads upscalers from custom/<name>/dlss even on
 # GPUs it doesn't consider DLSS capable, which is how HelixSR 3.x's HLX DLSS (an NGX runtime) runs on AMD. Our patch
 # (attached to its release) also takes driver DLLs in custom/<name>/ffx, which is how Valve's 4.1.1 sits next to 4.1.2.
 OPTISCALER_HLX_ASSET = {
-    "name": "OptiScaler_10.0.0-de2626f-jedi1.dll",
-    "sha256": "ddddce19f5e60f1897573fbafb1eaa2703b58a6d172d470ce71a6731f533b95a",
-    "version": "10.0.0-de2626f-jedi1",
+    "name": "OptiScaler_10.0.0-ab379b2-jedi1.dll",
+    "sha256": "d5eab35eaacd9388aee08834b61a1439571be9c247c30cebed136448e21e7b5c",
+    "version": "10.0.0-ab379b2-jedi1",
 }
 
 OPTIPATCHER_ASSET = {
@@ -1471,7 +1471,8 @@ class _OptiScalerMixin:
         selected_variant = self._selected_fsr4_variant(path)
         return {
             "exists": True,
-            "version": self._fgmod_version(path),
+            # What Patch All puts in a game. ~/fgmod's own version is only the base archive's.
+            "version": OPTISCALER_HLX_ASSET["version"],
             "selected_fsr4_variant": selected_variant,
             "selected_fsr4_variant_label": FSR4_VARIANTS[selected_variant]["label"],
             "install_manifest_present": bool(manifest),
@@ -3819,7 +3820,7 @@ class _HelixSRMixin:
             raise
 
     def _apply_combined_upscalers(self, directory: Path, fgmod_path: Path, injector: Path) -> str:
-        """COMBINED_VARIANT: OptiScaler 10 (de2626f + driver DLLs as custom upscalers) lists custom/<name>/ffx and
+        """COMBINED_VARIANT: OptiScaler 10 (ab379b2 + driver DLLs as custom upscalers) lists custom/<name>/ffx and
         custom/<name>/dlss next to its own FSR 4 (the Lite runtime the patch put in): 4.0.2c's upscaler as "FSR 4.0.2c",
         Valve's 4.1.1 driver DLL as "FSR 4.1.1" and, when HelixSR 3.x is installed, HLX DLSS. FSR 4 stays the selected
         upscaler."""

@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.1.34
+
+### Added
+- **Plugin Update** lists the new release's changes above the update button. It shows from the next update on, since the installed version is the one that draws it.
+
+### Changed
+- OptiScaler 10 injector from `de2626f` to `ab379b2`, the newest nightly's commit, with the same patch. FSR 4 (4.1.2 Lite), FSR 4.0.2c, FSR 4.1.1, HLX DLSS and XeSS stay in its menu, and the FSR, XeSS and frame generation files are unchanged. Games get it on their next **Patch All**.
+
+### Fixed
+- **Framegen Management** showed `0.9.4`, the base package in `~/fgmod`. It now shows the OptiScaler build patched games run.
+- OptiScaler `760ae41`: crash when a custom upscaler has the name of an FFX SDK DLL, as **FSR 4.0.2c** does.
+
 ## 1.1.33
 
 ### Added

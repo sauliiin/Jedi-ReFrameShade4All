@@ -1767,6 +1767,11 @@ const installPluginUpdate = callable("install_plugin_update");
 // release over the plugin and Decky reloads it. (Decky's own install prompt didn't show from the Quick Access menu.)
 // Survives the reload after an update, so the reloaded panel can say it worked.
 const PLUGIN_UPDATED_KEY = "jedi-reframeshade4all-updated-to";
+// The bullets of a release's notes, without their markdown.
+const releaseNotePoints = (notes) => String(notes || "")
+    .split(/\r?\n/)
+    .filter((line) => /^\s*[-*]\s+/.test(line))
+    .map((line) => line.replace(/^\s*[-*]\s+/, "").replace(/\*\*|`/g, ""));
 function PluginUpdateSection({ advanced }) {
     const [info, setInfo] = SP_REACT.useState(null);
     const [checking, setChecking] = SP_REACT.useState(false);
@@ -1838,9 +1843,12 @@ function PluginUpdateSection({ advanced }) {
                 ? `v${info.installed_version} installed — v${info.latest_version} available`
                 : `v${info.installed_version || "?"} installed (latest)`;
     const size = info?.size ? ` (${Math.round(info.size / 1048576)} MB)` : "";
+    const notePoints = info?.update_available ? releaseNotePoints(info.notes) : [];
     return (window.SP_REACT.createElement(DFL.PanelSection, { title: "Plugin Update" },
         window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", color: info?.update_available ? COLORS.warn : undefined } }, statusLine)),
+        notePoints.length > 0 && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+            window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", color: COLORS.muted, wordBreak: "break-word" } }, notePoints.map((point, i) => (window.SP_REACT.createElement("div", { key: i, style: { marginTop: i ? "4px" : 0 } }, `• ${point}`)))))),
         info?.update_available && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleUpdate, disabled: updating }, updating ? "Updating…" : `Update to v${info.latest_version}${size}`))),
         advanced && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
