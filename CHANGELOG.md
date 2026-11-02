@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.33
+
+### Added
+- A small DOS-style box right below **Proton FSR4 → 4.1.2 Lite** shows each step and the download's progress while the toggle runs, and only then.
+
+### Changed
+- The panel's hints, such as the in-game HOME and INSERT one, use the same color as **On**.
+- **Remove OptiScaler Mod** is now **Uninstall OptiScaler**.
+- The **Proton FSR4 → 4.1.2 Lite** description says it downloads the latest Proton-CachyOS and injects FSR 4.1.2 Lite into it. Its game requirements (native FSR 3.1, DX12) stay in the README.
+
 ## 1.1.32
 
 ### Fixed

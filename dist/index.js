@@ -255,7 +255,7 @@ function UninstallButton({ pathExists, uninstalling, onUninstallClick }) {
         return null;
     return (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
         window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: onUninstallClick, disabled: uninstalling },
-            window.SP_REACT.createElement("div", { style: { color: COLORS.error } }, uninstalling ? "Removing…" : "Remove OptiScaler Mod"))));
+            window.SP_REACT.createElement("div", { style: { color: COLORS.error } }, uninstalling ? "Uninstalling…" : "Uninstall OptiScaler"))));
 }
 
 function OptiScalerControls({ pathExists, onEnginesChanged, fgmodInfo, fsr4Variant = DEFAULT_FSR4_VARIANT, appid = "", }) {
@@ -342,7 +342,7 @@ function OptiScalerControls({ pathExists, onEnginesChanged, fgmodInfo, fsr4Varia
             setUninstalling(true);
             const r = await runUninstallFGMod();
             if (r.status === "success") {
-                say.done("OptiScaler removed.");
+                say.done("OptiScaler uninstalled.");
                 onEnginesChanged?.();
             }
             else {
@@ -377,7 +377,7 @@ function OptiScalerControls({ pathExists, onEnginesChanged, fgmodInfo, fsr4Varia
                     window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleApplyOnlyOpti, disabled: applying || removingOnly }, applying ? "Applying…" : "Apply only OptiScaler")),
                 window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                     window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleRemoveOnlyOpti, disabled: applying || removingOnly }, removingOnly ? "Removing…" : "Remove only OptiScaler")))) : (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", opacity: 0.7 } }, "Pick a game above to apply or remove it."))))),
+                window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", color: COLORS.ok } }, "Pick a game above to apply or remove it."))))),
         window.SP_REACT.createElement(NoticeRow, { notice: notice }),
         window.SP_REACT.createElement(UninstallButton, { pathExists: pathExists, uninstalling: uninstalling, onUninstallClick: handleUninstallClick })));
 }
@@ -389,7 +389,7 @@ const unpatchAllGame = callable("unpatch_all_game");
 const getCachyosFsr4Status = callable("get_cachyos_fsr4_status");
 const prepareCachyosFsr4Lite = callable("prepare_cachyos_fsr4_lite");
 const installProtonLite = callable("install_proton_lite");
-const getProtonLiteUpdateStatus = callable("get_proton_lite_update_status");
+const getProtonLiteProgress = callable("get_proton_lite_progress");
 // Every Lite Proton copy's internal name ends with this (up to 1.1.23 it also carried the release).
 const LITE_TOOL_SUFFIX = "-jedi-fsr4lite";
 const rememberCompatTool = callable("remember_compat_tool");
@@ -739,11 +739,24 @@ function HelixSRPanel() {
         building && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleCancel }, "Cancel HelixSR build"))),
         window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement("div", { style: { fontSize: "0.8em", opacity: 0.6 } }, "After installing or updating, press Patch All.")),
+            window.SP_REACT.createElement("div", { style: { fontSize: "0.8em", color: COLORS.ok } }, "After installing or updating, press Patch All.")),
         window.SP_REACT.createElement(NoticeRow, { notice: notice })));
 }
 function gameOptionLabel(game) {
     return game.non_steam ? `${game.name} · non-Steam` : game.name;
+}
+// The Lite toggle's steps, DOS style. It only shows while they run: the result box says how they ended.
+function LiteProgressBox({ progress }) {
+    const lines = (progress?.lines || []).map((line) => `C:\\> ${line}`);
+    if (progress?.total) {
+        const percent = Math.min(100, Math.floor((progress.bytes / progress.total) * 100));
+        const filled = Math.floor(percent / 10);
+        const mb = (bytes) => ((bytes || 0) / 1048576).toFixed(0);
+        lines.push(`[${"#".repeat(filled)}${".".repeat(10 - filled)}] ${percent}% ${mb(progress.bytes)}/${mb(progress.total)} MB`);
+    }
+    lines.push("_");
+    return (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+        window.SP_REACT.createElement("div", { style: { display: "flex", flexDirection: "column", justifyContent: "flex-end", boxSizing: "border-box", height: "calc(7.8em + 18px)", overflow: "hidden", padding: "8px", backgroundColor: "#000", color: "#c0c0c0", border: "1px solid #c0c0c0", fontFamily: "'Courier New', 'DejaVu Sans Mono', monospace", fontSize: "0.75em", lineHeight: "1.3", whiteSpace: "pre-wrap", wordBreak: "break-word" } }, lines.map((line, i) => (window.SP_REACT.createElement("div", { key: i, style: { flexShrink: 0 } }, line))))));
 }
 function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, addon, advanced, onEnginesChanged, }) {
     const [games, setGames] = SP_REACT.useState([]);
@@ -754,6 +767,28 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, addon, advance
     const [fsr4Upgrade, setFsr4Upgrade] = SP_REACT.useState(false);
     const [fsr4Indicator, setFsr4Indicator] = SP_REACT.useState(false);
     const [fsr4LitePath, setFsr4LitePath] = SP_REACT.useState("");
+    const [liteRunning, setLiteRunning] = SP_REACT.useState(false);
+    const [liteProgress, setLiteProgress] = SP_REACT.useState(null);
+    const liteBoxVisible = liteRunning || Boolean(liteProgress?.active);
+    const refreshLiteProgress = async () => {
+        try {
+            setLiteProgress(await getProtonLiteProgress());
+        }
+        catch (e) {
+            await logError(`SteamGameCombinedSection -> lite progress: ${String(e)}`);
+        }
+    };
+    // The first read finds an install still running when the panel comes back.
+    SP_REACT.useEffect(() => {
+        void refreshLiteProgress();
+    }, []);
+    SP_REACT.useEffect(() => {
+        if (!liteBoxVisible)
+            return () => { };
+        void refreshLiteProgress();
+        const id = setInterval(() => void refreshLiteProgress(), 1000);
+        return () => clearInterval(id);
+    }, [liteBoxVisible]);
     const [lsfg, setLsfg] = SP_REACT.useState(null);
     const [lsfgFps, setLsfgFps] = SP_REACT.useState(LSFG_FPS_MIN);
     const lsfgSaveTimer = SP_REACT.useRef(null);
@@ -878,6 +913,8 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, addon, advance
                 }
                 return;
             }
+            setLiteRunning(true);
+            say.clear();
             const r = await prepareCachyosFsr4Lite();
             if (r.status !== "success" || !r.path) {
                 say.fail(r.message || "Could not prepare the FSR 4.1.2 Lite DLL.");
@@ -885,10 +922,6 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, addon, advance
             }
             // Always checks Proton-CachyOS's newest release: a newer one replaces the Lite copy (same name, so
             // games keep it); otherwise the copy already there is reused.
-            say.progress("Checking Proton-CachyOS…");
-            const upd = await getProtonLiteUpdateStatus().catch(() => null);
-            if (upd?.status === "success" && upd.update_available)
-                say.progress(upd.installed ? `Updating the Lite Proton to ${upd.latest} (~330 MB)…` : "Installing the Lite Proton (~330 MB)…");
             const inst = await installProtonLite();
             if (inst.status !== "success") {
                 say.fail(inst.message || "Could not install the Lite Proton.");
@@ -911,6 +944,9 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, addon, advance
             await logError(`SteamGameCombinedSection -> fsr4Lite: ${String(e)}`);
         }
         finally {
+            if (enabled)
+                await refreshLiteProgress();
+            setLiteRunning(false);
             setBusy(false);
         }
     };
@@ -1054,7 +1090,8 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, addon, advance
                 window.SP_REACT.createElement(DFL.ToggleField, { label: "Proton-CachyOS FSR4", description: `Turns on FSR4${cachyos?.tool_label ? ` (${cachyos.tool_label})` : ""}.`, checked: fsr4Upgrade, disabled: busy, onChange: (v) => void handleLaunchEnvToggle(FSR4_UPGRADE_ENV, v, setFsr4Upgrade) }))),
             // Lite brings its own Proton, so it shows for every game.
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.ToggleField, { label: "Proton FSR4 → 4.1.2 Lite", description: "FSR 4.1.2 Lite via its own Proton-CachyOS. FSR 3.1, DX12 games.", checked: !!fsr4LitePath, disabled: busy || !cachyos, onChange: (v) => void handleFsr4LiteToggle(v) })),
+                window.SP_REACT.createElement(DFL.ToggleField, { label: "Proton FSR4 → 4.1.2 Lite", description: "Downloads latest Proton-CachyOS and injects FSR 4.1.2 Lite into it.", checked: !!fsr4LitePath, disabled: busy || !cachyos, onChange: (v) => void handleFsr4LiteToggle(v) })),
+            liteBoxVisible && window.SP_REACT.createElement(LiteProgressBox, { progress: liteProgress }),
             // The patched Proton is installed but Steam doesn't list it yet: it needs a restart.
             fsr4LitePath && cachyos && !cachyos.takes_dll_path && cachyos.lite_tool_name && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement("div", { style: { fontSize: "0.82em", color: COLORS.warn } }, "Restart Steam to finish."))),
@@ -1071,7 +1108,7 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, addon, advance
                     window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleRemoveAll, disabled: busy }, "Remove All"))))),
         window.SP_REACT.createElement(NoticeRow, { notice: notice }),
         window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement("div", { style: { fontSize: "0.8em", opacity: 0.6 } }, "In-game: press HOME for the ReShade overlay or INSERT for OptiScaler."))));
+            window.SP_REACT.createElement("div", { style: { fontSize: "0.8em", color: COLORS.ok } }, "In-game: press HOME for the ReShade overlay or INSERT for OptiScaler."))));
 }
 
 // src/ShaderSelectionModal.tsx
@@ -1715,7 +1752,7 @@ function ReShadeInstallerSection({ appid, addon, setAddon, engineCheck, onEngine
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleRemoveOnlyReShade, disabled: applyingToSteamGame || removingFromGame || !appid }, removingFromGame ? "Removing…" : "Remove only ReShade")))),
         pathExists === true && !appid && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", opacity: 0.7 } }, "Pick a game above to apply or remove it."))),
+            window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", color: COLORS.ok } }, "Pick a game above to apply or remove it."))),
         shouldShowInstallButton && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleInstallClick, disabled: installing }, getInstallButtonText()))),
         pathExists === true && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,

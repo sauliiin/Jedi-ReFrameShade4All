@@ -4530,6 +4530,7 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin, _LsfgMixin):
     @_worker
     async def prepare_cachyos_fsr4_lite(self) -> dict:
         """Copy the FSR 4.1.2 Lite amdxcffx64.dll to ~/fgmod-proton-fsr4 for PROTON_FSR4_UPGRADE=<path>."""
+        self._lite_progress = {"active": True, "lines": ["Preparing FSR 4.1.2 Lite..."], "path": None, "total": None}
         try:
             name = FSR4_LITE_412_ASSET["name"]
             src = self._ensure_runtime_binaries([name]) / name
@@ -4546,6 +4547,8 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin, _LsfgMixin):
         except Exception as exc:
             decky.logger.error(f"[JediReFrameShade] prepare_cachyos_fsr4_lite failed: {exc}")
             return {"status": "error", "message": str(exc)}
+        finally:
+            self._lite_progress["active"] = False
 
     def _proton_cachyos_latest_release(self) -> dict:
         """Newest published Proton-CachyOS release with an x86_64 tarball and its .sha512sum."""
@@ -4607,24 +4610,26 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin, _LsfgMixin):
                 continue
         return False
 
-    def _proton_lite_update_status(self) -> dict:
-        installed = self._proton_lite_installs()
-        current = installed[-1] if installed and self._proton_takes_dll_path(installed[-1]) else None
-        release = self._proton_cachyos_latest_release()
-        installed_base = self._proton_lite_release(current) if current else ""
-        return {
-            "status": "success",
-            "installed": installed_base or None,
-            "latest": release["base"],
-            "update_available": not current or installed_base != release["base"],
-        }
+    # What the Lite toggle's box in the panel shows: the steps so far and the file being downloaded.
+    _lite_progress = {"active": False, "lines": [], "path": None, "total": None}
 
-    async def get_proton_lite_update_status(self) -> dict:
+    def _lite_log(self, line: str) -> None:
+        self._lite_progress["lines"].append(line)
+
+    async def get_proton_lite_progress(self) -> dict:
+        progress = self._lite_progress
+        done = 0
         try:
-            return await asyncio.to_thread(self._proton_lite_update_status)
-        except Exception as exc:
-            decky.logger.warning(f"[ProtonLite] update check failed: {exc}")
-            return {"status": "error", "message": str(exc)}
+            if progress["path"]:
+                done = os.path.getsize(progress["path"])
+        except OSError:
+            pass
+        return {
+            "active": progress["active"],
+            "lines": list(progress["lines"]),
+            "bytes": done,
+            "total": progress["total"] if progress["path"] else None,
+        }
 
     def _install_proton_lite(self) -> dict:
         """Installs the newest Proton-CachyOS as the Lite Proton, or updates the copy when a newer release is out."""
@@ -4636,6 +4641,7 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin, _LsfgMixin):
             return {"status": "success", "tool_name": name, "tool_label": self._compat_tool_label(name) or name,
                     "patch": "existing", "updated": False, "message": reason}
 
+        self._lite_log("Checking Proton-CachyOS...")
         try:
             release = self._proton_cachyos_latest_release()
         except Exception as exc:
@@ -4643,7 +4649,9 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin, _LsfgMixin):
                 decky.logger.warning(f"[ProtonLite] update check failed, keeping {current.name}: {exc}")
                 return keep_current("")
             raise
+        self._lite_log(f"Latest: {release['base'].replace('proton-cachyos-', '').replace('-x86_64', '')}")
         if current and self._proton_lite_release(current) == release["base"]:
+            self._lite_log("Already up to date")
             return keep_current("")
         if current and self._proton_lite_in_use(current):
             return keep_current("Lite Proton update skipped: close the game first.")
@@ -4669,9 +4677,15 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin, _LsfgMixin):
         try:
             tarball = staging / f"{release['base']}.tar.xz"
             decky.logger.info(f"[ProtonLite] downloading {release['tag']} from {release['url']}")
-            self._download_file(release["url"], tarball)
+            self._lite_log("Downloading Proton-CachyOS...")
+            self._lite_progress.update(path=str(tarball), total=release.get("size"))   # the box reads its size
+            try:
+                self._download_file(release["url"], tarball)
+            finally:
+                self._lite_progress.update(path=None, total=None)
             if release.get("size") and tarball.stat().st_size != int(release["size"]):
                 raise RuntimeError("Proton-CachyOS download incomplete. Try again.")
+            self._lite_log("Verifying SHA512...")
             sums = staging / "sha512sum"
             self._download_file(release["sha512_url"], sums)
             expected = sums.read_text(errors="replace").split()[0].lower()
@@ -4681,6 +4695,7 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin, _LsfgMixin):
                     digest.update(chunk)
             if digest.hexdigest() != expected:
                 raise RuntimeError("The Proton-CachyOS download doesn't match its SHA512 checksum, so it wasn't used. Try again.")
+            self._lite_log("Extracting...")
             try:
                 result = subprocess.run(
                     ["tar", "-xJf", str(tarball), "-C", str(staging), "--no-same-owner"],
@@ -4695,6 +4710,7 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin, _LsfgMixin):
             vdf = tool_dir / "compatibilitytool.vdf"
             if not vdf.is_file():
                 raise RuntimeError("compatibilitytool.vdf not found in the Proton-CachyOS tarball.")
+            self._lite_log("Injecting FSR 4.1.2 Lite...")
             patch = self._patch_proton_upscalers(tool_dir)
             # Its own internal name and label, so it sits next to the stock Proton-CachyOS in Steam.
             label = release["base"].replace("proton-cachyos-", "Proton-CachyOS ") + " (FSR4 Lite)"
@@ -4705,6 +4721,7 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin, _LsfgMixin):
                 raise RuntimeError("Unexpected compatibilitytool.vdf in the Proton-CachyOS tarball.")
             vdf.write_text(text, encoding="utf-8")
             self._write_json_file(tool_dir / PROTON_LITE_RELEASE_FILE, {"tag": release["tag"], "base": release["base"]})
+            self._lite_log("Installing in Steam...")
             # The previous copy goes (the same name in place, or the old per-release name), so Steam lists one.
             # It's moved aside first, so a failed swap puts it back instead of leaving half of it.
             olds = self._proton_lite_installs()
@@ -4730,11 +4747,14 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin, _LsfgMixin):
                 "updated": current is not None, "previous_tool_name": current.name if current else None}
 
     async def install_proton_lite(self) -> dict:
+        self._lite_progress["active"] = True
         try:
             return await asyncio.to_thread(self._install_proton_lite)
         except Exception as exc:
             decky.logger.error(f"[ProtonLite] install failed: {exc}")
             return {"status": "error", "message": str(exc)}
+        finally:
+            self._lite_progress = {"active": False, "lines": [], "path": None, "total": None}
 
     def _proton_lite_previous_file(self) -> Path:
         return Path(decky.HOME) / PROTON_FSR4_LITE_DIRNAME / "previous_compat_tools.json"
