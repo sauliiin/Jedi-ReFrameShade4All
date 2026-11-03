@@ -80,7 +80,7 @@ At runtime both mods hook the DXGI swap‑chain — ReShade for post‑processin
 - Same files as the standalone Jedi LSFG-VK plugin, so games turned on there show as on here. Uninstalling the standalone plugin from Decky removes those profiles: turn the toggle on again afterwards. Flatpak apps aren't supported here.
 
 **Frame Generation / OptiScaler** (FRAMEGEN MANAGEMENT)
-- Install, reinstall and uninstall, showing the installed version.
+- Bundled with the plugin, so there's nothing to install or uninstall: a patch unpacks it to `~/fgmod` when it's missing, incomplete or changed by a plugin update, and uninstalling the plugin removes that folder. Patched games keep their own copies.
 - **One upscaler setup for every game**, picked in OptiScaler's menu (Insert): Patch All gives the game an OptiScaler 10 injector built from master `ab379b2` plus [a small patch](https://github.com/sauliiin/Jedi-ReFrameShade4All/releases/tag/optiscaler-10-ab379b2-jedi1) that also takes AMD driver DLLs, which loads custom upscalers from `custom/<name>/ffx` and `custom/<name>/dlss` next to `OptiScaler.ini`. The menu then lists:
   - **FSR 4** — FSR 4.1.2 from AMD's unmodified, signed `amdxcffx64.dll` / `amdvkffx64.dll` 2.4.0.4370 (Adrenalin 26.10.1) with the 4.1.1 SDK upscaler. It starts on the INT8 Lite model made for APUs (`FSR.Fsr4GpuSupport=4`, `FSR.Fsr4Model=3`); that DLL also has the full INT8 and the RDNA2 INT8 models, which OptiScaler's **FSR4 Model** combo switches to in the game. It is the selected upscaler after patching (`Upscalers.Dx12Upscaler=ffx`, `FSR.UpscalerIndex=0`).
   - **FSR 4.0.2c** — the bundled INT8 4.0.2c upscaler, in `custom/FSR 4.0.2c/ffx/`.
@@ -96,7 +96,7 @@ At runtime both mods hook the DXGI swap‑chain — ReShade for post‑processin
 
 **ReShade**
 - ReShade **with add‑on support** (toggle) and optional **AutoHDR** (OLED‑oriented).
-- Downloads ReShade from reshade.me with an **installed vs. latest** version widget.
+- Downloads ReShade from reshade.me with an **installed vs. latest** version widget. Patched games link to it, so `~/.local/share/reshade` stays when the plugin is uninstalled: delete it by hand if you no longer want it.
 - Shader pack selection (AstrayFX, MartyMcFly, prod80, SweetFX, RetroArch…).
 - Per‑game patch/unpatch, with the API auto‑detected.
 
@@ -125,7 +125,7 @@ See [Building](#building) below, then zip the folder (with `bin/` + `dist/`) and
 2. In‑game: press **HOME** for the ReShade overlay.
 
 **Advanced controls** (toggle near the top) expose the original per‑engine UIs when you need them:
-- OptiScaler: install/uninstall, proxy DLL, **Apply only OptiScaler** / **Remove only OptiScaler**.
+- OptiScaler: proxy DLL, **Apply only OptiScaler** / **Remove only OptiScaler**.
 - ReShade: add‑ons (on by default) and AutoHDR toggles, shader pack selection, **Apply only ReShade** / **Remove only ReShade**.
 - Coexistence / DLL slots: inspect what's active and override the Frame Generation slot per game.
 
@@ -165,7 +165,7 @@ Jedi-ReFrameShade4All/
 └─ dist/index.js            # the frontend, edited directly (no build step)
 ```
 
-The panel is two parallel sections under an **Advanced controls** toggle — **FRAMEGEN MANAGEMENT** and **RESHADE MANAGEMENT** — each showing install state, version, and *up to date / update available* with an Install/Update button.
+The panel is two parallel sections under an **Advanced controls** toggle — **FRAMEGEN MANAGEMENT**, showing the bundled OptiScaler's version, and **RESHADE MANAGEMENT**, showing install state, version, and *up to date / update available* with an Install/Update button.
 
 **Back‑end architecture:** the two original `main.py` files are combined into one Decky‑safe `Plugin` class using mixins (`_OptiScalerMixin`, `_ReShadeMixin`). Method‑name collisions (`_main`, `_unload`, `list_installed_games`, `log_error`) are resolved in the final `Plugin`, which also adds the one‑button flow (`patch_all_game` / `unpatch_all_game`) and the coexistence layer (`patch_game` slot override, `get_combined_game_status`). `patch_all_game` applies Frame Generation (winmm) **before** ReShade (dxgi) so OptiScaler's proxy cleanup can't displace ReShade's DLL.
 

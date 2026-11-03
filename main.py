@@ -1393,36 +1393,15 @@ class _OptiScalerMixin:
             if staging_path is not None and staging_path.exists():
                 shutil.rmtree(staging_path, ignore_errors=True)
 
-    @_worker
-    async def run_uninstall_fgmod(self) -> dict:
-        try:
-            # Remove fgmod directory
-            fgmod_path = Path(decky.HOME) / "fgmod"
-            # half-done installs/updates leave staging and backup copies of the bundle next to it
-            for leftover in fgmod_path.parent.glob(".fgmod-*"):
-                if leftover.is_dir() and leftover.name.startswith((".fgmod-staging-", ".fgmod-backup-")):
-                    shutil.rmtree(leftover, ignore_errors=True)
-
-            if fgmod_path.exists():
-                shutil.rmtree(fgmod_path)
-                decky.logger.info(f"Removed directory: {fgmod_path}")
-                return {
-                    "status": "success", 
-                    "output": "Successfully removed fgmod directory"
-                }
-            else:
-                return {
-                    "status": "success", 
-                    "output": "No fgmod directory found to remove"
-                }
-            
-        except Exception as e:
-            decky.logger.error(f"Uninstall error: {str(e)}")
-            return {
-                "status": "error", 
-                "message": f"Uninstall failed: {str(e)}", 
-                "output": str(e)
-            }
+    def _remove_fgmod(self) -> None:
+        """The unpacked bundle and what half-done installs left next to it. Patched games have their own copies."""
+        fgmod_path = Path(decky.HOME) / "fgmod"
+        for leftover in fgmod_path.parent.glob(".fgmod-*"):
+            if leftover.is_dir() and leftover.name.startswith((".fgmod-staging-", ".fgmod-backup-")):
+                shutil.rmtree(leftover, ignore_errors=True)
+        if fgmod_path.exists():
+            shutil.rmtree(fgmod_path)
+            decky.logger.info(f"Removed directory: {fgmod_path}")
 
     @_worker
     async def run_install_fgmod(self, selected_default_variant: str = DEFAULT_FSR4_VARIANT) -> dict:
@@ -1458,25 +1437,57 @@ class _OptiScalerMixin:
                 "message": f"Installation failed: {str(e)}"
             }
 
+    def _fgmod_is_current(self, path: Path) -> bool:
+        """~/fgmod is a copy of the plugin's bundle: a plugin update that changes the bundle leaves it stale."""
+
+        def files(variant: dict) -> tuple:
+            return (
+                variant.get("sha256"),
+                (variant.get("injector") or {}).get("sha256"),
+                sorted((extra.get("name"), extra.get("sha256")) for extra in variant.get("extra_files") or []),
+            )
+
+        manifest = self._load_install_manifest(path)
+        return (
+            (manifest.get("optiscaler") or {}).get("sha256") == OPTISCALER_ARCHIVE_ASSET["sha256"]
+            and (manifest.get("optipatcher") or {}).get("sha256") == OPTIPATCHER_ASSET["sha256"]
+            and {name: files(variant) for name, variant in (manifest.get("fsr4_variants") or {}).items()}
+            == {name: files(variant) for name, variant in FSR4_VARIANTS.items()}
+        )
+
     async def check_fgmod_path(self) -> dict:
         path = Path(decky.HOME) / "fgmod"
+        # What Patch All puts in a game. ~/fgmod's own version is only the base archive's.
+        version = OPTISCALER_HLX_ASSET["version"]
         if not path.exists():
-            return {"exists": False}
+            return {"exists": False, "version": version}
 
         missing_files = self._missing_fgmod_files(path)
         if missing_files:
-            return {"exists": False, "missing_files": missing_files}
+            return {"exists": False, "version": version, "missing_files": missing_files}
+
+        if not self._fgmod_is_current(path):
+            return {"exists": False, "version": version, "stale": True}
 
         manifest = self._load_install_manifest(path)
         selected_variant = self._selected_fsr4_variant(path)
         return {
             "exists": True,
-            # What Patch All puts in a game. ~/fgmod's own version is only the base archive's.
-            "version": OPTISCALER_HLX_ASSET["version"],
+            "version": version,
             "selected_fsr4_variant": selected_variant,
             "selected_fsr4_variant_label": FSR4_VARIANTS[selected_variant]["label"],
             "install_manifest_present": bool(manifest),
         }
+
+    async def _ensure_fgmod(self, fsr4_variant: str = DEFAULT_FSR4_VARIANT) -> str | None:
+        """Unpacks the bundle when ~/fgmod is missing, incomplete or stale. Returns the error, if any."""
+        fg = await self.check_fgmod_path()
+        if fg.get("exists"):
+            return None
+        result = await self.run_install_fgmod(fsr4_variant)
+        if result.get("status") != "success":
+            return f"OptiScaler install failed: {result.get('message') or result.get('output')}"
+        return None
 
     def _manual_patch_directory_impl(
         self,
@@ -1489,14 +1500,14 @@ class _OptiScalerMixin:
         if not fgmod_path.exists():
             return {
                 "status": "error",
-                "message": "OptiScaler bundle not installed. Run Install first.",
+                "message": "OptiScaler bundle missing. Patch again.",
             }
 
         optiscaler_dll = fgmod_path / "OptiScaler.dll"
         if not optiscaler_dll.exists():
             return {
                 "status": "error",
-                "message": "OptiScaler.dll not found in ~/fgmod. Reinstall OptiScaler.",
+                "message": "OptiScaler.dll not found in ~/fgmod. Patch again.",
             }
 
         preserve_ini = True
@@ -1517,7 +1528,7 @@ class _OptiScalerMixin:
         if not selected_upscaler_src.exists():
             return {
                 "status": "error",
-                "message": f"FSR4 upscaler variant not found for {selected_variant}. Reinstall OptiScaler.",
+                "message": f"FSR4 upscaler variant not found for {selected_variant}. Patch again.",
             }
         selected_extra_files = self._fsr4_variant_extra_files(selected_variant)
         optiscaler_version = self._fgmod_version(fgmod_path)
@@ -2226,7 +2237,7 @@ class _OptiScalerMixin:
                 "message": (
                     f"Patched using {dll_name}" + (f" with {effective_label}." if effective_label else ".")
                     if dll_present
-                    else f"Marker found but {dll_name} is missing. Reinstall recommended."
+                    else f"Marker found but {dll_name} is missing. Patch again."
                 ),
             }
         except Exception as exc:
@@ -2252,9 +2263,9 @@ class _OptiScalerMixin:
                 return {"status": "error", "message": "Game install directory does not exist."}
             if self._is_game_running(game_info):
                 return {"status": "error", "message": "Close the game before patching."}
-            fgmod_path = Path(decky.HOME) / "fgmod"
-            if not fgmod_path.exists():
-                return {"status": "error", "message": "OptiScaler bundle not installed. Run Install first."}
+            error = await self._ensure_fgmod(fsr4_variant)
+            if error:
+                return {"status": "error", "message": error}
 
             # Preserve true original launch options across re-patches
             original_launch_options = current_launch_options or ""
@@ -3038,50 +3049,6 @@ class _ReShadeMixin:
             return {"status": "success", "output": f"{version_display} installed successfully!"}
         except Exception as e:
             decky.logger.error(f"Install error: {str(e)}")
-            return {"status": "error", "message": str(e)}
-
-    @_worker
-    async def run_uninstall_reshade(self) -> dict:
-        try:
-            assets_dir = self._get_assets_dir()
-            script_path = assets_dir / "reshade-uninstall.sh"
-            
-            if not script_path.exists():
-                return {"status": "error", "message": "Uninstall script not found"}
-
-            # Create environment with required LD_LIBRARY_PATH fix for Decky v3.1.10+
-            clean_env = {**os.environ, **self.environment}
-            clean_env["LD_LIBRARY_PATH"] = ""
-            
-            try:
-                process = subprocess.run(
-                    ["/bin/bash", str(script_path)],
-                    cwd=str(assets_dir),
-                    env=clean_env,
-                    capture_output=True,
-                    text=True,
-                    timeout=GAME_SCRIPT_TIMEOUT
-                )
-            except subprocess.TimeoutExpired:
-                return {"status": "error", "message": "The ReShade uninstall timed out."}
-
-            if process.returncode != 0:
-                return {"status": "error", "message": process.stderr}
-
-            # Remove installation markers
-            marker_file = Path(self.main_path) / ".installed"
-            addon_marker = Path(self.main_path) / ".installed_addon"
-            if marker_file.exists():
-                marker_file.unlink()
-            if addon_marker.exists():
-                addon_marker.unlink()
-
-            # Clear installed configuration
-            await self.clear_installed_configuration()
-                
-            return {"status": "success", "output": "ReShade uninstalled"}
-        except Exception as e:
-            decky.logger.error(str(e))
             return {"status": "error", "message": str(e)}
 
     def _resolve_steam_reshade_target(self, appid: str) -> tuple[str, str]:
@@ -4350,6 +4317,10 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin, _LsfgMixin):
 
     async def _uninstall(self):
         try:
+            self._remove_fgmod()
+        except Exception as exc:
+            decky.logger.error(f"[JediReFrameShade] bundle cleanup failed: {exc}")
+        try:
             self._lsfg_on_uninstall()
         except Exception as exc:
             decky.logger.error(f"[LSFG] uninstall cleanup failed: {exc}")
@@ -5031,11 +5002,9 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin, _LsfgMixin):
                     return {"status": "error", "message": str(exc)}
 
             # 1) ensure OptiScaler engine
-            fg = await self.check_fgmod_path()
-            if not fg.get("exists"):
-                r = await self.run_install_fgmod(fsr4_variant)
-                if r.get("status") != "success":
-                    return {"status": "error", "message": f"OptiScaler install failed: {r.get('message') or r.get('output')}"}
+            error = await self._ensure_fgmod(fsr4_variant)
+            if error:
+                return {"status": "error", "message": error}
 
             # 2) ensure ReShade engine
             try:

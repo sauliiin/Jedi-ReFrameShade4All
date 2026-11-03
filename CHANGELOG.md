@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.35
+
+### Removed
+- **Install / Reinstall OptiScaler** and **Uninstall OptiScaler**: OptiScaler is bundled with the plugin. **Framegen Management** now shows the bundled version, and its proxy DLL and **Apply only** / **Remove only** controls are always there.
+- **Uninstall ReShade**. **Install ReShade** and **Update ReShade** stay, since ReShade is downloaded rather than bundled.
+
+### Changed
+- A patch unpacks OptiScaler to `~/fgmod` by itself when that folder is missing, incomplete or changed by a plugin update.
+- Uninstalling the plugin removes `~/fgmod`. Patched games keep their own copies. `~/.local/share/reshade` stays, because patched games link to it.
+
 ## 1.1.34
 
 ### Added

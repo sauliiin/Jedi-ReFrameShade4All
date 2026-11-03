@@ -92,8 +92,6 @@ function MdOutlineAutoAwesomeMotion (props) {
   return GenIcon({"tag":"svg","attr":{"viewBox":"0 0 24 24"},"child":[{"tag":"path","attr":{"fill":"none","d":"M0 0h24v24H0z"},"child":[]},{"tag":"path","attr":{"d":"M14 2H4c-1.1 0-2 .9-2 2v10h2V4h10V2zm4 4H8c-1.1 0-2 .9-2 2v10h2V8h10V6zm2 4h-8c-1.1 0-2 .9-2 2v8c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2v-8c0-1.1-.9-2-2-2zm0 10h-8v-8h8v8z"},"child":[]}]})(props);
 }
 
-const runInstallFGMod = callable("run_install_fgmod");
-const runUninstallFGMod = callable("run_uninstall_fgmod");
 const checkFGModPath = callable("check_fgmod_path");
 const logError = callable("log_error");
 const patchGame = callable("patch_game");
@@ -250,42 +248,11 @@ const DEFAULT_PROXY_DLL = "dxgi.dll";
 // 4.0.2c, 4.1.1, 4.1.2 Lite and HLX DLSS in one game, picked in OptiScaler's menu.
 const DEFAULT_FSR4_VARIANT = "deck-all";
 
-function UninstallButton({ pathExists, uninstalling, onUninstallClick }) {
-    if (pathExists !== true)
-        return null;
-    return (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-        window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: onUninstallClick, disabled: uninstalling },
-            window.SP_REACT.createElement("div", { style: { color: COLORS.error } }, uninstalling ? "Uninstalling…" : "Uninstall OptiScaler"))));
-}
-
-function OptiScalerControls({ pathExists, onEnginesChanged, fgmodInfo, fsr4Variant = DEFAULT_FSR4_VARIANT, appid = "", }) {
-    const [installing, setInstalling] = SP_REACT.useState(false);
-    const [uninstalling, setUninstalling] = SP_REACT.useState(false);
+function OptiScalerControls({ fgmodInfo, fsr4Variant = DEFAULT_FSR4_VARIANT, appid = "", }) {
     const [applying, setApplying] = SP_REACT.useState(false);
     const [removingOnly, setRemovingOnly] = SP_REACT.useState(false);
     const [notice, say] = useNotice();
     const [dllName, setDllName] = SP_REACT.useState(DEFAULT_PROXY_DLL);
-    const handleInstall = async () => {
-        try {
-            setInstalling(true);
-            say.progress("Installing OptiScaler…");
-            const r = await runInstallFGMod(fsr4Variant);
-            if (r.status === "success") {
-                say.done("OptiScaler installed.");
-                onEnginesChanged?.();
-            }
-            else {
-                say.fail(r.message || "Failed");
-            }
-        }
-        catch (e) {
-            say.fail(String(e));
-            await logError(`OptiScalerControls: ${String(e)}`);
-        }
-        finally {
-            setInstalling(false);
-        }
-    };
     const handleApplyOnlyOpti = async () => {
         if (!appid)
             return;
@@ -337,49 +304,20 @@ function OptiScalerControls({ pathExists, onEnginesChanged, fgmodInfo, fsr4Varia
             setRemovingOnly(false);
         }
     };
-    const handleUninstallClick = async () => {
-        try {
-            setUninstalling(true);
-            const r = await runUninstallFGMod();
-            if (r.status === "success") {
-                say.done("OptiScaler uninstalled.");
-                onEnginesChanged?.();
-            }
-            else {
-                say.fail(r.message || "Failed");
-            }
-        }
-        catch (e) {
-            say.fail(String(e));
-            await logError(`OptiScalerControls: ${String(e)}`);
-        }
-        finally {
-            setUninstalling(false);
-        }
-    };
-    const installButtonText = installing
-        ? "Working…"
-        : pathExists === true
-            ? "Reinstall OptiScaler"
-            : "Install OptiScaler";
     return (window.SP_REACT.createElement(DFL.PanelSection, { title: "Framegen Management" },
-        pathExists !== null && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement("div", { style: { color: pathExists ? COLORS.ok : COLORS.warn } }, pathExists ? (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
-                "OptiScaler installed",
-                fgmodInfo?.version && (window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", color: COLORS.muted, marginTop: "4px" } }, fgmodInfo.version)))) : "OptiScaler not installed"))),
+        fgmodInfo?.version && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+            window.SP_REACT.createElement("div", { style: { color: COLORS.ok } },
+                "OptiScaler bundled",
+                window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", color: COLORS.muted, marginTop: "4px" } }, fgmodInfo.version)))),
         window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleInstall, disabled: installing }, installButtonText)),
-        pathExists === true && (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
+            window.SP_REACT.createElement(DFL.DropdownItem, { layout: "below", label: "Proxy DLL name", description: PROXY_DLL_OPTIONS.find((o) => o.value === dllName)?.hint, menuLabel: "Proxy DLL name", selectedOption: dllName, rgOptions: PROXY_DLL_OPTIONS.map((o) => ({ data: o.value, label: o.label })), onChange: (option) => setDllName(String(option.data)) })),
+        appid ? (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.DropdownItem, { layout: "below", label: "Proxy DLL name", description: PROXY_DLL_OPTIONS.find((o) => o.value === dllName)?.hint, menuLabel: "Proxy DLL name", selectedOption: dllName, rgOptions: PROXY_DLL_OPTIONS.map((o) => ({ data: o.value, label: o.label })), onChange: (option) => setDllName(String(option.data)) })),
-            appid ? (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
-                window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                    window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleApplyOnlyOpti, disabled: applying || removingOnly }, applying ? "Applying…" : "Apply only OptiScaler")),
-                window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                    window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleRemoveOnlyOpti, disabled: applying || removingOnly }, removingOnly ? "Removing…" : "Remove only OptiScaler")))) : (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", color: COLORS.ok } }, "Pick a game above to apply or remove it."))))),
-        window.SP_REACT.createElement(NoticeRow, { notice: notice }),
-        window.SP_REACT.createElement(UninstallButton, { pathExists: pathExists, uninstalling: uninstalling, onUninstallClick: handleUninstallClick })));
+                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleApplyOnlyOpti, disabled: applying || removingOnly }, applying ? "Applying…" : "Apply only OptiScaler")),
+            window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleRemoveOnlyOpti, disabled: applying || removingOnly }, removingOnly ? "Removing…" : "Remove only OptiScaler")))) : (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+            window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", color: COLORS.ok } }, "Pick a game above to apply or remove it."))),
+        window.SP_REACT.createElement(NoticeRow, { notice: notice })));
 }
 
 const listInstalledGames = callable("list_installed_games");
@@ -1367,7 +1305,6 @@ const ShaderSelectionModal = ({ onConfirm, onCancel, addonEnabled, autoHdrEnable
 };
 
 const runInstallReShade = callable("run_install_reshade");
-const runUninstallReShade = callable("run_uninstall_reshade");
 const checkReShadePath = callable("check_reshade_path");
 const getReShadeUpdateStatus = callable("get_reshade_update_status");
 const detectSteamDeckModel = callable("detect_steam_deck_model");
@@ -1409,7 +1346,6 @@ const buildSteamLaunchOptions = (reshadeApi, optiscalerSlot) => {
 };
 function ReShadeInstallerSection({ appid, addon, setAddon, engineCheck, onEnginesChanged }) {
     const [installing, setInstalling] = SP_REACT.useState(false);
-    const [uninstalling, setUninstalling] = SP_REACT.useState(false);
     const [applyingToSteamGame, setApplyingToSteamGame] = SP_REACT.useState(false);
     const [removingFromGame, setRemovingFromGame] = SP_REACT.useState(false);
     const [notice, say] = useNotice();
@@ -1568,29 +1504,6 @@ function ReShadeInstallerSection({ appid, addon, setAddon, engineCheck, onEngine
         catch (e) {
             say.fail(String(e));
             await logError(`Install error: ${String(e)}`);
-        }
-    };
-    const handleUninstallClick = async () => {
-        try {
-            setUninstalling(true);
-            const result = await runUninstallReShade();
-            if (result.status === "success") {
-                say.done("ReShade uninstalled.");
-                setAutoHdrEnabled(false);
-                setInstalledConfig(null);
-                setConfigChanged(false);
-                await refreshPostInstallState(addon);
-            }
-            else {
-                say.fail(result.message || "Uninstallation failed");
-            }
-        }
-        catch (e) {
-            say.fail(String(e));
-            await logError(`Uninstall error: ${String(e)}`);
-        }
-        finally {
-            setUninstalling(false);
         }
     };
     const handleApplyReShadeToSteamGame = async () => {
@@ -1755,9 +1668,6 @@ function ReShadeInstallerSection({ appid, addon, setAddon, engineCheck, onEngine
             window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", color: COLORS.ok } }, "Pick a game above to apply or remove it."))),
         shouldShowInstallButton && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleInstallClick, disabled: installing }, getInstallButtonText()))),
-        pathExists === true && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleUninstallClick, disabled: uninstalling },
-                window.SP_REACT.createElement("div", { style: { color: COLORS.error } }, uninstalling ? "Uninstalling…" : "Uninstall ReShade")))),
         window.SP_REACT.createElement(NoticeRow, { notice: notice })));
 }
 
@@ -1856,7 +1766,6 @@ function PluginUpdateSection({ advanced }) {
         window.SP_REACT.createElement(NoticeRow, { notice: notice })));
 }
 function MainContent() {
-    const [pathExists, setPathExists] = SP_REACT.useState(null);
     const [fgmodInfo, setFgmodInfo] = SP_REACT.useState(null);
     const [advanced, setAdvanced] = SP_REACT.useState(false);
     // Bumped after anything installs or removes an engine, so the Advanced sections read it again.
@@ -1873,20 +1782,18 @@ function MainContent() {
         if (!advanced)
             return;
         void safeAsyncOperation(async () => await checkFGModPath(), 'MainContent -> checkPath').then((result) => {
-            if (result) {
+            if (result)
                 setFgmodInfo(result);
-                setPathExists(result.exists);
-            }
         });
-    }, [advanced, engineCheck]);
+    }, [advanced]);
     return (window.SP_REACT.createElement("div", { className: "jedi-panel" },
         window.SP_REACT.createElement("style", null, panelCss()),
         window.SP_REACT.createElement(SteamGameCombinedSection, { fsr4Variant: fsr4Variant, appid: selectedAppid, setAppid: setSelectedAppid, addon: addon, advanced: advanced, onEnginesChanged: onEnginesChanged }),
         window.SP_REACT.createElement(DFL.PanelSection, null,
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.ToggleField, { label: "Advanced controls", description: "Per-engine install, proxy DLL, shaders.", checked: advanced, onChange: setAdvanced }))),
+                window.SP_REACT.createElement(DFL.ToggleField, { label: "Advanced controls", description: "Per-engine apply, proxy DLL, shaders.", checked: advanced, onChange: setAdvanced }))),
         advanced && (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
-            window.SP_REACT.createElement(OptiScalerControls, { pathExists: pathExists, onEnginesChanged: onEnginesChanged, fgmodInfo: fgmodInfo, fsr4Variant: fsr4Variant, appid: selectedAppid }),
+            window.SP_REACT.createElement(OptiScalerControls, { fgmodInfo: fgmodInfo, fsr4Variant: fsr4Variant, appid: selectedAppid }),
             window.SP_REACT.createElement(ReShadeInstallerSection, { appid: selectedAppid, addon: addon, setAddon: setAddon, engineCheck: engineCheck, onEnginesChanged: onEnginesChanged }))),
         window.SP_REACT.createElement(PluginUpdateSection, { advanced: advanced })));
 }
