@@ -322,6 +322,7 @@ function OptiScalerControls({ fgmodInfo, fsr4Variant = DEFAULT_FSR4_VARIANT, app
 
 const listInstalledGames = callable("list_installed_games");
 const getCombinedGameStatus = callable("get_combined_game_status");
+const setUpscalerOverlay = callable("set_upscaler_overlay");
 const patchAllGame = callable("patch_all_game");
 const unpatchAllGame = callable("unpatch_all_game");
 const getCachyosFsr4Status = callable("get_cachyos_fsr4_status");
@@ -902,6 +903,29 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, addon, advance
             await logError(`SteamGameCombinedSection -> ${name}: ${String(e)}`);
         }
     };
+    // OptiScaler's FPS overlay with the input and the upscaler it runs, e.g. "DLSS -> FSR 4", in the game's OptiScaler.ini.
+    const handleOverlayToggle = async (enabled) => {
+        if (!appid)
+            return;
+        try {
+            setBusy(true);
+            const r = await setUpscalerOverlay(appid, enabled);
+            if (r.status === "success") {
+                setStatus((current) => (current ? { ...current, upscaler_overlay: enabled } : current));
+                say.ok(r.message || `Upscaler overlay ${enabled ? "on" : "off"}.`);
+            }
+            else {
+                say.fail(r.message || "Could not change the overlay.");
+            }
+        }
+        catch (e) {
+            say.fail(String(e));
+            await logError(`SteamGameCombinedSection -> overlay: ${String(e)}`);
+        }
+        finally {
+            setBusy(false);
+        }
+    };
     const loadStatus = async (id) => {
         try {
             const r = await getCombinedGameStatus(id);
@@ -1037,6 +1061,8 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, addon, advance
                 window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: () => SteamClient.User.StartRestart(false), disabled: busy }, "Restart Steam"))),
             (cachyos?.supported || fsr4LitePath || fsr4Indicator) && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.ToggleField, { label: "Show FSR watermark", description: "Shows which FSR runs, top left.", checked: fsr4Indicator, disabled: busy, onChange: (v) => void handleLaunchEnvToggle(FSR4_INDICATOR_ENV, v, setFsr4Indicator) }))),
+            status?.optiscaler_patched && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+                window.SP_REACT.createElement(DFL.ToggleField, { label: "Show upscaler in game", description: "OptiScaler's FPS overlay names the upscaler it runs. Close the game first.", checked: !!status.upscaler_overlay, disabled: busy, onChange: (v) => void handleOverlayToggle(v) }))),
             window.SP_REACT.createElement(HelixSRPanel, null),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement("div", { className: "jedi-cta" },

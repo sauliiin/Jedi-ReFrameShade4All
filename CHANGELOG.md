@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.1.36
+
+### Added
+- **FSR 4.1.2 Lite Exact** and **FSR 4.1.2 Lite Lossy** in OptiScaler's menu (Insert): [Cyboman's](https://github.com/zgauthier2000/fsr4-shader-performance-overrides) faster shaders for AMD's FSR 4.1.2 Lite. Exact has AMD's Lite picture, a little faster; Lossy is about 18% faster with a slightly different picture. Patch All downloads the newest release for the GPU (SHA-256 checked) into `~/fgmod-cyboman`, checks for a newer one at most every 15 minutes, and uses the copy already there when offline. Single-player games only.
+- **HLX FSR 4** in OptiScaler's menu when HelixSR 3.2+ is installed: HelixSR's own pipeline for the FSR 4.1.2 Lite network, with AMD's FSR SDK 2.4.0 upscaler as its fallback and a Vulkan DLL. HelixSR installs now keep those two files from its zip; update HelixSR to get them.
+- **Show upscaler in game** for patched games: OptiScaler's FPS overlay (`ShowFps=true`, `FpsOverlayType=1`) shows the input and the upscaler that runs, e.g. `DLSS -> FSR 4.1.2`.
+
+### Changed
+- OptiScaler 10 injector from `ab379b2` to `ccf3b8c` (nightly 2026-11-15), with the custom driver upscaler patch ported to it. Games get it on their next **Patch All**.
+- Patch All rebuilds each custom upscaler folder it owns, removes the ones it no longer installs, and leaves `custom/` folders made by other tools alone.
+- Uninstalling the plugin also removes `~/fgmod-cyboman`.
+
 ## 1.1.35
 
 ### Removed

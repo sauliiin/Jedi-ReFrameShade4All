@@ -61,13 +61,13 @@ OPTISCALER_V10_ASSET = {
     "version": "10.0.0-master.2128299c",
 }
 
-# OptiScaler 10 built from optiscaler/OptiScaler master ab379b2: loads upscalers from custom/<name>/dlss even on
+# OptiScaler 10 built from optiscaler/OptiScaler master ccf3b8c (nightly 2026-11-15): loads upscalers from custom/<name>/dlss even on
 # GPUs it doesn't consider DLSS capable, which is how HelixSR 3.x's HLX DLSS (an NGX runtime) runs on AMD. Our patch
 # (attached to its release) also takes driver DLLs in custom/<name>/ffx, which is how Valve's 4.1.1 sits next to 4.1.2.
 OPTISCALER_HLX_ASSET = {
-    "name": "OptiScaler_10.0.0-ab379b2-jedi1.dll",
-    "sha256": "d5eab35eaacd9388aee08834b61a1439571be9c247c30cebed136448e21e7b5c",
-    "version": "10.0.0-ab379b2-jedi1",
+    "name": "OptiScaler_10.0.0-ccf3b8c-jedi1.dll",
+    "sha256": "be18bc10e87dc9e85859d0a5762a3f4c4ce8ceece31341b9f124915ac238829f",
+    "version": "10.0.0-ccf3b8c-jedi1",
 }
 
 OPTIPATCHER_ASSET = {
@@ -172,20 +172,47 @@ FSR4_VARIANTS = {
     },
 }
 HELIXSR_VARIANT = "helixsr"
-# 4.0.2c, 4.1.1, 4.1.2 Lite and HLX DLSS in one game, picked in OptiScaler's menu. The game gets the Lite runtime
-# (FSR 4, from the Lite folder of the bundle) with the OptiScaler 10 build that loads custom upscalers
-# (OPTISCALER_HLX_ASSET), 4.0.2c's upscaler as custom/FSR 4.0.2c/ffx, Valve's 4.1.1 driver DLL as custom/FSR 4.1.1/ffx
-# and, when HelixSR 3.x is installed, HLX DLSS as custom/HLX DLSS/dlss.
+# Every upscaler in one game, picked in OptiScaler's menu. The game gets the Lite runtime (FSR 4, from the Lite
+# folder of the bundle) with the OptiScaler 10 build that loads custom upscalers (OPTISCALER_HLX_ASSET), and in
+# custom/<name>/: Cyboman's faster Lite builds, Valve's 4.1.1 driver DLL, 4.0.2c's upscaler and, when HelixSR 3.x
+# is installed, HLX FSR 4 (ffx) and HLX DLSS (dlss).
 COMBINED_VARIANT = "deck-all"
 FSR4_VARIANTS[COMBINED_VARIANT] = {
     **FSR4_VARIANTS["lite-412-i8"],
-    "label": "4.0.2c + 4.1.1 + 4.1.2 Lite + HLX DLSS",
+    "label": "4.1.2 Lite + Cyboman + 4.1.1 + 4.0.2c + HLX",
     "combined": True,
 }
 CUSTOM_402C_NAME = "FSR 4.0.2c"
 CUSTOM_411_NAME = "FSR 4.1.1"
 CUSTOM_411_DLL = "amdxcffx64_valve.dll"   # OptiScaler keeps the AMD vendor id for DLLs named amdxcffx64*
 CUSTOM_UPSCALER_MARKER = "jedi-custom.json"
+CUSTOM_FFX_DLL = "amd_fidelityfx_upscaler_dx12.dll"
+CUSTOM_FFX_VK_DLL = "amd_fidelityfx_upscaler_vk.dll"
+
+# Cyboman (https://github.com/zgauthier2000/fsr4-shader-performance-overrides, GPL-2.0): AMD's FSR 4.1.2 Lite with
+# faster shaders. "exact" gives AMD's Lite picture byte for byte; "lossy" runs the network every other frame with
+# retrained weights (close to Lite's picture, not the same). Downloaded on the device from its newest dll-* release
+# when a game is patched, checked against GitHub's SHA-256, and kept for the next patches.
+CYBOMAN_RELEASES_API = "https://api.github.com/repos/zgauthier2000/fsr4-shader-performance-overrides/releases?per_page=30"
+CYBOMAN_DIRNAME = "fgmod-cyboman"
+CYBOMAN_STATE_FILENAME = "cyboman.json"
+CYBOMAN_CHECK_SECONDS = 900
+CYBOMAN_TAG_RE = re.compile(r"^dll-\d{4}-\d{2}-\d{2}[\w.-]*$")
+CYBOMAN_BUILDS = (   # (name in OptiScaler's menu, folder in the archive)
+    ("FSR 4.1.2 Lite Exact", "4.1.2l-exact"),
+    ("FSR 4.1.2 Lite Lossy", "4.1.2l-lossy"),
+)
+CYBOMAN_NAMES = tuple(name for name, _ in CYBOMAN_BUILDS)
+
+# HelixSR 3.2+: HLX FSR 4, AMD's FSR 4.1.2 Lite network on HelixSR's own shaders, ships built in HelixSR's zip.
+# AMD's FSR SDK 2.4.0 upscaler (.amd.dll) goes next to it: HLX FSR 4 falls back to it when it can't start.
+CUSTOM_HLX_FSR4_NAME = "HLX FSR 4"
+HELIXSR_HLX_FSR4_DLL = Path("HLX-FSR4") / CUSTOM_FFX_DLL
+HELIXSR_HLX_FSR4_FALLBACK = Path("helixsr-scaler") / "OptiScaler" / "amd_fidelityfx_upscaler_dx12.amd.dll"
+HELIXSR_HLX_FSR4_VK_DLL = Path("helixsr-scaler") / "OptiScaler" / "custom" / CUSTOM_HLX_FSR4_NAME / "ffx_vk" / CUSTOM_FFX_VK_DLL
+HELIXSR_HLX_FSR4_MAGIC = b"HLXFSR4D"   # the trailer HelixSR appends once HLX FSR 4's shaders are in the DLL
+
+CUSTOM_UPSCALER_NAMES = (*CYBOMAN_NAMES, CUSTOM_411_NAME, CUSTOM_402C_NAME, CUSTOM_HLX_FSR4_NAME)
 # amdxc64.dll: only games patched before the old 4.1.1 Valve runtime was trimmed have it, and removing them still clears it.
 VARIANT_EXTRA_FILENAMES = sorted(
     {
@@ -310,8 +337,10 @@ HELIXSR_GAME_OWN_FILES = {
     HELIXSR_FG_DLL, "amd_fidelityfx_dx12.original.dll", "helixsr.ini", "helixsr.log", *HELIXSR_SEPARATE_FILES,
 }
 # Release folders not needed here: HelixSR Scaler (from 1.9.3 in HelixSR's zip, ~205 MB) is OptiScaler-based
-# and only installed by HelixSR's own installer; the setup builds the network without it.
+# and only installed by HelixSR's own installer; the setup builds the network without it. Only the files
+# HLX FSR 4 needs come out of it.
 HELIXSR_SKIP_DIRS = ("helixsr-scaler/",)
+HELIXSR_KEEP_FILES = (HELIXSR_HLX_FSR4_FALLBACK.as_posix(), HELIXSR_HLX_FSR4_VK_DLL.as_posix())
 HELIXSR_GAMES_MARKER = "# --- games ---"   # helixsr-setup.sh 1.7-1.8: HelixSR's own game installer follows
 HELIXSR_BUILD_SCRIPT = ".jedi-helixsr-build.sh"
 HELIXSR_PHASES = [  # (setup log pattern, progress %, label)
@@ -1402,6 +1431,8 @@ class _OptiScalerMixin:
         if fgmod_path.exists():
             shutil.rmtree(fgmod_path)
             decky.logger.info(f"Removed directory: {fgmod_path}")
+        # Cyboman's downloaded builds: patched games have their own copies too.
+        shutil.rmtree(Path(decky.HOME) / CYBOMAN_DIRNAME, ignore_errors=True)
 
     @_worker
     async def run_install_fgmod(self, selected_default_variant: str = DEFAULT_FSR4_VARIANT) -> dict:
@@ -3303,7 +3334,9 @@ class _HelixSRMixin:
             strip = len(tops) == 1 and all("/" in m.filename for m in members)
             for member in members:
                 name = member.filename.split("/", 1)[1] if strip else member.filename
-                if not name or name.endswith("/") or name.startswith(HELIXSR_SKIP_DIRS):
+                if not name or name.endswith("/"):
+                    continue
+                if name.startswith(HELIXSR_SKIP_DIRS) and name not in HELIXSR_KEEP_FILES:
                     continue
                 dest = (target / name).resolve()
                 if root not in dest.parents:
@@ -3754,11 +3787,12 @@ class _HelixSRMixin:
     def _custom_402c_folder(self, directory: Path) -> Path:
         return Path(directory) / "custom" / CUSTOM_402C_NAME
 
-    def _remove_custom_upscalers(self, directory: Path) -> bool:
+    def _remove_custom_upscalers(self, directory: Path, keep: tuple = ()) -> bool:
+        """Removes the custom/<name> folders this plugin made (they hold its marker), except the ones in keep."""
         removed = False
-        for name in (CUSTOM_402C_NAME, CUSTOM_411_NAME):
+        for name in CUSTOM_UPSCALER_NAMES:
             folder = Path(directory) / "custom" / name
-            if (folder / CUSTOM_UPSCALER_MARKER).exists():
+            if name not in keep and (folder / CUSTOM_UPSCALER_MARKER).exists():
                 shutil.rmtree(folder, ignore_errors=True)
                 removed = True
         if removed:
@@ -3771,37 +3805,97 @@ class _HelixSRMixin:
     def _install_custom_upscaler(self, directory: Path, name: str, source: Path, dll_name: str) -> None:
         if not source.exists():
             raise FileNotFoundError(f"Prepared FSR4 variant missing: {source}")
+        self._install_custom_files(directory, name, {Path("ffx") / dll_name: source})
+
+    def _install_custom_files(self, directory: Path, name: str, files: dict, source_info: dict | None = None) -> bool:
+        """custom/<name>/ with files ({path in the folder: source}) and the plugin's marker. The folder is made
+        again from scratch, so files a previous version had and this one doesn't go. A folder another tool made
+        is left alone (False)."""
         folder = Path(directory) / "custom" / name
-        created = not folder.exists()
+        if folder.exists() and not (folder / CUSTOM_UPSCALER_MARKER).exists():
+            decky.logger.warning(f"custom/{name} in {directory} wasn't made by this plugin: left as it is")
+            return False
+        shutil.rmtree(folder, ignore_errors=True)
         try:
-            (folder / "ffx").mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, folder / "ffx" / dll_name)
+            for relative, source in files.items():
+                dest = folder / relative
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, dest)
             self._write_json_file(folder / CUSTOM_UPSCALER_MARKER, {
-                "sha256": self._file_sha256(source),
+                "files": {str(Path(r).as_posix()): self._file_sha256(s) for r, s in files.items()},
+                **(source_info or {}),
                 "optiscaler": OPTISCALER_HLX_ASSET["version"],
                 "installed_at": datetime.now(timezone.utc).isoformat(),
             })
         except Exception:
-            if created:
-                shutil.rmtree(folder, ignore_errors=True)
+            shutil.rmtree(folder, ignore_errors=True)
             raise
+        return True
+
+    def _helixsr_hlx_fsr4_files(self) -> dict:
+        """HLX FSR 4's files in the installed HelixSR release ({path in custom/HLX FSR 4: source}), empty when the
+        release has no built HLX FSR 4 (before 3.2, or its shaders aren't in the DLL)."""
+        installed = self._helixsr_installed()
+        if not installed:
+            return {}
+        release = Path(installed["dir"])
+        dll = release / HELIXSR_HLX_FSR4_DLL
+        try:
+            with open(dll, "rb") as f:
+                f.seek(-24, os.SEEK_END)
+                built = f.read(8) == HELIXSR_HLX_FSR4_MAGIC
+        except OSError:
+            return {}
+        if not built:
+            return {}
+        files = {Path("ffx") / CUSTOM_FFX_DLL: dll}
+        # Releases installed before 1.1.36 didn't extract these: HLX FSR 4 then runs without them.
+        if (release / HELIXSR_HLX_FSR4_FALLBACK).exists():
+            files[Path("ffx") / HELIXSR_HLX_FSR4_FALLBACK.name] = release / HELIXSR_HLX_FSR4_FALLBACK
+        if (release / HELIXSR_HLX_FSR4_VK_DLL).exists():
+            files[Path("ffx_vk") / CUSTOM_FFX_VK_DLL] = release / HELIXSR_HLX_FSR4_VK_DLL
+        return files
 
     def _apply_combined_upscalers(self, directory: Path, fgmod_path: Path, injector: Path) -> str:
-        """COMBINED_VARIANT: OptiScaler 10 (ab379b2 + driver DLLs as custom upscalers) lists custom/<name>/ffx and
-        custom/<name>/dlss next to its own FSR 4 (the Lite runtime the patch put in): 4.0.2c's upscaler as "FSR 4.0.2c",
-        Valve's 4.1.1 driver DLL as "FSR 4.1.1" and, when HelixSR 3.x is installed, HLX DLSS. FSR 4 stays the selected
-        upscaler."""
+        """COMBINED_VARIANT: OptiScaler 10 (+ driver DLLs as custom upscalers) lists custom/<name>/ffx and
+        custom/<name>/dlss next to its own FSR 4 (the Lite runtime the patch put in): Cyboman's Lite Exact and Lossy,
+        Valve's 4.1.1 driver DLL as "FSR 4.1.1", 4.0.2c's upscaler as "FSR 4.0.2c" and, when HelixSR 3.x is installed,
+        HLX FSR 4 and HLX DLSS. FSR 4 stays the selected upscaler."""
         self._copy_hlx_injector(injector)
-        self._install_custom_upscaler(
-            directory, CUSTOM_402C_NAME, self._fsr4_variant_path(fgmod_path, "rdna23-int8"), FSR4_UPSCALER_FILENAME
-        )
+        names = ["FSR 4 (4.1.2 Lite)"]
+        notes = []
+
+        cyboman, cyboman_note = self._cyboman_prepare()
+        if cyboman_note:
+            notes.append(cyboman_note)
+        for name, build in CYBOMAN_BUILDS:
+            source = Path(cyboman["dir"]) / build / CUSTOM_FFX_DLL if cyboman else None
+            if source and source.exists() and self._install_custom_files(
+                directory, name, {Path("ffx") / CUSTOM_FFX_DLL: source},
+                {"cyboman": cyboman["tag"], "archive": cyboman["archive"]},
+            ):
+                names.append(name)
+
         self._install_custom_upscaler(
             directory,
             CUSTOM_411_NAME,
             self._fsr4_variant_extra_file_path(fgmod_path, "rdna2-valve-411-pre10", FSR4_DRIVER_OVERRIDE_FILENAME),
             CUSTOM_411_DLL,
         )
-        names = ["FSR 4 (4.1.2 Lite)", CUSTOM_402C_NAME, CUSTOM_411_NAME]
+        self._install_custom_upscaler(
+            directory, CUSTOM_402C_NAME, self._fsr4_variant_path(fgmod_path, "rdna23-int8"), FSR4_UPSCALER_FILENAME
+        )
+        names += [CUSTOM_411_NAME, CUSTOM_402C_NAME]
+
+        hlx_fsr4 = self._helixsr_hlx_fsr4_files()
+        if hlx_fsr4 and self._install_custom_files(
+            directory, CUSTOM_HLX_FSR4_NAME, hlx_fsr4, {"helixsr": (self._helixsr_installed() or {}).get("tag")}
+        ):
+            names.append(CUSTOM_HLX_FSR4_NAME)
+
+        # Upscalers this patch didn't put in (e.g. Cyboman without a download yet) leave the game.
+        self._remove_custom_upscalers(directory, keep=tuple(names))
+
         installed = self._helixsr_installed()
         if installed and installed["built"] and installed["kind"] == "hlx":
             self._helixsr_remove_ffx_route(directory)
@@ -3809,7 +3903,132 @@ class _HelixSRMixin:
             names.append(HELIXSR_HLX_NAME)
         else:
             self._helixsr_remove_from_game(directory, restore_ini=True)
-        return f"In OptiScaler (Insert): {', '.join(names)}."
+        message = f"In OptiScaler (Insert): {', '.join(names)}."
+        return " ".join([message, *notes])
+
+    # ── Cyboman's FSR 4.1.2 Lite builds ──────────────────────────────────────
+    _cyboman_checked_at = 0.0
+
+    def _cyboman_root(self) -> Path:
+        return Path(decky.HOME) / CYBOMAN_DIRNAME
+
+    def _cyboman_archive_kind(self) -> str | None:
+        """Which of Cyboman's archives fits this GPU, None where its DLLs don't work (RX 5000, RX 9000).
+        igpu-rdna2: Steam Deck, Radeon 680M/660M/610M; rx6000 / rx7000: those cards; igpu-rdna3: everything else."""
+        try:
+            if Path("/sys/devices/virtual/dmi/id/board_name").read_text().strip() in ("Jupiter", "Galileo"):
+                return "igpu-rdna2"
+        except OSError:
+            pass
+        devices = []
+        for card in sorted(Path("/sys/class/drm").glob("card[0-9]*")):
+            try:
+                vendor = int((card / "device" / "vendor").read_text().strip(), 16)
+                device = int((card / "device" / "device").read_text().strip(), 16)
+            except (OSError, ValueError):
+                continue
+            if vendor == 0x1002:
+                devices.append(device)
+        # A discrete Radeon before the built-in one: games run on it.
+        for device in sorted(devices, key=lambda d: not (0x7300 <= d <= 0x75FF)):
+            if device in (0x163F, 0x1435, 0x1681, 0x164E, 0x1506):   # Van Gogh, Sephiroth, Rembrandt, Raphael, Mendocino
+                return "igpu-rdna2"
+            if 0x7310 <= device <= 0x736F or 0x7550 <= device <= 0x75FF:   # RDNA 1, RDNA 4
+                return None
+            if 0x73A0 <= device <= 0x743F:
+                return "rx6000"
+            if 0x7440 <= device <= 0x74FF:
+                return "rx7000"
+        return "igpu-rdna3"
+
+    def _cyboman_installed(self) -> dict | None:
+        state = self._read_json_file(self._cyboman_root() / CYBOMAN_STATE_FILENAME)
+        directory = self._cyboman_root() / str(state.get("tag") or "-")
+        if not state or not all((directory / build / CUSTOM_FFX_DLL).exists() for _, build in CYBOMAN_BUILDS):
+            return None
+        return {**state, "dir": str(directory)}
+
+    def _cyboman_latest(self, archive: str) -> dict:
+        """Newest dll-* release (no drafts or pre-releases) with this archive as a .7z GitHub has a SHA-256 for."""
+        releases = self._request_json(CYBOMAN_RELEASES_API)
+        if not isinstance(releases, list):
+            raise RuntimeError("unexpected GitHub releases response")
+        # fsr4.1.2-cyboman-rx6000-2026-11-05.7z, fsr4.1.2-igpu-cyboman-rdna2-2026-11-05.7z
+        wanted = set(archive.split("-"))
+
+        def fits(name: str) -> bool:
+            if not (name.startswith("fsr4.1.2-") and name.endswith(".7z")):
+                return False
+            tokens = set(name[:-3].split("-"))
+            return "cyboman" in tokens and wanted <= tokens and ("igpu" in tokens) == ("igpu" in wanted)
+
+        candidates = []
+        for release in releases:
+            tag = str(release.get("tag_name") or "")
+            if release.get("draft") or release.get("prerelease") or not CYBOMAN_TAG_RE.match(tag):
+                continue
+            for asset in release.get("assets") or []:
+                digest = str(asset.get("digest") or "")
+                if fits(str(asset.get("name") or "")) and re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest):
+                    candidates.append({
+                        "tag": tag,
+                        "archive": archive,
+                        "name": asset["name"],
+                        "url": asset["browser_download_url"],
+                        "sha256": digest[7:].lower(),
+                        "published_at": release.get("published_at") or "",
+                    })
+        if not candidates:
+            raise RuntimeError(f"no {archive} archive found in Cyboman's releases")
+        return max(candidates, key=lambda r: r["published_at"])
+
+    def _cyboman_download(self, release: dict) -> dict:
+        root = self._cyboman_root()
+        root.mkdir(parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(prefix=".staging-", dir=str(root)))
+        try:
+            archive = staging / release["name"]
+            self._download_file(release["url"], archive)
+            self._verify_bundled_asset(archive, release["sha256"], f"Cyboman {release['name']}")
+            members = [f"{build}/{CUSTOM_FFX_DLL}" for _, build in CYBOMAN_BUILDS]
+            self._extract_archive(archive, staging / "out", members)
+            for member in members:
+                if not (staging / "out" / member).exists():
+                    raise RuntimeError(f"{release['name']} has no {member}")
+            target = root / release["tag"]
+            shutil.rmtree(target, ignore_errors=True)
+            (staging / "out").rename(target)
+            state = {k: release[k] for k in ("tag", "archive", "name", "sha256", "published_at")}
+            self._write_json_file(root / CYBOMAN_STATE_FILENAME, state)
+            for old in root.iterdir():   # only the newest one is kept
+                if old.is_dir() and old.name != release["tag"] and not old.name.startswith(".staging-"):
+                    shutil.rmtree(old, ignore_errors=True)
+            return {**state, "dir": str(target)}
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+
+    def _cyboman_prepare(self) -> tuple[dict | None, str]:
+        """The Cyboman builds for this patch: the newest release once every CYBOMAN_CHECK_SECONDS, else the copy
+        already here. Never fails the patch; the note says what happened when it's worth saying."""
+        archive = self._cyboman_archive_kind()
+        installed = self._cyboman_installed()
+        if archive is None:
+            return None, ""
+        if installed and installed.get("archive") == archive and time.time() - self._cyboman_checked_at < CYBOMAN_CHECK_SECONDS:
+            return installed, ""
+        try:
+            latest = self._cyboman_latest(archive)
+            type(self)._cyboman_checked_at = time.time()
+            if installed and installed.get("tag") == latest["tag"] and installed.get("sha256") == latest["sha256"]:
+                return installed, ""
+            fresh = self._cyboman_download(latest)
+            verb = "updated to" if installed else "added:"
+            return fresh, f"Cyboman {verb} {fresh['tag']}."
+        except Exception as exc:
+            decky.logger.warning(f"[Cyboman] update check failed: {exc}")
+            if installed:
+                return installed, f"Cyboman update check failed, kept {installed['tag']}."
+            return None, "Cyboman's Lite builds couldn't be downloaded; patch again online to add them."
 
     def _helixsr_apply_hlx(self, directory: Path, dll: Path, ini: Path, injector: Path, select: bool = True) -> str:
         """3.0+: HLX DLSS as OptiScaler's custom DLSS upscaler. custom/HLX DLSS/dlss/ holds helixsr.dll and
@@ -4769,6 +4988,40 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin, _LsfgMixin):
     async def get_combined_game_status(self, appid) -> dict:
         return await asyncio.to_thread(self._combined_game_status, appid)
 
+    # ── In-game upscaler overlay (OptiScaler's FPS overlay, which ends with the input and the upscaler) ──
+    def _upscaler_overlay_on(self, directory) -> bool:
+        try:
+            text = (Path(directory) / "OptiScaler.ini").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return False
+        return (self._helixsr_ini_get(text, "Menu", "ShowFps") or "").strip().lower() == "true"
+
+    def _set_upscaler_overlay(self, appid, enabled: bool) -> dict:
+        game = self._game_record(str(appid))
+        opti = self._game_status(str(appid), game)
+        if not opti.get("patched") or not opti.get("target_dir"):
+            return {"status": "error", "message": "Patch the game first."}
+        ini = Path(opti["target_dir"]) / "OptiScaler.ini"
+        if not ini.exists():
+            return {"status": "error", "message": "OptiScaler.ini not found. Patch the game again."}
+        text = ini.read_text(encoding="utf-8", errors="replace")
+        text = self._helixsr_ini_set(text, "Menu", "ShowFps", "true" if enabled else "false")
+        # 1: FPS, then the input and the upscaler (e.g. "DLSS -> FSR 4"). Off puts OptiScaler's default back.
+        text = self._helixsr_ini_set(text, "Menu", "FpsOverlayType", "1" if enabled else "auto")
+        ini.write_text(text, encoding="utf-8")
+        return {
+            "status": "success",
+            "enabled": bool(enabled),
+            "message": f"Upscaler overlay {'on' if enabled else 'off'}. It applies the next time the game starts.",
+        }
+
+    async def set_upscaler_overlay(self, appid, enabled: bool) -> dict:
+        try:
+            return await asyncio.to_thread(self._set_upscaler_overlay, appid, bool(enabled))
+        except Exception as exc:
+            decky.logger.error(f"set_upscaler_overlay failed: {exc}")
+            return {"status": "error", "message": str(exc)}
+
     def _combined_game_status(self, appid) -> dict:
         game = self._game_record(str(appid))
         opti = self._game_status(str(appid), game)
@@ -4786,6 +5039,7 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin, _LsfgMixin):
             "appid": str(appid),
             "name": opti.get("name"),
             "optiscaler_patched": bool(opti.get("patched")),
+            "upscaler_overlay": self._upscaler_overlay_on(directory) if directory and opti.get("patched") else False,
             "optiscaler_slot": opti.get("dll_name"),
             "optiscaler_variant": opti.get("fsr4_variant"),
             "optiscaler_variant_label": opti.get("fsr4_variant_label"),
