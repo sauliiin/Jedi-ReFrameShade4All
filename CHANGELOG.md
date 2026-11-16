@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.37
+
+### Changed
+- **Proton-CachyOS FSR4** works for any game: it downloads the newest Proton-CachyOS (SHA-512 checked) into `compatibilitytools.d` as **Proton-CachyOS Latest**, sets it for the game and adds `FSR4_UPGRADE=1`. When the copy is already the newest release it is only set; a newer release replaces it in place (skipped while a game runs on it; offline, the copy stays). The first install asks for a Steam restart, and the plugin sets the Proton by itself after it. With the Lite toggle on, the game stays on the Lite Proton. Turning it off puts back the game's previous Proton.
+- **Proton-CachyOS FSR4** and **Show FSR watermark** moved to a **Proton-CachyOS** section under **Advanced controls**, with their own messages, download progress and **Restart Steam** button.
+- Turning **Proton FSR4 → 4.1.2 Lite** off while **Proton-CachyOS FSR4** is on moves the game to Proton-CachyOS Latest instead of its previous Proton.
+
 ## 1.1.36
 
 ### Added

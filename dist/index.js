@@ -328,9 +328,17 @@ const unpatchAllGame = callable("unpatch_all_game");
 const getCachyosFsr4Status = callable("get_cachyos_fsr4_status");
 const prepareCachyosFsr4Lite = callable("prepare_cachyos_fsr4_lite");
 const installProtonLite = callable("install_proton_lite");
+const installProtonLatest = callable("install_proton_latest");
 const getProtonLiteProgress = callable("get_proton_lite_progress");
 // Every Lite Proton copy's internal name ends with this (up to 1.1.23 it also carried the release).
 const LITE_TOOL_SUFFIX = "-jedi-fsr4lite";
+// Proton-CachyOS Latest, the Proton-CachyOS FSR4 toggle's Proton (the newest release, not patched).
+const LATEST_TOOL_NAME = "proton-cachyos-jedi-latest";
+const LATEST_TOOL_LABEL = "Proton-CachyOS Latest";
+// A Proton the plugin installed: the game's own Proton is the one remembered before switching to it.
+function isJediTool(name) {
+    return (name || "").endsWith(LITE_TOOL_SUFFIX) || name === LATEST_TOOL_NAME;
+}
 const rememberCompatTool = callable("remember_compat_tool");
 const getLiteProtonPending = callable("get_lite_proton_pending");
 const setLiteProtonPending = callable("set_lite_proton_pending");
@@ -402,21 +410,31 @@ async function listedCompatTools(appId) {
 function isCachyosTool(name, label) {
     return /cachyos/.test(`${name} ${label}`.toLowerCase().replace(/[-_\s]/g, ""));
 }
-// Sets the patched Proton-CachyOS for the game once Steam lists it (Steam picks up new tools on restart).
+// Sets a Proton the plugin installed for the game once Steam lists it (Steam picks up new tools on restart).
 // When Steam doesn't say what it lists, it's set anyway: the dialog asks the user to check it.
-async function selectLiteProton(appid, status) {
-    if (!status?.lite_tool_name)
+async function selectJediProton(appid, status, toolName, label) {
+    if (!toolName)
         return null;
-    if (status.tool_name === status.lite_tool_name)
+    if (status.tool_name === toolName)
         return status;
     const tools = await listedCompatTools(parseInt(appid, 10));
-    if (tools && !tools.some((t) => t.strToolName === status.lite_tool_name))
+    if (tools && !tools.some((t) => t.strToolName === toolName))
         return null;
-    // Moving off an older Lite copy keeps the Proton the game had before Lite.
-    if (!(status.tool_name || "").endsWith(LITE_TOOL_SUFFIX))
+    // Moving between the plugin's Protons keeps the Proton the game had before either of them.
+    const fromJedi = isJediTool(status.tool_name);
+    if (!fromJedi)
         await rememberCompatTool(appid, status.tool_name || "");
-    SteamClient.Apps.SpecifyCompatTool(parseInt(appid, 10), status.lite_tool_name);
-    return { ...status, supported: true, previous_tool: status.tool_name || "", tool_name: status.lite_tool_name, tool_label: status.lite_proton, takes_dll_path: true };
+    SteamClient.Apps.SpecifyCompatTool(parseInt(appid, 10), toolName);
+    return { ...status, supported: true, previous_tool: fromJedi ? status.previous_tool : status.tool_name || "", tool_name: toolName, tool_label: label, takes_dll_path: toolName === status.lite_tool_name };
+}
+function selectLiteProton(appid, status) {
+    return selectJediProton(appid, status, status?.lite_tool_name, status?.lite_proton);
+}
+function selectLatestProton(appid, status) {
+    return selectJediProton(appid, status, status?.latest_tool_name, status?.latest_proton || LATEST_TOOL_LABEL);
+}
+function onLatestProton(status) {
+    return !!status?.latest_tool_name && status.tool_name === status.latest_tool_name;
 }
 // The game's Proton as Steam has it right now, or null for Steam's default. config.vdf can lag behind, and so
 // can appDetailsStore, so that one is only the fallback.
@@ -466,17 +484,20 @@ async function getLiteStatus(id) {
     ]);
     return withLiveCompatTool(r, live);
 }
-// Steam lists the Lite Proton after a restart: this sets it for the games the Lite toggle left waiting. Steam
-// may still be starting when the plugin loads, so it tries a few times.
+// Steam lists a new Proton after a restart: this sets it for the games a toggle left waiting (Lite or
+// Proton-CachyOS FSR4). Steam may still be starting when the plugin loads, so it tries a few times.
 const LITE_PENDING_TRIES = 6;
 const LITE_PENDING_RETRY_MS = 5000;
 async function selectPendingLiteProton(attempt = 1) {
-    let selected = false;
+    const selected = new Set();
     let waiting = false;
-    for (const id of await getLiteProtonPending()) {
+    for (const [id, kind] of Object.entries(await getLiteProtonPending())) {
         const current = await getLaunchOptions(parseInt(id, 10)).catch(() => "");
-        if (!fsr4LitePathIn(current)) {
-            // Lite was turned off, unless these are empty because Steam hasn't answered yet.
+        const lite = kind !== "latest";
+        // Latest waits for FSR4 on without Lite (with Lite on, the game is on the Lite Proton).
+        const stillOn = lite ? !!fsr4LitePathIn(current) : hasLaunchEnv(current, FSR4_UPGRADE_ENV) && !fsr4LitePathIn(current);
+        if (!stillOn) {
+            // The toggle was turned off, unless these are empty because Steam hasn't answered yet.
             if (current || attempt >= LITE_PENDING_TRIES)
                 await setLiteProtonPending(id, false);
             else
@@ -484,27 +505,33 @@ async function selectPendingLiteProton(attempt = 1) {
             continue;
         }
         const status = await getLiteStatus(id);
-        const done = status.takes_dll_path ? status : await selectLiteProton(id, status);
+        const ready = lite ? status.takes_dll_path : onLatestProton(status);
+        const done = ready ? status : await (lite ? selectLiteProton(id, status) : selectLatestProton(id, status));
         if (done) {
             await setLiteProtonPending(id, false);
-            selected = selected || !status.takes_dll_path;
+            if (!ready)
+                selected.add(lite ? "FSR 4.1.2 Lite Proton" : LATEST_TOOL_LABEL);
         }
         else {
             waiting = true;
         }
     }
-    if (selected)
-        toaster.toast({ title: PLUGIN_TITLE, body: "FSR 4.1.2 Lite Proton set." });
+    if (selected.size)
+        toaster.toast({ title: PLUGIN_TITLE, body: `${[...selected].join(" and ")} set.` });
     if (waiting && attempt < LITE_PENDING_TRIES)
         setTimeout(() => void selectPendingLiteProton(attempt + 1).catch((e) => logError(`selectPendingLiteProton: ${String(e)}`)), LITE_PENDING_RETRY_MS);
 }
-// Asks the user to check the game's Proton: with any other Proton the Lite DLL isn't loaded.
-function showLiteProtonModal(status) {
-    if (status?.takes_dll_path) {
+// Asks the user to check the game's Proton (ready: it's set), or to restart Steam so Steam lists it.
+function showProtonModal(status, label, ready) {
+    if (ready) {
         DFL.showModal(window.SP_REACT.createElement(DFL.ConfirmModal, { strTitle: "Check the Proton", strDescription: `Confirm "${status.tool_label}" is selected in the game's Properties → Compatibility.`, strOKButtonText: "Done", bAlertDialog: true }));
         return;
     }
-    DFL.showModal(window.SP_REACT.createElement(DFL.ConfirmModal, { strTitle: "Restart Steam", strDescription: `"${status?.lite_proton}" installed. Restart Steam to finish.`, strOKButtonText: "Restart Steam", strCancelButtonText: "Later", onOK: () => SteamClient.User.StartRestart(false) }));
+    DFL.showModal(window.SP_REACT.createElement(DFL.ConfirmModal, { strTitle: "Restart Steam", strDescription: `"${label}" installed. Restart Steam to finish.`, strOKButtonText: "Restart Steam", strCancelButtonText: "Later", onOK: () => SteamClient.User.StartRestart(false) }));
+}
+// With any other Proton the Lite DLL isn't loaded.
+function showLiteProtonModal(status) {
+    showProtonModal(status, status?.lite_proton, !!status?.takes_dll_path);
 }
 // Proton-CachyOS variables the toggles add as NAME=1.
 const FSR4_UPGRADE_ENV = "FSR4_UPGRADE";
@@ -697,11 +724,17 @@ function LiteProgressBox({ progress }) {
     return (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
         window.SP_REACT.createElement("div", { style: { display: "flex", flexDirection: "column", justifyContent: "flex-end", boxSizing: "border-box", height: "calc(7.8em + 18px)", overflow: "hidden", padding: "8px", backgroundColor: "#000", color: "#c0c0c0", border: "1px solid #c0c0c0", fontFamily: "'Courier New', 'DejaVu Sans Mono', monospace", fontSize: "0.75em", lineHeight: "1.3", whiteSpace: "pre-wrap", wordBreak: "break-word" } }, lines.map((line, i) => (window.SP_REACT.createElement("div", { key: i, style: { flexShrink: 0 } }, line))))));
 }
-function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, addon, advanced, onEnginesChanged, }) {
+// advancedToggle/advancedSections come from MainContent: the game section draws them so its Proton-CachyOS
+// toggles can sit in the Advanced area while their state stays here.
+function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, addon, advanced, onEnginesChanged, advancedToggle, advancedSections, }) {
     const [games, setGames] = SP_REACT.useState([]);
     const [status, setStatus] = SP_REACT.useState(null);
     const [busy, setBusy] = SP_REACT.useState(false);
     const [notice, say] = useNotice();
+    // The Advanced Proton-CachyOS toggles answer below themselves.
+    const [protonNotice, sayProton] = useNotice();
+    // Which toggle started the Proton download, so its progress box shows under it.
+    const [protonJob, setProtonJob] = SP_REACT.useState("lite");
     const [cachyos, setCachyos] = SP_REACT.useState(null);
     const [fsr4Upgrade, setFsr4Upgrade] = SP_REACT.useState(false);
     const [fsr4Indicator, setFsr4Indicator] = SP_REACT.useState(false);
@@ -709,6 +742,10 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, addon, advance
     const [liteRunning, setLiteRunning] = SP_REACT.useState(false);
     const [liteProgress, setLiteProgress] = SP_REACT.useState(null);
     const liteBoxVisible = liteRunning || Boolean(liteProgress?.active);
+    // Lite waiting for the Lite Proton, or FSR4 (without Lite) waiting for Proton-CachyOS Latest.
+    const liteNeedsRestart = !!cachyos && !!fsr4LitePath && !cachyos.takes_dll_path && !!cachyos.lite_tool_name;
+    const latestNeedsRestart = !!cachyos && !fsr4LitePath && fsr4Upgrade && !!cachyos.latest_tool_name
+        && !onLatestProton(cachyos) && cachyos.pending === "latest";
     const refreshLiteProgress = async () => {
         try {
             setLiteProgress(await getProtonLiteProgress());
@@ -823,6 +860,14 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, addon, advance
                     showLiteProtonModal(selected);
                 }
             }
+            // The same for Proton-CachyOS FSR4 (without Lite) and Proton-CachyOS Latest.
+            if (!litePath && hasLaunchEnv(current, FSR4_UPGRADE_ENV) && r.latest_tool_name && !onLatestProton(r)) {
+                const selected = await selectLatestProton(id, r);
+                if (selected && pickedGame.current === id) {
+                    setCachyos(selected);
+                    showProtonModal(selected, selected.tool_label, true);
+                }
+            }
         }
         catch (e) {
             await logError(`SteamGameCombinedSection -> cachyos: ${String(e)}`);
@@ -845,6 +890,17 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, addon, advance
             setBusy(true);
             if (!enabled) {
                 await applyProtonFsr4("");
+                await setLiteProtonPending(appid, false);
+                // Proton-CachyOS FSR4 still on: the game goes to Proton-CachyOS Latest instead.
+                if (fsr4Upgrade) {
+                    setProtonJob("lite");
+                    setLiteRunning(true);
+                    const latest = await switchToLatestProton();
+                    say.ok(latest.note || "FSR 4.1.2 Lite off. Proton-CachyOS Latest set.");
+                    if (!latest.ready)
+                        showProtonModal(latest.status, latest.label, false);
+                    return;
+                }
                 say.ok("FSR 4.1.2 Lite off.");
                 if (cachyos?.lite_tool_name && (cachyos.tool_name || "").endsWith(LITE_TOOL_SUFFIX) && cachyos.previous_tool !== null && cachyos.previous_tool !== undefined) {
                     SteamClient.Apps.SpecifyCompatTool(parseInt(appid, 10), cachyos.previous_tool);
@@ -852,6 +908,7 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, addon, advance
                 }
                 return;
             }
+            setProtonJob("lite");
             setLiteRunning(true);
             say.clear();
             const r = await prepareCachyosFsr4Lite();
@@ -883,8 +940,74 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, addon, advance
             await logError(`SteamGameCombinedSection -> fsr4Lite: ${String(e)}`);
         }
         finally {
-            if (enabled)
-                await refreshLiteProgress();
+            await refreshLiteProgress();
+            setLiteRunning(false);
+            setBusy(false);
+        }
+    };
+    // Proton-CachyOS Latest for the game: installed or updated only when the newest release is newer than the
+    // copy, then set (or left waiting for a Steam restart, when Steam doesn't list it yet).
+    const switchToLatestProton = async () => {
+        const inst = await installProtonLatest();
+        if (inst.status !== "success")
+            throw new Error(inst.message || "Could not install Proton-CachyOS Latest.");
+        let status = await getLiteStatus(appid);
+        if (!onLatestProton(status)) {
+            status = (await selectLatestProton(appid, status)) || status;
+            if (!onLatestProton(status)) {
+                await setLiteProtonPending(appid, "latest");
+                status = { ...status, pending: "latest" };
+            }
+        }
+        setCachyos(status);
+        const label = status.latest_proton || LATEST_TOOL_LABEL;
+        const note = inst.message || (inst.updated ? `${label} updated to ${inst.release}.` : "");
+        return { status, label, ready: onLatestProton(status), note };
+    };
+    // On: FSR4_UPGRADE=1 and the game on Proton-CachyOS Latest. With Lite on, the game stays on the Lite Proton
+    // (the same newest release, patched). Off: the variable goes and, if the game is on Proton-CachyOS Latest,
+    // its previous Proton comes back.
+    const handleFsr4Toggle = async (enabled) => {
+        if (!appid)
+            return;
+        const id = parseInt(appid, 10);
+        try {
+            setBusy(true);
+            const current = await getLaunchOptions(id);
+            if (!enabled) {
+                SteamClient.Apps.SetAppLaunchOptions(id, withLaunchEnv(current, FSR4_UPGRADE_ENV, false));
+                setFsr4Upgrade(false);
+                if (!fsr4LitePath) {
+                    await setLiteProtonPending(appid, false);
+                    if (onLatestProton(cachyos) && cachyos.previous_tool !== null && cachyos.previous_tool !== undefined) {
+                        SteamClient.Apps.SpecifyCompatTool(id, cachyos.previous_tool);
+                        setCachyos({ ...cachyos, supported: isCachyosTool(cachyos.previous_tool, ""), tool_name: cachyos.previous_tool, tool_label: cachyos.previous_tool || "Steam default", takes_dll_path: false });
+                    }
+                }
+                sayProton.ok("Proton-CachyOS FSR4 off.");
+                return;
+            }
+            if (fsr4LitePath) {
+                SteamClient.Apps.SetAppLaunchOptions(id, withLaunchEnv(current, FSR4_UPGRADE_ENV, true));
+                setFsr4Upgrade(true);
+                sayProton.ok("Proton-CachyOS FSR4 on (Lite Proton).");
+                return;
+            }
+            setProtonJob("latest");
+            setLiteRunning(true);
+            sayProton.clear();
+            const latest = await switchToLatestProton();
+            SteamClient.Apps.SetAppLaunchOptions(id, withLaunchEnv(await getLaunchOptions(id), FSR4_UPGRADE_ENV, true));
+            setFsr4Upgrade(true);
+            sayProton.ok(latest.note || (latest.ready ? "Proton-CachyOS FSR4 on." : `${latest.label} installed. Restart Steam to finish.`));
+            showProtonModal(latest.status, latest.label, latest.ready);
+        }
+        catch (e) {
+            sayProton.fail(String(e));
+            await logError(`SteamGameCombinedSection -> fsr4: ${String(e)}`);
+        }
+        finally {
+            await refreshLiteProgress();
             setLiteRunning(false);
             setBusy(false);
         }
@@ -896,10 +1019,10 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, addon, advance
             const current = await getLaunchOptions(parseInt(appid, 10));
             SteamClient.Apps.SetAppLaunchOptions(parseInt(appid, 10), withLaunchEnv(current, name, enabled, value));
             setChecked(enabled);
-            say.ok(`${name === FSR4_INDICATOR_ENV ? "FSR watermark" : "Proton-CachyOS FSR4"} ${enabled ? "on" : "off"}.`);
+            sayProton.ok(`${name === FSR4_INDICATOR_ENV ? "FSR watermark" : "Proton-CachyOS FSR4"} ${enabled ? "on" : "off"}.`);
         }
         catch (e) {
-            say.fail(String(e));
+            sayProton.fail(String(e));
             await logError(`SteamGameCombinedSection -> ${name}: ${String(e)}`);
         }
     };
@@ -940,6 +1063,7 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, addon, advance
         pickedGame.current = id;
         setAppid(id);
         say.clear();
+        sayProton.clear();
         // Nothing from the previous game stays on screen while this one loads.
         setStatus(null);
         setCachyos(null);
@@ -1027,7 +1151,7 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, addon, advance
             setBusy(false);
         }
     };
-    return (window.SP_REACT.createElement(DFL.PanelSection, { title: "Game — Patch All" },
+    return (window.SP_REACT.createElement(window.SP_REACT.Fragment, null, window.SP_REACT.createElement(DFL.PanelSection, { title: "Game — Patch All" },
         window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement(DFL.DropdownItem, { rgOptions: games.map((g) => ({ data: g.appid, label: gameOptionLabel(g) })), selectedOption: appid, onMenuOpened: () => void refreshGames(), onChange: (o) => pickGame(o.data), strDefaultLabel: "Select a game..." })),
         appid && lsfg && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
@@ -1047,20 +1171,12 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, addon, advance
                     window.SP_REACT.createElement("span", { style: { color: status.reshade_present ? COLORS.ok : undefined } }, status.reshade_present ? (advanced && status.reshade_slot ? `On · ${status.reshade_slot}` : "On") : "Off")),
                 status.helixsr && window.SP_REACT.createElement(HelixSRGameStatus, { info: status.helixsr })))),
         appid && (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
-            // FSR4 and the watermark: for Proton-CachyOS games, games on Lite, or while their variable is still set.
-            (cachyos?.supported || fsr4LitePath || fsr4Upgrade) && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.ToggleField, { label: "Proton-CachyOS FSR4", description: `Turns on FSR4${cachyos?.tool_label ? ` (${cachyos.tool_label})` : ""}.`, checked: fsr4Upgrade, disabled: busy, onChange: (v) => void handleLaunchEnvToggle(FSR4_UPGRADE_ENV, v, setFsr4Upgrade) }))),
             // Lite brings its own Proton, so it shows for every game.
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.ToggleField, { label: "Proton FSR4 → 4.1.2 Lite", description: "Downloads latest Proton-CachyOS and injects FSR 4.1.2 Lite into it.", checked: !!fsr4LitePath, disabled: busy || !cachyos, onChange: (v) => void handleFsr4LiteToggle(v) })),
-            liteBoxVisible && window.SP_REACT.createElement(LiteProgressBox, { progress: liteProgress }),
-            // The patched Proton is installed but Steam doesn't list it yet: it needs a restart.
-            fsr4LitePath && cachyos && !cachyos.takes_dll_path && cachyos.lite_tool_name && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement("div", { style: { fontSize: "0.82em", color: COLORS.warn } }, "Restart Steam to finish."))),
-            fsr4LitePath && cachyos && !cachyos.takes_dll_path && cachyos.lite_tool_name && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: () => SteamClient.User.StartRestart(false), disabled: busy }, "Restart Steam"))),
-            (cachyos?.supported || fsr4LitePath || fsr4Indicator) && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.ToggleField, { label: "Show FSR watermark", description: "Shows which FSR runs, top left.", checked: fsr4Indicator, disabled: busy, onChange: (v) => void handleLaunchEnvToggle(FSR4_INDICATOR_ENV, v, setFsr4Indicator) }))),
+            liteBoxVisible && protonJob !== "latest" && window.SP_REACT.createElement(LiteProgressBox, { progress: liteProgress }),
+            // The Lite Proton is installed but Steam doesn't list it yet: it needs a restart.
+            liteNeedsRestart && window.SP_REACT.createElement(RestartSteamRows, { busy: busy }),
             status?.optiscaler_patched && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.ToggleField, { label: "Show upscaler in game", description: "OptiScaler's FPS overlay names the upscaler it runs. Close the game first.", checked: !!status.upscaler_overlay, disabled: busy, onChange: (v) => void handleOverlayToggle(v) }))),
             window.SP_REACT.createElement(HelixSRPanel, null),
@@ -1072,7 +1188,27 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, addon, advance
                     window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: handleRemoveAll, disabled: busy }, "Remove All"))))),
         window.SP_REACT.createElement(NoticeRow, { notice: notice }),
         window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement("div", { style: { fontSize: "0.8em", color: COLORS.ok } }, "In-game: press HOME for the ReShade overlay or INSERT for OptiScaler."))));
+            window.SP_REACT.createElement("div", { style: { fontSize: "0.8em", color: COLORS.ok } }, "In-game: press HOME for the ReShade overlay or INSERT for OptiScaler."))),
+        advancedToggle,
+        // Advanced: Proton-CachyOS's own FSR4 (no OptiScaler) and AMD's watermark, for the game picked above.
+        advanced && appid && (window.SP_REACT.createElement(DFL.PanelSection, { title: "Proton-CachyOS" },
+            window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+                window.SP_REACT.createElement(DFL.ToggleField, { label: "Proton-CachyOS FSR4", description: "Downloads latest Proton-CachyOS, enables its built-in FSR4.", checked: fsr4Upgrade, disabled: busy || !cachyos, onChange: (v) => void handleFsr4Toggle(v) })),
+            liteBoxVisible && protonJob === "latest" && window.SP_REACT.createElement(LiteProgressBox, { progress: liteProgress }),
+            // Proton-CachyOS Latest is installed but Steam doesn't list it yet: it needs a restart.
+            latestNeedsRestart && window.SP_REACT.createElement(RestartSteamRows, { busy: busy }),
+            (cachyos?.supported || fsr4LitePath || fsr4Upgrade || fsr4Indicator) && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+                window.SP_REACT.createElement(DFL.ToggleField, { label: "Show FSR watermark", description: "Shows which FSR runs, top left.", checked: fsr4Indicator, disabled: busy, onChange: (v) => void handleLaunchEnvToggle(FSR4_INDICATOR_ENV, v, setFsr4Indicator) }))),
+            window.SP_REACT.createElement(NoticeRow, { notice: protonNotice }))),
+        advanced && advancedSections));
+}
+// A toggle's Proton is installed but Steam lists new Protons only after a restart.
+function RestartSteamRows({ busy }) {
+    return (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
+        window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+            window.SP_REACT.createElement("div", { style: { fontSize: "0.82em", color: COLORS.warn } }, "Restart Steam to finish.")),
+        window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+            window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", onClick: () => SteamClient.User.StartRestart(false), disabled: busy }, "Restart Steam"))));
 }
 
 // src/ShaderSelectionModal.tsx
@@ -1814,13 +1950,11 @@ function MainContent() {
     }, [advanced]);
     return (window.SP_REACT.createElement("div", { className: "jedi-panel" },
         window.SP_REACT.createElement("style", null, panelCss()),
-        window.SP_REACT.createElement(SteamGameCombinedSection, { fsr4Variant: fsr4Variant, appid: selectedAppid, setAppid: setSelectedAppid, addon: addon, advanced: advanced, onEnginesChanged: onEnginesChanged }),
-        window.SP_REACT.createElement(DFL.PanelSection, null,
-            window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.ToggleField, { label: "Advanced controls", description: "Per-engine apply, proxy DLL, shaders.", checked: advanced, onChange: setAdvanced }))),
-        advanced && (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
-            window.SP_REACT.createElement(OptiScalerControls, { fgmodInfo: fgmodInfo, fsr4Variant: fsr4Variant, appid: selectedAppid }),
-            window.SP_REACT.createElement(ReShadeInstallerSection, { appid: selectedAppid, addon: addon, setAddon: setAddon, engineCheck: engineCheck, onEnginesChanged: onEnginesChanged }))),
+        window.SP_REACT.createElement(SteamGameCombinedSection, { fsr4Variant: fsr4Variant, appid: selectedAppid, setAppid: setSelectedAppid, addon: addon, advanced: advanced, onEnginesChanged: onEnginesChanged, advancedToggle: window.SP_REACT.createElement(DFL.PanelSection, null,
+                window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+                    window.SP_REACT.createElement(DFL.ToggleField, { label: "Advanced controls", description: "Per-engine apply, proxy DLL, shaders.", checked: advanced, onChange: setAdvanced }))), advancedSections: window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
+                window.SP_REACT.createElement(OptiScalerControls, { fgmodInfo: fgmodInfo, fsr4Variant: fsr4Variant, appid: selectedAppid }),
+                window.SP_REACT.createElement(ReShadeInstallerSection, { appid: selectedAppid, addon: addon, setAddon: setAddon, engineCheck: engineCheck, onEnginesChanged: onEnginesChanged })) }),
         window.SP_REACT.createElement(PluginUpdateSection, { advanced: advanced })));
 }
 var index = definePlugin(() => {

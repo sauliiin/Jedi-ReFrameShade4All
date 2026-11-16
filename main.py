@@ -264,7 +264,10 @@ PROTON_LITE_SUFFIX = "-jedi-fsr4lite"
 # One internal name for every release, so an update replaces the copy in place: games set to it keep it and
 # Steam keeps a single entry. Up to 1.1.23 the name carried the release (proton-cachyos-<release>-jedi-fsr4lite).
 PROTON_LITE_TOOL_NAME = "proton-cachyos" + PROTON_LITE_SUFFIX
-PROTON_LITE_RELEASE_FILE = ".jedi-proton-lite.json"
+PROTON_LITE_RELEASE_FILE = ".jedi-proton-lite.json"   # in each copy the plugin installs: the release it came from
+# The Proton-CachyOS FSR4 toggle's Proton: the newest release as it comes, under one name that stays across updates.
+PROTON_LATEST_TOOL_NAME = "proton-cachyos-jedi-latest"
+PROTON_LATEST_LABEL = "Proton-CachyOS Latest"
 PROTON_LITE_MARKER = "# Jedi-ReFrameShade4All: local dll"
 PROTON_LITE_UPSCALER_PATCHES = (
     (
@@ -4696,6 +4699,14 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin, _LsfgMixin):
                 found += [d for d in base.iterdir() if d.is_dir() and d.name.endswith(PROTON_LITE_SUFFIX)]
         return sorted({d.resolve(): d for d in found}.values())
 
+    def _proton_latest_installs(self) -> list[Path]:
+        found = []
+        for root in self._steam_root_candidates():
+            tool_dir = root / "compatibilitytools.d" / PROTON_LATEST_TOOL_NAME
+            if (tool_dir / "compatibilitytool.vdf").is_file():
+                found.append(tool_dir)
+        return sorted({d.resolve(): d for d in found}.values())
+
     async def get_cachyos_fsr4_status(self, appid) -> dict:
         try:
             tool = self._compat_tool_for_app(str(appid))
@@ -4703,7 +4714,9 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin, _LsfgMixin):
             label = self._compat_tool_label(tool) if tool else ""
             supported = "cachyos" in f"{tool} {label}".lower().replace("-", "").replace("_", "")
             lite = self._proton_lite_installs()
+            latest = self._proton_latest_installs()
             previous = self._read_json_file(self._proton_lite_previous_file()).get(str(appid))
+            pending = self._read_json_file(self._proton_lite_pending_file()).get(str(appid))
             return {
                 "status": "success",
                 "supported": supported,
@@ -4712,7 +4725,10 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin, _LsfgMixin):
                 "takes_dll_path": bool(found) and self._proton_takes_dll_path(found[0].parent),
                 "lite_tool_name": lite[-1].name if lite else None,
                 "lite_proton": self._compat_tool_label(lite[-1].name) or lite[-1].name if lite else None,
+                "latest_tool_name": latest[-1].name if latest else None,
+                "latest_proton": self._compat_tool_label(latest[-1].name) or PROTON_LATEST_LABEL if latest else None,
                 "previous_tool": previous if isinstance(previous, str) else None,
+                "pending": self._pending_kind(pending),
             }
         except Exception as exc:
             decky.logger.warning(f"[JediReFrameShade] cachyos status failed for {appid}: {exc}")
@@ -4781,9 +4797,9 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin, _LsfgMixin):
         return "patched"
 
     def _proton_lite_release(self, tool_dir: Path) -> str:
-        """The Proton-CachyOS release (tarball base name) a Lite copy was made from."""
+        """The Proton-CachyOS release (tarball base name) a copy the plugin installed was made from."""
         base = str(self._read_json_file(tool_dir / PROTON_LITE_RELEASE_FILE).get("base") or "")
-        if not base and tool_dir.name != PROTON_LITE_TOOL_NAME:
+        if not base and tool_dir.name.endswith(PROTON_LITE_SUFFIX) and tool_dir.name != PROTON_LITE_TOOL_NAME:
             base = tool_dir.name[: -len(PROTON_LITE_SUFFIX)]
         return base
 
@@ -4822,14 +4838,22 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin, _LsfgMixin):
             "total": progress["total"] if progress["path"] else None,
         }
 
-    def _install_proton_lite(self) -> dict:
-        """Installs the newest Proton-CachyOS as the Lite Proton, or updates the copy when a newer release is out."""
-        installed = self._proton_lite_installs()
-        current = installed[-1] if installed and self._proton_takes_dll_path(installed[-1]) else None
+    def _install_proton_lite(self, latest: bool = False) -> dict:
+        """Installs the newest Proton-CachyOS, or updates the copy when a newer release is out. The Lite Proton
+        (latest=False) is patched to take the Lite DLL; Proton-CachyOS Latest (latest=True) is the release as is."""
+        if latest:
+            installed = self._proton_latest_installs()
+            current = installed[-1] if installed else None
+            what = PROTON_LATEST_LABEL
+        else:
+            installed = self._proton_lite_installs()
+            current = installed[-1] if installed and self._proton_takes_dll_path(installed[-1]) else None
+            what = "Lite Proton"
 
         def keep_current(reason: str) -> dict:
             name = current.name
             return {"status": "success", "tool_name": name, "tool_label": self._compat_tool_label(name) or name,
+                    "release": self._release_short(self._proton_lite_release(current)),
                     "patch": "existing", "updated": False, "message": reason}
 
         self._lite_log("Checking Proton-CachyOS...")
@@ -4840,28 +4864,33 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin, _LsfgMixin):
                 decky.logger.warning(f"[ProtonLite] update check failed, keeping {current.name}: {exc}")
                 return keep_current("")
             raise
-        self._lite_log(f"Latest: {release['base'].replace('proton-cachyos-', '').replace('-x86_64', '')}")
+        self._lite_log(f"Latest: {self._release_short(release['base'])}")
         if current and self._proton_lite_release(current) == release["base"]:
             self._lite_log("Already up to date")
             return keep_current("")
         if current and self._proton_lite_in_use(current):
-            return keep_current("Lite Proton update skipped: close the game first.")
+            return keep_current(f"{what} update skipped: close the game first.")
         try:
-            return self._install_proton_lite_release(release, current)
+            return self._install_proton_lite_release(release, current, latest)
         except Exception as exc:
             # A newer release the patch can't handle (or a failed download) leaves the working copy in place.
             if current:
                 decky.logger.warning(f"[ProtonLite] update to {release['tag']} failed, keeping {current.name}: {exc}")
-                return keep_current(f"Lite Proton update failed: {exc}")
+                return keep_current(f"{what} update failed: {exc}")
             raise
 
-    def _install_proton_lite_release(self, release: dict, current: Path | None) -> dict:
+    @staticmethod
+    def _release_short(base: str) -> str:
+        """proton-cachyos-11.0-20261015-slr-x86_64 -> 11.0-20261015-slr"""
+        return base.replace("proton-cachyos-", "").replace("-x86_64", "")
+
+    def _install_proton_lite_release(self, release: dict, current: Path | None, latest: bool = False) -> dict:
         roots = [r for r in self._steam_root_candidates() if r.is_dir()]
         if not roots:
             raise RuntimeError("Steam folder not found.")
         base = roots[0] / "compatibilitytools.d"
         base.mkdir(parents=True, exist_ok=True)
-        name = PROTON_LITE_TOOL_NAME
+        name = PROTON_LATEST_TOOL_NAME if latest else PROTON_LITE_TOOL_NAME
         staging = base / f".{name}.staging"
         shutil.rmtree(staging, ignore_errors=True)
         staging.mkdir()
@@ -4901,10 +4930,14 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin, _LsfgMixin):
             vdf = tool_dir / "compatibilitytool.vdf"
             if not vdf.is_file():
                 raise RuntimeError("compatibilitytool.vdf not found in the Proton-CachyOS tarball.")
-            self._lite_log("Injecting FSR 4.1.2 Lite...")
-            patch = self._patch_proton_upscalers(tool_dir)
+            if latest:
+                patch = "none"
+                label = PROTON_LATEST_LABEL
+            else:
+                self._lite_log("Injecting FSR 4.1.2 Lite...")
+                patch = self._patch_proton_upscalers(tool_dir)
+                label = release["base"].replace("proton-cachyos-", "Proton-CachyOS ") + " (FSR4 Lite)"
             # Its own internal name and label, so it sits next to the stock Proton-CachyOS in Steam.
-            label = release["base"].replace("proton-cachyos-", "Proton-CachyOS ") + " (FSR4 Lite)"
             text = vdf.read_text(encoding="utf-8", errors="replace")
             text = re.sub(r'"' + re.escape(release["base"]) + r'"(\s*(?://[^\n]*)?\s*\{)', f'"{name}"\\1', text, count=1)
             text = re.sub(r'"display_name"\s*"[^"]*"', f'"display_name" "{label}"', text, count=1)
@@ -4915,7 +4948,7 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin, _LsfgMixin):
             self._lite_log("Installing in Steam...")
             # The previous copy goes (the same name in place, or the old per-release name), so Steam lists one.
             # It's moved aside first, so a failed swap puts it back instead of leaving half of it.
-            olds = self._proton_lite_installs()
+            olds = self._proton_latest_installs() if latest else self._proton_lite_installs()
             target = base / name
             trash = base / f".{name}.old"
             shutil.rmtree(trash, ignore_errors=True)
@@ -4935,14 +4968,22 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin, _LsfgMixin):
             shutil.rmtree(staging, ignore_errors=True)
         decky.logger.info(f"[ProtonLite] installed {name} from {release['tag']} ({patch})")
         return {"status": "success", "tool_name": name, "tool_label": label, "patch": patch,
+                "release": self._release_short(release["base"]),
                 "updated": current is not None, "previous_tool_name": current.name if current else None}
 
     async def install_proton_lite(self) -> dict:
+        return await self._install_proton_with_progress(latest=False)
+
+    async def install_proton_latest(self) -> dict:
+        """Proton-CachyOS Latest for the Proton-CachyOS FSR4 toggle: downloads only when the copy is older."""
+        return await self._install_proton_with_progress(latest=True)
+
+    async def _install_proton_with_progress(self, latest: bool) -> dict:
         self._lite_progress["active"] = True
         try:
-            return await asyncio.to_thread(self._install_proton_lite)
+            return await asyncio.to_thread(self._install_proton_lite, latest)
         except Exception as exc:
-            decky.logger.error(f"[ProtonLite] install failed: {exc}")
+            decky.logger.error(f"[ProtonLite] install failed ({'latest' if latest else 'lite'}): {exc}")
             return {"status": "error", "message": str(exc)}
         finally:
             self._lite_progress = {"active": False, "lines": [], "path": None, "total": None}
@@ -4966,17 +5007,27 @@ class Plugin(_OptiScalerMixin, _ReShadeMixin, _HelixSRMixin, _LsfgMixin):
     def _proton_lite_pending_file(self) -> Path:
         return Path(decky.HOME) / PROTON_FSR4_LITE_DIRNAME / "pending_compat_tools.json"
 
-    async def get_lite_proton_pending(self) -> list:
-        """Games with the Lite toggle on that wait for Steam to list the Lite Proton (it does after a restart)."""
-        return list(self._read_json_file(self._proton_lite_pending_file()))
+    @staticmethod
+    def _pending_kind(value) -> str | None:
+        """"lite" or "latest": the Proton a game waits for. Up to 1.1.36 only Lite waited, saved as true."""
+        if value is True:
+            return "lite"
+        return value if value in ("lite", "latest") else None
 
-    async def set_lite_proton_pending(self, appid, pending: bool) -> dict:
+    async def get_lite_proton_pending(self) -> dict:
+        """Games waiting for Steam to list the Proton their toggle installed (it does after a restart):
+        {appid: "lite" | "latest"}."""
+        games = self._read_json_file(self._proton_lite_pending_file())
+        return {appid: kind for appid, value in games.items() if (kind := self._pending_kind(value))}
+
+    async def set_lite_proton_pending(self, appid, pending) -> dict:
+        """pending: "lite", "latest" (true means "lite"), or false to stop waiting."""
         try:
             path = self._proton_lite_pending_file()
             path.parent.mkdir(parents=True, exist_ok=True)
             games = self._read_json_file(path)
             if pending:
-                games[str(appid)] = True
+                games[str(appid)] = self._pending_kind(pending) or "lite"
             else:
                 games.pop(str(appid), None)
             self._write_json_file(path, games)
