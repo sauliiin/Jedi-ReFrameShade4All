@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.38
+
+### Changed
+- The game's **Frame Generation** / **Upscaler** / **ReShade** status now shows right under the game picker, before **LSFG-VK**, so it stays in place when the LSFG-VK slider shows or hides.
+
 ## 1.1.37
 
 ### Changed

@@ -1154,10 +1154,7 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, addon, advance
     return (window.SP_REACT.createElement(window.SP_REACT.Fragment, null, window.SP_REACT.createElement(DFL.PanelSection, { title: "Game — Patch All" },
         window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement(DFL.DropdownItem, { rgOptions: games.map((g) => ({ data: g.appid, label: gameOptionLabel(g) })), selectedOption: appid, onMenuOpened: () => void refreshGames(), onChange: (o) => pickGame(o.data), strDefaultLabel: "Select a game..." })),
-        appid && lsfg && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement(DFL.ToggleField, { label: "LSFG-VK", description: lsfg.lossless_found ? "Lossless Scaling frame generation." : "Needs Lossless Scaling on Steam.", checked: lsfg.enabled, disabled: busy, onChange: (v) => void handleLsfgToggle(v) }))),
-        appid && lsfg?.enabled && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement(DFL.SliderField, { label: `Target FPS · ${lsfgFps}`, value: lsfgFps, min: LSFG_FPS_MIN, max: LSFG_FPS_MAX, step: 1, notchCount: LSFG_FPS_NOTCHES.length, notchLabels: LSFG_FPS_NOTCHES, notchTicksVisible: true, showValue: false, onChange: handleLsfgFps }))),
+        // The game's Patch All status first: what is on before any of the options below.
         status && appid && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement("div", { style: { fontSize: "0.85em", padding: "8px", backgroundColor: "rgba(255,255,255,0.05)", borderRadius: "4px" } },
                 window.SP_REACT.createElement("div", null,
@@ -1170,6 +1167,10 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, addon, advance
                     "ReShade: ",
                     window.SP_REACT.createElement("span", { style: { color: status.reshade_present ? COLORS.ok : undefined } }, status.reshade_present ? (advanced && status.reshade_slot ? `On · ${status.reshade_slot}` : "On") : "Off")),
                 status.helixsr && window.SP_REACT.createElement(HelixSRGameStatus, { info: status.helixsr })))),
+        appid && lsfg && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+            window.SP_REACT.createElement(DFL.ToggleField, { label: "LSFG-VK", description: lsfg.lossless_found ? "Lossless Scaling frame generation." : "Needs Lossless Scaling on Steam.", checked: lsfg.enabled, disabled: busy, onChange: (v) => void handleLsfgToggle(v) }))),
+        appid && lsfg?.enabled && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+            window.SP_REACT.createElement(DFL.SliderField, { label: `Target FPS · ${lsfgFps}`, value: lsfgFps, min: LSFG_FPS_MIN, max: LSFG_FPS_MAX, step: 1, notchCount: LSFG_FPS_NOTCHES.length, notchLabels: LSFG_FPS_NOTCHES, notchTicksVisible: true, showValue: false, onChange: handleLsfgFps }))),
         appid && (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
             // Lite brings its own Proton, so it shows for every game.
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
