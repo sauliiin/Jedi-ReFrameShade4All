@@ -12,6 +12,8 @@ OWNERSHIP_FILENAME = "renderer_ownership.json"
 MAKO_RELEASES_API = "https://api.github.com/repos/eugeniosegala/MAKO/releases?per_page=30"
 MAKO_RELEASE_TAG_PREFIX = "render-v"
 MAKO_ARCHIVE_TEMPLATE = "MAKO-Renderer-v{version}-linux.tar.xz"
+# MAKO FG, the frame generation model profiles use, ships with Renderer 5.0.0 and later.
+MAKO_FG_MIN_MAJOR = 5
 ARCHIVE_INSTALLER = "Install MAKO Renderer"
 LAUNCHER_FILENAME = "mako-launch"
 CLI_FILENAME = "mako-cli"

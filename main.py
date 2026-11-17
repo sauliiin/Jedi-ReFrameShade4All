@@ -190,8 +190,8 @@ CUSTOM_FFX_DLL = "amd_fidelityfx_upscaler_dx12.dll"
 CUSTOM_FFX_VK_DLL = "amd_fidelityfx_upscaler_vk.dll"
 
 # Cyboman (https://github.com/zgauthier2000/fsr4-shader-performance-overrides, GPL-2.0): AMD's FSR 4.1.2 Lite with
-# faster shaders. "exact" gives AMD's Lite picture byte for byte; "lossy" runs the network every other frame with
-# retrained weights (close to Lite's picture, not the same). Downloaded on the device from its newest dll-* release
+# faster shaders. "lossy" runs the network every other frame with retrained weights (close to Lite's picture, not
+# the same). Its "exact" build was dropped: on the Steam Deck it matches AMD's Lite, only a few percent faster. Downloaded on the device from its newest dll-* release
 # when a game is patched, checked against GitHub's SHA-256, and kept for the next patches.
 CYBOMAN_RELEASES_API = "https://api.github.com/repos/zgauthier2000/fsr4-shader-performance-overrides/releases?per_page=30"
 CYBOMAN_DIRNAME = "fgmod-cyboman"
@@ -199,10 +199,11 @@ CYBOMAN_STATE_FILENAME = "cyboman.json"
 CYBOMAN_CHECK_SECONDS = 900
 CYBOMAN_TAG_RE = re.compile(r"^dll-\d{4}-\d{2}-\d{2}[\w.-]*$")
 CYBOMAN_BUILDS = (   # (name in OptiScaler's menu, folder in the archive)
-    ("FSR 4.1.2 Lite Exact", "4.1.2l-exact"),
     ("FSR 4.1.2 Lite Lossy", "4.1.2l-lossy"),
 )
 CYBOMAN_NAMES = tuple(name for name, _ in CYBOMAN_BUILDS)
+# Made by older versions: Patch All takes them out of the game.
+RETIRED_CUSTOM_UPSCALER_NAMES = ("FSR 4.1.2 Lite Exact",)
 
 # HelixSR 3.2+: HLX FSR 4, AMD's FSR 4.1.2 Lite network on HelixSR's own shaders, ships built in HelixSR's zip.
 # AMD's FSR SDK 2.4.0 upscaler (.amd.dll) goes next to it: HLX FSR 4 falls back to it when it can't start.
@@ -212,7 +213,9 @@ HELIXSR_HLX_FSR4_FALLBACK = Path("helixsr-scaler") / "OptiScaler" / "amd_fidelit
 HELIXSR_HLX_FSR4_VK_DLL = Path("helixsr-scaler") / "OptiScaler" / "custom" / CUSTOM_HLX_FSR4_NAME / "ffx_vk" / CUSTOM_FFX_VK_DLL
 HELIXSR_HLX_FSR4_MAGIC = b"HLXFSR4D"   # the trailer HelixSR appends once HLX FSR 4's shaders are in the DLL
 
-CUSTOM_UPSCALER_NAMES = (*CYBOMAN_NAMES, CUSTOM_411_NAME, CUSTOM_402C_NAME, CUSTOM_HLX_FSR4_NAME)
+CUSTOM_UPSCALER_NAMES = (
+    *CYBOMAN_NAMES, CUSTOM_411_NAME, CUSTOM_402C_NAME, CUSTOM_HLX_FSR4_NAME, *RETIRED_CUSTOM_UPSCALER_NAMES,
+)
 # amdxc64.dll: only games patched before the old 4.1.1 Valve runtime was trimmed have it, and removing them still clears it.
 VARIANT_EXTRA_FILENAMES = sorted(
     {
@@ -3861,7 +3864,7 @@ class _HelixSRMixin:
 
     def _apply_combined_upscalers(self, directory: Path, fgmod_path: Path, injector: Path) -> str:
         """COMBINED_VARIANT: OptiScaler 10 (+ driver DLLs as custom upscalers) lists custom/<name>/ffx and
-        custom/<name>/dlss next to its own FSR 4 (the Lite runtime the patch put in): Cyboman's Lite Exact and Lossy,
+        custom/<name>/dlss next to its own FSR 4 (the Lite runtime the patch put in): Cyboman's Lite Lossy,
         Valve's 4.1.1 driver DLL as "FSR 4.1.1", 4.0.2c's upscaler as "FSR 4.0.2c" and, when HelixSR 3.x is installed,
         HLX FSR 4 and HLX DLSS. FSR 4 stays the selected upscaler."""
         self._copy_hlx_injector(injector)
@@ -4306,6 +4309,7 @@ from lsfg_vk.constants import (
     ACTIVE_RENDERER_STATE as MAKO_ACTIVE_RENDERER_STATE,
     MAKO_ARCHIVE_TEMPLATE,
     MAKO_RELEASE_TAG_PREFIX,
+    MAKO_FG_MIN_MAJOR,
     MAKO_RELEASES_API,
 )
 from lsfg_vk.installation import InstallationService as LsfgInstallationService
@@ -4315,12 +4319,13 @@ from lsfg_vk.wrapper_service import WrapperService as LsfgWrapperService
 
 
 class _LsfgMixin:
-    """Lossless Scaling frame generation through MAKO Renderer, one target FPS per game.
+    """MAKO FG frame generation through MAKO Renderer, one target FPS per game (the panel calls it MAKO).
 
     The game's launch options get `~/.jedi-lsfg` before `%command%` (set by the frontend);
     that wrapper picks the game's MAKO profile from ~/.config/jedi-lsfg-vk/conf.toml.
     Same files as the standalone Jedi LSFG-VK plugin, so its games carry over.
-    MAKO Renderer is always the newest render-v* release on GitHub.
+    The first game turned on installs the newest render-v* release on GitHub; a newer
+    one is only offered (get_mako_update_status / update_mako_renderer), never installed by itself.
     """
 
     _mako_release_cache = None
@@ -4346,10 +4351,10 @@ class _LsfgMixin:
             return ""
         return str(data.get("version") or "") if isinstance(data, dict) else ""
 
-    def _mako_latest_release(self) -> dict | None:
+    def _mako_latest_release(self, use_cache: bool = True) -> dict | None:
         """Newest published render-v* release that ships the linux .tar.xz with a SHA256 from GitHub."""
         cached = _LsfgMixin._mako_release_cache
-        if cached and time.time() - cached[0] < PLUGIN_UPDATE_CACHE_SECONDS:
+        if use_cache and cached and time.time() - cached[0] < PLUGIN_UPDATE_CACHE_SECONDS:
             return cached[1]
         best = None
         for release in self._request_json(MAKO_RELEASES_API):
@@ -4369,25 +4374,48 @@ class _LsfgMixin:
         _LsfgMixin._mako_release_cache = (time.time(), best)
         return best
 
-    def _lsfg_ensure_latest_renderer(self) -> None:
-        """Installs MAKO Renderer, or updates it, when the newest release isn't the installed one."""
-        install, *_ = self._lsfg_services()
-        ready = self._lsfg_renderer_ready()
+    def _lsfg_ensure_renderer(self) -> None:
+        """Installs the newest MAKO Renderer when none is installed, or the one installed predates MAKO FG.
+        Any other installed one stays as it is."""
+        installed = self._parse_version_tuple(self._mako_installed_version())
+        if self._lsfg_renderer_ready() and installed and installed[0] >= MAKO_FG_MIN_MAJOR:
+            return
         try:
             latest = self._mako_latest_release()
         except Exception as exc:
-            # Offline: the installed renderer keeps working.
-            if ready:
-                decky.logger.warning(f"[LSFG] MAKO release check failed, keeping the installed renderer: {exc}")
-                return
             raise RuntimeError(f"Could not reach GitHub for MAKO Renderer: {exc}")
         if not latest:
-            if ready:
-                return
             raise RuntimeError("No MAKO Renderer release found on GitHub.")
+        self._lsfg_install_renderer(latest)
+
+    def _mako_update_status(self, force: bool) -> dict:
         installed = self._mako_installed_version()
-        if ready and installed == latest["version"]:
-            return
+        status = {"status": "success", "installed_version": installed, "latest_version": "", "update_available": False}
+        if not self._lsfg_renderer_ready():
+            return status
+        latest = self._mako_latest_release(use_cache=not force)
+        if latest:
+            status["latest_version"] = latest["version"]
+            # An installed renderer without a version (set up by hand) is offered the newest release.
+            status["update_available"] = (
+                self._parse_version_tuple(latest["version"]) > self._parse_version_tuple(installed)
+            )
+        return status
+
+    def _mako_update(self) -> dict:
+        if not self._lsfg_renderer_ready():
+            raise RuntimeError("MAKO Renderer isn't installed. Turn MAKO on for a game to install it.")
+        latest = self._mako_latest_release(use_cache=False)
+        if not latest:
+            raise RuntimeError("No MAKO Renderer release found on GitHub.")
+        if self._parse_version_tuple(latest["version"]) > self._parse_version_tuple(self._mako_installed_version()):
+            self._lsfg_install_renderer(latest)
+        return {"status": "success", "version": latest["version"]}
+
+    def _lsfg_install_renderer(self, latest: dict) -> None:
+        """Downloads a MAKO Renderer release, checks it against GitHub's SHA256 and runs its installer."""
+        install, *_ = self._lsfg_services()
+        installed = self._mako_installed_version()
         with tempfile.TemporaryDirectory(prefix="jedi-mako-") as tmp:
             archive = Path(tmp) / latest["name"]
             self._download_file(latest["url"], archive)
@@ -4418,22 +4446,19 @@ class _LsfgMixin:
         return result["config"]
 
     def _lsfg_status(self, appid: str) -> dict:
-        _, _, wrapper, steam = self._lsfg_services()
+        _, _, wrapper, _ = self._lsfg_services()
         state = wrapper.get(appid)
         profile = self._lsfg_profile(appid)
         return {
             "status": "success",
             "renderer_installed": self._lsfg_renderer_ready(),
-            "lossless_found": steam.find_lossless_dll() is not None,
             "enabled": bool(state.get("success") and state.get("state")) and profile is not None,
             "target_fps": profile["target_fps"] if profile else LSFG_TARGET_FPS_MIN,
         }
 
     def _lsfg_enable(self, appid: str, target_fps, non_steam: bool) -> dict:
-        _, _, wrapper, steam = self._lsfg_services()
-        if steam.find_lossless_dll() is None:
-            raise RuntimeError("Install Lossless Scaling on Steam first.")
-        self._lsfg_ensure_latest_renderer()
+        _, _, wrapper, _ = self._lsfg_services()
+        self._lsfg_ensure_renderer()
         config = self._lsfg_save_target(appid, target_fps)
         current = wrapper.get(appid)
         result = wrapper.set(appid, current.get("state") or LsfgWrapperService.default_state(), False, bool(non_steam))
@@ -4469,6 +4494,21 @@ class _LsfgMixin:
             decky.logger.error(f"[LSFG] disable failed: {exc}")
             return {"status": "error", "message": str(exc)}
 
+    async def get_mako_update_status(self, force: bool = False) -> dict:
+        try:
+            return await asyncio.to_thread(self._mako_update_status, bool(force))
+        except Exception as exc:
+            # Offline: nothing to offer, the installed renderer keeps working.
+            decky.logger.warning(f"[LSFG] MAKO update check failed: {exc}")
+            return {"status": "error", "message": str(exc), "update_available": False}
+
+    async def update_mako_renderer(self) -> dict:
+        try:
+            return await asyncio.to_thread(self._mako_update)
+        except Exception as exc:
+            decky.logger.error(f"[LSFG] MAKO update failed: {exc}")
+            return {"status": "error", "message": str(exc)}
+
     async def set_lsfg_target_fps(self, appid, target_fps) -> dict:
         try:
             config = await asyncio.to_thread(self._lsfg_save_target, str(appid), target_fps)
@@ -4482,12 +4522,6 @@ class _LsfgMixin:
         repair = wrapper.repair()
         if not repair.get("success"):
             decky.logger.error(f"[LSFG] could not repair the launch wrapper: {repair.get('error')}")
-        # With LSFG on for some game, its next launch gets the newest MAKO Renderer.
-        if repair.get("success") and wrapper.list_apps().get("apps") and self._lsfg_renderer_ready():
-            try:
-                self._lsfg_ensure_latest_renderer()
-            except Exception as exc:
-                decky.logger.warning(f"[LSFG] MAKO Renderer update failed: {exc}")
         # Before any game starts, so the next launch reads current profiles.
         install.refresh_config()
 

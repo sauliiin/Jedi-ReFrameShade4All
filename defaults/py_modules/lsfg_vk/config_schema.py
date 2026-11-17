@@ -60,6 +60,8 @@ def adaptive_settings(target_fps: int) -> Dict[str, Any]:
     return {
         "frame_generation_provisioned": True,
         "frame_generation_enabled": True,
+        # MAKO's own model, bundled with the Renderer (5.0.0+): no Lossless Scaling needed.
+        "frame_generation_model": "mako-fg",
         "adaptive": True,
         "target_fps": target_fps,
         # With no real-frame cap, Fractional Automatic lets sustained native

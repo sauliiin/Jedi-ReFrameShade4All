@@ -154,7 +154,7 @@ function getLaunchOptions(appId) {
         }
     });
 }
-// The LSFG-VK launch wrapper; Steam runs it in front of the game.
+// The MAKO launch wrapper; Steam runs it in front of the game.
 const LSFG_WRAPPER = "~/.jedi-lsfg";
 // Wrappers from decky-lsfg-vk and MAKO Decky: two frame generation layers on one game don't work together.
 const LEGACY_LSFG_WRAPPER = /^(?:~\/\.?lsfg|~\/\.local\/bin\/(?:lsfg|lsfg-vk-experimental|mako-run|mako-launch)|mako-run|mako-launch|\/home\/[^/]+\/(?:\.?lsfg|\.local\/bin\/(?:lsfg|lsfg-vk-experimental|mako-run|mako-launch)))$/;
@@ -346,7 +346,10 @@ const getLsfgStatus = callable("get_lsfg_status");
 const enableLsfg = callable("enable_lsfg");
 const disableLsfg = callable("disable_lsfg");
 const setLsfgTargetFps = callable("set_lsfg_target_fps");
-// LSFG-VK target FPS: the slider only saves the value it settles on (each save rewrites MAKO's profiles).
+// A newer MAKO Renderer is only offered: the backend never updates an installed one by itself.
+const getMakoUpdateStatus = callable("get_mako_update_status");
+const updateMakoRenderer = callable("update_mako_renderer");
+// MAKO target FPS: the slider only saves the value it settles on (each save rewrites MAKO's profiles).
 const LSFG_FPS_MIN = 60;
 const LSFG_FPS_MAX = 120;
 const LSFG_SAVE_DEBOUNCE_MS = 300;
@@ -768,6 +771,7 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, addon, advance
     const [lsfg, setLsfg] = SP_REACT.useState(null);
     const [lsfgFps, setLsfgFps] = SP_REACT.useState(LSFG_FPS_MIN);
     const lsfgSaveTimer = SP_REACT.useRef(null);
+    const [makoUpdate, setMakoUpdate] = SP_REACT.useState(null);
     // The game picked last: an answer for an earlier pick that arrives late is dropped.
     const pickedGame = SP_REACT.useRef(appid);
     SP_REACT.useEffect(() => () => clearTimeout(lsfgSaveTimer.current), []);
@@ -783,6 +787,9 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, addon, advance
             }
             setLsfg({ ...r, enabled: r.enabled && hasLsfgWrapper(current) });
             setLsfgFps(r.target_fps);
+            // GitHub answers are cached for 10 minutes, so picking games doesn't ask it each time.
+            if (r.renderer_installed)
+                void getMakoUpdateStatus(false).then((u) => setMakoUpdate(u?.update_available ? u : null)).catch(() => { });
         }
         catch (e) {
             await logError(`SteamGameCombinedSection -> lsfg: ${String(e)}`);
@@ -800,9 +807,9 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, addon, advance
                 setLsfg({ ...lsfg, enabled: false });
                 const r = await disableLsfg(appid);
                 if (r.status === "success")
-                    say.ok("LSFG-VK off.");
+                    say.ok("MAKO off.");
                 else
-                    say.fail(r.message || "Could not turn LSFG-VK off.");
+                    say.fail(r.message || "Could not turn MAKO off.");
                 return;
             }
             if (!lsfg?.renderer_installed)
@@ -810,17 +817,37 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, addon, advance
             const nonSteam = !!games.find((g) => g.appid === appid)?.non_steam;
             const r = await enableLsfg(appid, lsfgFps, nonSteam);
             if (r.status !== "success") {
-                say.fail(r.message || "Could not turn LSFG-VK on.");
+                say.fail(r.message || "Could not turn MAKO on.");
                 return;
             }
             SteamClient.Apps.SetAppLaunchOptions(id, withLsfgWrapper(current, true));
-            setLsfg({ ...lsfg, renderer_installed: true, lossless_found: true, enabled: true });
+            setLsfg({ ...lsfg, renderer_installed: true, enabled: true });
             setLsfgFps(r.target_fps);
-            say.ok("LSFG-VK on.");
+            say.ok("MAKO on.");
         }
         catch (e) {
             say.fail(String(e));
             await logError(`SteamGameCombinedSection -> lsfg toggle: ${String(e)}`);
+        }
+        finally {
+            setBusy(false);
+        }
+    };
+    const handleMakoUpdate = async () => {
+        try {
+            setBusy(true);
+            say.progress(`Updating MAKO Renderer to v${makoUpdate.latest_version}…`);
+            const r = await updateMakoRenderer();
+            if (r.status !== "success") {
+                say.fail(r.message || "Could not update MAKO Renderer.");
+                return;
+            }
+            setMakoUpdate(null);
+            say.ok(`MAKO Renderer v${r.version} installed. Games started from now on use it.`);
+        }
+        catch (e) {
+            say.fail(String(e));
+            await logError(`SteamGameCombinedSection -> mako update: ${String(e)}`);
         }
         finally {
             setBusy(false);
@@ -1168,9 +1195,11 @@ function SteamGameCombinedSection({ fsr4Variant, appid, setAppid, addon, advance
                     window.SP_REACT.createElement("span", { style: { color: status.reshade_present ? COLORS.ok : undefined } }, status.reshade_present ? (advanced && status.reshade_slot ? `On · ${status.reshade_slot}` : "On") : "Off")),
                 status.helixsr && window.SP_REACT.createElement(HelixSRGameStatus, { info: status.helixsr })))),
         appid && lsfg && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement(DFL.ToggleField, { label: "LSFG-VK", description: lsfg.lossless_found ? "Lossless Scaling frame generation." : "Needs Lossless Scaling on Steam.", checked: lsfg.enabled, disabled: busy, onChange: (v) => void handleLsfgToggle(v) }))),
+            window.SP_REACT.createElement(DFL.ToggleField, { label: "MAKO", description: "MAKO FG frame generation.", checked: lsfg.enabled, disabled: busy, onChange: (v) => void handleLsfgToggle(v) }))),
         appid && lsfg?.enabled && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
             window.SP_REACT.createElement(DFL.SliderField, { label: `Target FPS · ${lsfgFps}`, value: lsfgFps, min: LSFG_FPS_MIN, max: LSFG_FPS_MAX, step: 1, notchCount: LSFG_FPS_NOTCHES.length, notchLabels: LSFG_FPS_NOTCHES, notchTicksVisible: true, showValue: false, onChange: handleLsfgFps }))),
+        appid && lsfg && makoUpdate && (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+            window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", description: makoUpdate.installed_version ? `v${makoUpdate.installed_version} installed.` : undefined, disabled: busy, onClick: () => void handleMakoUpdate() }, `Update MAKO Renderer to v${makoUpdate.latest_version}`))),
         appid && (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
             // Lite brings its own Proton, so it shows for every game.
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,

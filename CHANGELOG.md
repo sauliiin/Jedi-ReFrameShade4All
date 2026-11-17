@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.39
+
+### Changed
+- **LSFG-VK** is now called **MAKO** and uses MAKO's own **MAKO FG** model (`frame_generation_model = "mako-fg"`, MAKO Renderer 5.0.0+), so Lossless Scaling is no longer needed. Existing profiles are rewritten the next time the plugin loads. Turning it on with a Renderer older than 5.0.0 updates the Renderer first.
+- MAKO Renderer is no longer updated by itself when the plugin loads. Whenever a newer `render-v*` release is out, the game panel shows **Update MAKO Renderer to v…** under **MAKO**. The first game turned on still installs the newest release.
+
+### Removed
+- **FSR 4.1.2 Lite Exact** (Cyboman) in OptiScaler's menu: on the Steam Deck it matches AMD's Lite picture and is only a few percent faster. **FSR 4.1.2 Lite Lossy** stays. Patch All takes the old folder out of patched games.
+
 ## 1.1.38
 
 ### Changed
